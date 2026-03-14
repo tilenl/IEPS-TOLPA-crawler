@@ -507,28 +507,23 @@ FOR UPDATE SKIP LOCKED;
 
 ## 8. Deduplication
 
-Deduplication operates at two levels:
+Deduplication uses two checks:
+
+- URL deduplication (authoritative database check)
+- content deduplication (content hash comparison after fetch)
 
 ### Level 1 — URL Deduplication (has this URL been seen before?)
 
-A two-layer approach avoids a database round-trip for every extracted URL:
-
-**Layer 1 — Guava `BloomFilter`** (probabilistic pre-check, ~14MB for 10M URLs at 0.1% FPP): eliminates the vast majority of duplicates with near-zero cost. A `false` result from `put()` means the URL is definitely already known — skip the DB lookup.
-
-**Layer 2 — Database unique constraint** (authoritative): any URL that passes the Bloom filter is checked against the `page.url` unique constraint via `INSERT ... ON CONFLICT DO NOTHING`. The database is the single source of truth.
+URL deduplication is handled only by the database. During Stage A ingestion, attempt to insert the canonical URL as a `FRONTIER` row using the `page.url` unique constraint and `INSERT ... ON CONFLICT DO NOTHING`. If the insert succeeds, the URL is new; if it does not, the URL already exists.
 
 ```java
 boolean isNewUrl(String canonicalUrl) {
-    // Fast path: bloom says "definitely seen" → skip DB
-    if (!bloomSeen.put(canonicalUrl)) return false;
-    // Authoritative check: attempt insert, return whether it succeeded
+    // Single authoritative dedup check
     return db.insertFrontierIfAbsent(canonicalUrl, siteId, relevanceScore);
 }
 ```
 
-> ⚠️ The Bloom filter is a **performance optimization on top of the database**, not a replacement for it. The database `url` unique constraint is the authoritative deduplication mechanism.
-
-> ⚠️ Guava's `BloomFilter` is fixed-size at creation and cannot be resized. Set the expected insertion count conservatively high — significantly exceeding it causes the false positive rate to degrade, causing valid new URLs to be silently skipped.
+> ⚠️ URL deduplication is performed exclusively by the `page.url` unique constraint in PostgreSQL. No probabilistic pre-check layer is used at this stage.
 
 ### Level 2 — Content Deduplication (does this page content already exist?)
 
@@ -766,7 +761,7 @@ All code must be documented with concise Javadoc. Non-obvious logic must include
 | URL canonicalization                           | `iipc/urlcanon`                              |
 | `robots.txt` parsing                           | `crawler-commons` (`SimpleRobotRulesParser`) |
 | Rate limiting                                  | Bucket4j                                     |
-| URL deduplication pre-check (probabilistic)    | Guava `BloomFilter`                          |
+| URL deduplication (authoritative)              | PostgreSQL unique constraint + JDBC upsert   |
 | `robots.txt` cache + domain bucket cache       | Caffeine `LoadingCache`                      |
 | Database                                       | PostgreSQL + JDBC                            |
 | Concurrency                                    | Java 21 virtual threads                      |
@@ -779,16 +774,19 @@ All code must be documented with concise Javadoc. Non-obvious logic must include
 
 ## Open Questions & TODOs
 
-- **Frontier strategy detail** — Completed in Section 10 (`Preferential Frontier Strategy (Non-Advanced)`), including score computation, BoW usage, and `relevance_score` database mapping.
-- **Python Jupyter environment** — Are there any benefits of using the Python Jupyter environment for writing the crawler, as written in Section 3 of `assignment.md`? Evaluate whether Java or Python is the better fit given the requirements for multiple parallel workers and PostgreSQL integration.
 - **Testing and debugging strategy** — Define how each component can be tested in isolation. Propose a staged integration approach: Fetcher → Parser → Canonicalizer → Frontier → Storage. Define what observable output each component should produce to localize failures.
+
 - **GitHub API usage** — Confirm with the professor whether the GitHub REST API is permitted. It unlocks structured access to metadata and file trees without `robots.txt` restrictions, which would significantly change the fetching and parsing architecture.
+
 - **Contextual URL scoring implementation** — Finalise the implementation where surrounding anchor text is passed alongside each extracted URL to the scoring function.
+
 - **Document splitting** — Split this plan into per-component specification files for the implementation phase. Proposed split: `01-domain.md`, `02-url-pipeline.md`, `03-fetcher.md`, `04-frontier.md`, `05-parser.md`, `06-storage.md`, `07-concurrency.md`. Each file should define the Java interface, describe the logic flow, specify libraries, and include a section on programming patterns.
+
 - **Domain section expansion** — Expand the crawl domain section with more specifics about what constitutes a relevant page, how the relevance score maps to queue ordering, and edge cases in link discovery.
+
 - `**abhinavsingh/fuge` reference** — Review `https://github.com/abhinavsingh/fuge` and assess whether its crawler architecture has patterns applicable to our implementation.
+
 - **Pre-implementation review** — Confirm all design decisions are resolved before moving into the specification writing phase. Identify any remaining gaps.
-- **Simple down the deduplication checks** - using Guavas BloomFilter can speed up the process, but for now lets simplify the process by looking into the database if we have seen the URL. No layer 1 is needed for now.
 
 - **Submision of private github directory structure should be obeyed** Add a section of creating the right directory structure and how the current files and structure should be changed to comply with the submission structure.
 
