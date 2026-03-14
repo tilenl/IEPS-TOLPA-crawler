@@ -34,6 +34,12 @@ CREATE INDEX "idx_page_site_id" ON crawldb.page ( site_id );
 
 CREATE INDEX "idx_page_page_type_code" ON crawldb.page ( page_type_code );
 
+ALTER TABLE crawldb.page
+	ADD COLUMN relevance_score double precision NOT NULL DEFAULT 0.0;
+
+CREATE INDEX "idx_page_frontier_priority"
+	ON crawldb.page ( page_type_code, relevance_score DESC, accessed_time ASC );
+
 CREATE TABLE crawldb.page_data ( 
 	id                   serial  NOT NULL,
 	page_id              integer  ,

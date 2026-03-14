@@ -438,6 +438,24 @@ Every URL that enters the system gets a row in `page` immediately upon discovery
 
 The database **is** the frontier queue. The Scheduler reads `WHERE page_type_code = 'FRONTIER' ORDER BY relevance_score DESC` — there is no separate in-memory priority queue. This means the frontier survives process restarts automatically.
 
+### Frontier Priority Column and Dequeue Index
+
+`relevance_score` is the single numeric priority field used for queue ordering:
+
+- Type: `DOUBLE PRECISION`
+- Range: `[0.0, 1.0]`
+- Interpretation: higher score means higher crawl priority
+
+```sql
+ALTER TABLE crawldb.page
+ADD COLUMN relevance_score DOUBLE PRECISION NOT NULL DEFAULT 0.0;
+
+CREATE INDEX idx_page_frontier_priority
+ON crawldb.page (page_type_code, relevance_score DESC, accessed_time ASC);
+```
+
+The dequeue contract is stable and deterministic: always order by `relevance_score DESC`, with `accessed_time ASC` as tie-breaker, and claim rows via `FOR UPDATE SKIP LOCKED`.
+
 ### URL Duplicates vs Content Duplicates
 
 These are two distinct concepts that must not be conflated:
@@ -634,6 +652,81 @@ void workerLoop(DataSource db) {
 }
 ```
 
+### Preferential Frontier Strategy (Non-Advanced)
+
+This strategy follows the practical progression in `NOTEBOOKS/vaje-2-Preferential-crawling.ipynb` and intentionally avoids advanced ranking methods. Relevance is computed at discovery time (Stage A), stored in `page.relevance_score`, and reused at dequeue time (Stage B).
+
+#### RelevanceScorer Contract
+
+```java
+public interface RelevanceScorer {
+    double compute(String url, String anchorText, String contextText);
+}
+```
+
+Inputs:
+
+- `url`: canonical absolute URL
+- `anchorText`: `<a>` text itself (can be empty)
+- `contextText`: surrounding text window near the anchor (default 50 characters on each side in parent text)
+
+Output:
+
+- `double relevanceScore` in `[0.0, 1.0]`
+
+Failure fallback:
+
+- If context extraction fails or text is missing, return `0.0` and continue ingestion.
+
+#### Deterministic Scoring Pipeline
+
+For each extracted link, compute score in this order:
+
+1. URL token heuristic:
+   - If URL contains any target token, `heuristicScore = 0.70`
+   - Else `heuristicScore = 0.20`
+2. Context token heuristic:
+   - If `anchorText + contextText` contains any target token, set `heuristicScore = 0.85`
+3. Bag-of-words similarity:
+   - Build `targetText` by concatenating configured domain keywords and phrases
+   - Build `observedText` from normalized `anchorText + contextText`
+   - Compute cosine similarity `sim` with unigram BoW vectors
+4. Final mapping to database:
+   - `relevanceScore = max(heuristicScore, sim)`
+   - Store as `page.relevance_score`
+
+#### Bag-of-Words Configuration (Many Relevant Words)
+
+Keep the BoW stage simple and reproducible:
+
+- Maintain a versioned keyword set (core terms and synonyms) in configuration.
+- Normalize text to lowercase, strip punctuation, and remove stop words.
+- Use unigram BoW only (no embeddings, no transformer models).
+- Compute score once at discovery; no background rescoring.
+
+#### Dequeue SQL Contract
+
+```sql
+SELECT p.id, p.url, p.relevance_score
+FROM crawldb.page p
+WHERE p.page_type_code = 'FRONTIER'
+ORDER BY p.relevance_score DESC, p.accessed_time ASC
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+```
+
+#### Acceptance and Validation Checklist
+
+- Unit tests:
+  - Empty `anchorText`/`contextText` yields bounded score and no exceptions.
+  - Case and punctuation normalization produce the same score for equivalent text.
+  - URLs with target tokens score above unrelated URLs.
+- Integration tests:
+  - Seed multiple `FRONTIER` rows with distinct `relevance_score`; dequeue order matches descending score.
+  - Parallel workers never claim the same row (`FOR UPDATE SKIP LOCKED` behavior).
+- Dry-run:
+  - Compare crawl order under FIFO baseline vs preferential ordering and verify that high-relevance pages are fetched earlier.
+
 ---
 
 ## 11. Code Architecture
@@ -686,7 +779,7 @@ All code must be documented with concise Javadoc. Non-obvious logic must include
 
 ## Open Questions & TODOs
 
-- **Frontier strategy detail** — Write a detailed plan of the preferential frontier strategy as described in `vaje-2-Preferential-crawling.ipynb`. Include specifics on score computation, and how to map to the `relevance_score` column stored in the database. Also include how we can use bag of words, to test against many relevant words,
+- **Frontier strategy detail** — Completed in Section 10 (`Preferential Frontier Strategy (Non-Advanced)`), including score computation, BoW usage, and `relevance_score` database mapping.
 - **Python Jupyter environment** — Are there any benefits of using the Python Jupyter environment for writing the crawler, as written in Section 3 of `assignment.md`? Evaluate whether Java or Python is the better fit given the requirements for multiple parallel workers and PostgreSQL integration.
 - **Testing and debugging strategy** — Define how each component can be tested in isolation. Propose a staged integration approach: Fetcher → Parser → Canonicalizer → Frontier → Storage. Define what observable output each component should produce to localize failures.
 - **GitHub API usage** — Confirm with the professor whether the GitHub REST API is permitted. It unlocks structured access to metadata and file trees without `robots.txt` restrictions, which would significantly change the fetching and parsing architecture.
@@ -697,3 +790,6 @@ All code must be documented with concise Javadoc. Non-obvious logic must include
 - **Pre-implementation review** — Confirm all design decisions are resolved before moving into the specification writing phase. Identify any remaining gaps.
 - **Simple down the deduplication checks** - using Guavas BloomFilter can speed up the process, but for now lets simplify the process by looking into the database if we have seen the URL. No layer 1 is needed for now.
 
+- **Submision of private github directory structure should be obeyed** Add a section of creating the right directory structure and how the current files and structure should be changed to comply with the submission structure.
+
+- **Check the code architecture** against the assignment.md architecture, which specifies what our crawler components should be roughly consisting of. Debate if we could simplify the current architecture, or why not or if we can comply with the rules in te assignment.md.
