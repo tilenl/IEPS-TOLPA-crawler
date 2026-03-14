@@ -744,6 +744,39 @@ The system is divided into the following components, each defined as a Java inte
 | `Storage`             | All database operations — page CRUD, link insertion, image insertion, site upsert |
 
 
+### 11.1 Architecture Compliance with `assignment.md`
+
+The assignment defines a required high-level structure with five components: HTTP downloader and renderer, data extractor, duplicate detector, URL frontier, and datastore. The current interface-based architecture is a finer-grained decomposition of the same required flow.
+
+| Assignment component           | Current implementation mapping                                                                                  | Compliance note                                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| HTTP downloader and renderer  | `Fetcher` (download/render), orchestrated by `Worker` and scheduled by `Scheduler`                            | Compliant: download/render is explicit and supports both headless and plain HTTP paths.                         |
+| Data extractor                | `Parser`                                                                                                        | Compliant: extraction includes `href`, `onclick`, and `<img src>` handling required by the assignment.         |
+| Duplicate detector            | `ContentHasher` + URL uniqueness checks and duplicate page updates in `Storage`                                | Compliant: distinguishes URL-seen handling from content-duplicate handling, as required in `link`/`page` flow. |
+| URL frontier                  | `Frontier` (DB-backed dequeue), with ranking support from `RelevanceScorer` and coordination via `Scheduler`  | Compliant: frontier is explicit, preferential, multi-worker safe (`FOR UPDATE SKIP LOCKED`).                   |
+| Datastore                     | `Storage` over PostgreSQL schema (`site`, `page`, `link`, `image`, `page_data`)                               | Compliant: data and metadata persistence matches assignment schema constraints and allowed extensions.           |
+
+Architecture view used for reporting and implementation:
+
+- Layer 1 (assignment compliance view): present the required five components directly.
+- Layer 2 (engineering view): keep specialized interfaces to isolate concerns, simplify testing, and reduce coupling.
+
+Decision: no major architecture rewrite is needed. The current design already complies with the assignment at the macro level; simplification should be presentation-level (grouping interfaces under the five required blocks), not code-level collapse of responsibilities.
+
+```mermaid
+flowchart LR
+seedInput[SeedInput] --> scheduler[Scheduler]
+urlFrontierQueue[UrlFrontierQueue] --> scheduler
+scheduler --> httpDownloaderRenderer[HttpDownloaderRenderer]
+httpDownloaderRenderer --> worldWideWeb[WorldWideWeb]
+worldWideWeb --> httpDownloaderRenderer
+httpDownloaderRenderer --> dataExtractor[DataExtractor]
+dataExtractor --> duplicateDetector[DuplicateDetector]
+dataExtractor --> urlFrontierQueue
+httpDownloaderRenderer --> datastore[Datastore]
+duplicateDetector --> datastore
+```
+
 > Each component is defined as a Java interface and implemented in a concrete class. No component should depend directly on a concrete implementation of another — always depend on the interface. This allows individual components to be replaced and tested in isolation with mock implementations.
 
 All code must be documented with concise Javadoc. Non-obvious logic must include inline comments explaining *why*, not *what*.
@@ -778,8 +811,6 @@ All code must be documented with concise Javadoc. Non-obvious logic must include
 
 - **GitHub API usage** — Confirm with the professor whether the GitHub REST API is permitted. It unlocks structured access to metadata and file trees without `robots.txt` restrictions, which would significantly change the fetching and parsing architecture.
 
-- **Contextual URL scoring implementation** — Finalise the implementation where surrounding anchor text is passed alongside each extracted URL to the scoring function.
-
 - **Document splitting** — Split this plan into per-component specification files for the implementation phase. Proposed split: `01-domain.md`, `02-url-pipeline.md`, `03-fetcher.md`, `04-frontier.md`, `05-parser.md`, `06-storage.md`, `07-concurrency.md`. Each file should define the Java interface, describe the logic flow, specify libraries, and include a section on programming patterns.
 
 - **Domain section expansion** — Expand the crawl domain section with more specifics about what constitutes a relevant page, how the relevance score maps to queue ordering, and edge cases in link discovery.
@@ -789,5 +820,3 @@ All code must be documented with concise Javadoc. Non-obvious logic must include
 - **Pre-implementation review** — Confirm all design decisions are resolved before moving into the specification writing phase. Identify any remaining gaps.
 
 - **Submision of private github directory structure should be obeyed** Add a section of creating the right directory structure and how the current files and structure should be changed to comply with the submission structure.
-
-- **Check the code architecture** against the assignment.md architecture, which specifies what our crawler components should be roughly consisting of. Debate if we could simplify the current architecture, or why not or if we can comply with the rules in te assignment.md.

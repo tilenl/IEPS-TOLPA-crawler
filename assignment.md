@@ -9,7 +9,7 @@ The goal of this programming assignment is to build a standalone preferential cr
 - URL frontier: maintains a list of URLs to be parsed.
 - Datastore: stores data and metadata used by the crawler.
 
-Description of the image of the crawler architecture, we are to follow is in the `images/description-crawler-architecture.md` file.
+Description of the image of the crawler architecture, we are to follow is in the `additional-resources/images/description-crawler-architecture.md` file.
 
 ## 2. Instructions
 Implement a preferential web crawler that crawls specific websites within your chosen domain using a programming language of your choice.
