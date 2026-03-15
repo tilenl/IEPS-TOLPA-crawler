@@ -52,8 +52,30 @@ Standalone `SELECT ... FOR UPDATE SKIP LOCKED` without state mutation is NOT all
 
 - rows in `PROCESSING` with `claim_expires_at < now()` MUST be eligible for lease recovery;
 - recovery path resets row to `FRONTIER`, increments diagnostic counter, clears stale lease owner;
-- recovery MUST happen before normal claim in each poll cycle or via dedicated sweeper task;
+- recovery MUST run as part of `claimNextFrontier()` before candidate selection, with bounded batch size `crawler.frontier.leaseRecoveryBatchSize` (default `10`);
+- each claim cycle MUST recover at most `leaseRecoveryBatchSize` stale rows to avoid long recovery transactions;
 - row recovery MUST be idempotent.
+
+Reference bounded recovery SQL pattern:
+
+```sql
+WITH stale AS (
+    SELECT p.id
+    FROM crawldb.page p
+    WHERE p.page_type_code = 'PROCESSING'
+      AND p.claim_expires_at < now()
+    ORDER BY p.claim_expires_at ASC, p.id ASC
+    LIMIT :lease_recovery_batch_size
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE crawldb.page p
+SET page_type_code = 'FRONTIER',
+    claimed_by = NULL,
+    claimed_at = NULL,
+    claim_expires_at = NULL
+FROM stale s
+WHERE p.id = s.id;
+```
 
 ## Reschedule Semantics
 
@@ -69,16 +91,32 @@ Seed bootstrap behavior:
 
 ## Termination Semantics
 
-- scheduler can stop when no claimable frontier rows remain (`FRONTIER` with `next_attempt_at <= now()`) and no workers have active leases;
+- scheduler can stop when all of the following are true:
+  1. no claimable frontier rows remain (`FRONTIER` with `next_attempt_at <= now()`);
+  2. no active leases remain (`PROCESSING` with `claim_expires_at > now()`);
+  3. conditions (1) and (2) remain true continuously for `crawler.frontier.terminationGraceMs`.
 - rows delayed into the future MUST be treated as pending work, not completion.
+
+Reference termination checks:
+
+```sql
+SELECT COUNT(*) FROM crawldb.page
+WHERE page_type_code = 'FRONTIER'
+  AND next_attempt_at <= now();
+
+SELECT COUNT(*) FROM crawldb.page
+WHERE page_type_code = 'PROCESSING'
+  AND claim_expires_at > now();
+```
 
 ## Required Tests
 
 - descending priority claim order with deterministic tie-breaks;
 - parallel worker uniqueness for atomic claim (`UPDATE ... RETURNING` path);
 - no immediate reclaim of delayed rows (`next_attempt_at > now()`);
-- lease expiration recovery path returns stale `PROCESSING` rows to `FRONTIER`;
+- lease expiration recovery path returns stale `PROCESSING` rows to `FRONTIER` with per-cycle cap enforcement;
 - reschedule path correctness for delayed domains.
+- termination grace-window test preventing premature completion when frontier/leases oscillate.
 
 ## Implementation Location
 

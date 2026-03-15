@@ -23,8 +23,12 @@ The crawler implements a **Producer-Consumer architecture** using a database-bac
 1. scheduler starts worker pool;
 2. workers run claim/process loop;
 3. scheduler signals graceful stop;
-4. workers finish in-flight page and exit;
+4. workers finish in-flight leased page (persist terminal outcome or reschedule retry) and only then exit;
 5. executor shutdown with timeout.
+
+Graceful-stop invariant:
+- worker MUST NOT exit while holding a leased `PROCESSING` row;
+- if stop signal arrives mid-page, worker completes persistence path for that lease before loop termination.
 
 Operational throughput note:
 - for a single high-volume domain with 5-second floor, effective throughput is limited by politeness gate;
@@ -36,10 +40,12 @@ Operational throughput note:
 - shared caches (robots and buckets);
 - Selenium resource usage when many external-domain fetches exist.
 - high-rate duplicate discoveries converging on same `page.url` unique constraint.
+- JDBC connection-pool starvation when `poolSize` is below active worker concurrency.
 
 ## Capacity Budgets
 
 - maximum concurrent headless fetches is bounded by `crawler.fetch.maxHeadlessSessions` (`TS-13`);
+- DB connection pool size is controlled by `crawler.db.poolSize` (`TS-13`) and SHOULD satisfy `poolSize >= nCrawlers + 1`;
 - headless capacity exhaustion MUST not block worker indefinitely or stall frontier progression;
 - queue lease duration (`crawler.frontier.leaseSeconds`) must exceed expected fetch/parse/persist critical path for healthy workers;
 - expired leases are recoverable and returned to `FRONTIER` before starvation occurs.

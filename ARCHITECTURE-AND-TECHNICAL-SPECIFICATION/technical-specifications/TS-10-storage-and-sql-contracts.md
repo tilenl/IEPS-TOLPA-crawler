@@ -12,9 +12,11 @@ Define authoritative database operations and method-to-SQL mappings.
 - `markPageTerminalError(...)`
 - `insertFrontierIfAbsent(...)`
 - `insertLink(...)`
+- `ingestDiscoveredUrls(...)`
 - `updatePageHtml(...)`
 - `markPageBinary(...)`
 - `markPageDuplicate(...)`
+- `persistFetchOutcomeWithLinks(...)`
 - `upsertSite(...)`
 - `insertImageRef(...)`
 - `insertPageData(...)`
@@ -38,6 +40,9 @@ Define authoritative database operations and method-to-SQL mappings.
   - returns insertion status and `page_id` so caller can branch new-vs-existing URL behavior deterministically
 - **Insert link edge**
   - `INSERT INTO crawldb.link (from_page, to_page) VALUES (?, ?) ON CONFLICT (from_page, to_page) DO NOTHING`
+- **Batch ingest discovered URLs**
+  - storage API MUST accept a batch (`ingestDiscoveredUrls(Collection<DiscoveredUrl>)`) and process each discovered URL through canonicalization policy, URL upsert, and idempotent link insert;
+  - implementation MAY apply per-item savepoints for partial tolerance, but contract outcome MUST clearly report accepted/rejected URLs.
 - **Mark HTML outcome**
   - `UPDATE crawldb.page SET page_type_code='HTML', html_content=?, http_status_code=?, accessed_time=? WHERE id=?`
 - **Mark duplicate**
@@ -46,11 +51,15 @@ Define authoritative database operations and method-to-SQL mappings.
   - `INSERT INTO crawldb.content_owner(content_hash, owner_page_id, created_at) VALUES (?, ?, now()) ON CONFLICT (content_hash) DO NOTHING`
 - **Resolve content owner**
   - `SELECT owner_page_id FROM crawldb.content_owner WHERE content_hash=?`
+- **Persist fetch outcome with links (atomic)**
+  - `persistFetchOutcomeWithLinks(...)` MUST execute page outcome transition and discovered-link ingestion for the current source page in one transaction;
+  - if any non-tolerable DB failure occurs, both outcome and associated discovered-link effects MUST roll back together.
 
 ## Transaction Rules
 
 - claim transaction isolated and short with atomic state mutation;
 - page outcome update and related insertions MUST be atomic;
+- page outcome + discovered-link ingestion for the current fetched page MUST be atomic via `persistFetchOutcomeWithLinks(...)`;
 - ingestion insertions MUST be idempotent for retry safety;
 - retry transition updates (`attempt_count`, `next_attempt_at`, diagnostics) MUST be atomic with queue state transition;
 - content dedup owner registration and duplicate/owner state update MUST happen in one transaction.
@@ -73,6 +82,8 @@ Define authoritative database operations and method-to-SQL mappings.
 - reschedule and retry-attempt persistence tests;
 - expired lease recovery tests;
 - concurrent same-hash dedup ownership tests.
+- atomicity test ensuring discovered links and page terminal state commit/rollback together.
+- batch ingestion contract tests for mixed valid/invalid discovered URLs.
 
 ## Implementation Location
 

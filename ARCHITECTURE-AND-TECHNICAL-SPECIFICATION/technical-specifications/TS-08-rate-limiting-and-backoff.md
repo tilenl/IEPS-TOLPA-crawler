@@ -15,6 +15,8 @@ Prevent excessive requests to same domain/server and handle overload responses.
 
 - `tryConsumeAndReturnRemaining(1)` MUST be used for exact wait time;
 - worker MUST reschedule when token unavailable (never busy-wait block).
+- robots fetch (`/robots.txt`) MUST use the same domain bucket and consume a token exactly like content-page fetches.
+- limiter bypass for robots fetch is forbidden.
 
 Delay computation example:
 
@@ -47,6 +49,7 @@ long delayMs = Math.min(5000L * (1L << failures), maxBackoffMs);
 - robots-delay override;
 - overload backoff growth and reset behavior;
 - non-blocking worker reschedule behavior.
+- robots fetch token-consumption test using shared domain limiter bucket.
 
 ## Implementation Location
 

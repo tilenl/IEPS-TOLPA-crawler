@@ -15,9 +15,10 @@ Specify single ownership for Stage A and Stage B orchestration.
 ## Canonical Worker Loop
 
 ```java
-while (!shutdownRequested) {
+while (true) {
     Optional<FrontierRow> row = frontier.claimNextFrontier();
     if (row.isEmpty()) {
+        if (shutdownRequested) break;
         if (terminationConditionMet()) break;
         sleep(shortPollMs);
         continue;
@@ -33,11 +34,15 @@ while (!shutdownRequested) {
 
         FetchResult fetched = fetcher.fetch(row.get().url());
         ParseResult parsed = parser.parse(row.get().url(), fetched.bodyOrEmpty());
-        storage.persistFetchOutcome(FetchContext.from(row.get()), fetched, parsed);
-
-        for (DiscoveredUrl discovered : parsed.discoveredUrls()) {
-            storage.ingestDiscoveredUrl(discovered.withSource(row.get().pageId()));
-        }
+        List<DiscoveredUrl> discovered = parsed.discoveredUrls().stream()
+            .map(url -> url.withSource(row.get().pageId()))
+            .toList();
+        storage.persistFetchOutcomeWithLinks(
+            FetchContext.from(row.get()),
+            fetched,
+            parsed,
+            discovered
+        );
     } catch (CrawlerException e) {
         if (e.isRetryable()) {
             frontier.reschedule(
@@ -59,6 +64,9 @@ while (!shutdownRequested) {
 Important execution rule:
 - `claimNextFrontier()` MUST execute an atomic claim mutation (`FRONTIER -> PROCESSING`) and return leased row metadata.
 - worker MUST treat missing or expired lease as non-owning state and skip processing.
+- graceful shutdown MUST be drain-safe:
+  - if shutdown is requested while no row is leased, worker exits loop;
+  - if shutdown is requested while a row is leased, worker MUST finish outcome persistence or call `frontier.reschedule(...)` before exiting.
 
 ## Stage A Contract (Ingestion)
 
@@ -77,7 +85,7 @@ Concrete URL-exists branch:
 1. Claim highest-priority frontier row (`SKIP LOCKED`).
 2. Apply rate-limit gate.
 3. Fetch and classify (`HTML`, `BINARY`, `DUPLICATE`).
-4. Persist outcome and emit discovered URLs to Stage A.
+4. Persist outcome and discovered-link ingestion in one transaction.
 
 Stage B claim semantics are updated:
 1. Claim highest-priority **eligible** frontier row where `next_attempt_at <= now()` using atomic `UPDATE ... RETURNING`.
@@ -93,10 +101,10 @@ Concrete outcome mapping:
 ## Transaction Boundaries
 
 - claim transaction: short-lived; lock only long enough for atomic claim-state mutation;
-- persistence transaction: page terminal/retry outcome + direct page artifacts atomically;
-- ingestion transaction: per discovered URL or small batch, idempotent;
+- persistence transaction: page terminal/retry outcome + link ingestion batch atomically;
+- discovered-link ingestion for current source page MUST run as one batch operation (`persistFetchOutcomeWithLinks(...)`), idempotent under retries;
 - retry metadata (`attempt_count`, `next_attempt_at`, error diagnostics) MUST update in same transaction as state transition.
-- accepted limitation: if process crash occurs after `persistFetchOutcome(...)` and before ingestion loop completion, some discovered links may be missing; link-graph completeness is best-effort under crash conditions.
+- crash window between terminal page persistence and discovered-link ingestion is NOT allowed; both effects must commit or roll back together.
 
 ## Failure Handling Contract
 
@@ -128,6 +136,16 @@ Recovery guarantees:
   2. reject if per-domain cap reached;
   3. if frontier high-watermark reached, defer low-score URLs by setting future `next_attempt_at`;
   4. otherwise ingest normally.
+
+## Termination Evaluation Contract
+
+`terminationConditionMet()` MUST evaluate all of the following conditions:
+
+1. no claimable rows remain in frontier:
+   - `SELECT COUNT(*) FROM crawldb.page WHERE page_type_code='FRONTIER' AND next_attempt_at <= now()`
+2. no active leases remain:
+   - `SELECT COUNT(*) FROM crawldb.page WHERE page_type_code='PROCESSING' AND claim_expires_at > now()`
+3. conditions (1) and (2) remain true continuously for `crawler.frontier.terminationGraceMs` before scheduler declares completion.
 
 ## Implementation Location
 

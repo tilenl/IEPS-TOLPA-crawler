@@ -18,6 +18,11 @@ Manage robots parsing, caching, and persistence in `site` metadata.
 3. upsert `site` with `robots_content` and `sitemap_content`;
 4. cache parsed rules for runtime checks.
 
+Robots limiter contract (normative):
+- robots fetch MUST consume one token from the same per-domain bucket used for content fetches;
+- if no token is currently available, robots fetch MUST be delayed/rescheduled (never bypass limiter);
+- robots fetch and normal page fetches therefore share a single politeness budget per domain.
+
 Fetcher behavior for robots responses:
 - 2xx: parse and enforce returned rules;
 - 4xx on `/robots.txt`: treat as allow-all for that domain;
@@ -58,6 +63,7 @@ Representative GitHub path decisions (examples):
 - parser behavior on 4xx and 5xx robots fetch responses.
 - bounded temporary-deny behavior and max-deny cap;
 - recovery from temporary deny after successful robots refresh.
+- robots fetch rate-limit test proving token consumption through the same domain bucket.
 
 ## Implementation Location
 
