@@ -9,12 +9,13 @@ Specify single ownership for Stage A and Stage B orchestration.
 - `Worker` owns Stage B execution and dispatches Stage A ingestion for extracted links.
 - `Storage` owns DB transaction details and dedup authority.
 - `Frontier` owns claim/reschedule semantics.
+- `RobotsTxtCache` owns allow/disallow decisions before frontier insertion.
 
 ## Canonical Worker Loop
 
 ```java
 while (!shutdownRequested) {
-    Optional<FrontierRow> row = storage.claimFrontierRow();
+    Optional<FrontierRow> row = frontier.claimNextFrontier();
     if (row.isEmpty()) {
         if (terminationConditionMet()) break;
         sleep(shortPollMs);
@@ -46,12 +47,21 @@ while (!shutdownRequested) {
 4. Insert-if-absent into `page` with `FRONTIER` + score.
 5. Insert `link` edge in all cases where target exists or was created.
 
+Concrete URL-exists branch:
+- if `insertFrontierIfAbsent` reports conflict, worker must still resolve target page id and call `insertLink(from=current, to=existing)`;
+- this preserves assignment-required link graph completeness.
+
 ## Stage B Contract (Fetch Path)
 
 1. Claim highest-priority frontier row (`SKIP LOCKED`).
 2. Apply rate-limit gate.
 3. Fetch and classify (`HTML`, `BINARY`, `DUPLICATE`).
 4. Persist outcome and emit discovered URLs to Stage A.
+
+Concrete outcome mapping:
+- HTML response -> `page_type_code='HTML'`, `html_content` persisted;
+- binary target (`.doc/.docx/.ppt/.pptx`) -> `page_type_code='BINARY'`, `page_data` row inserted, `html_content=NULL`;
+- content hash collision -> `page_type_code='DUPLICATE'`, `html_content=NULL`, duplicate linkage persisted.
 
 ## Transaction Boundaries
 
@@ -62,6 +72,16 @@ while (!shutdownRequested) {
 ## Failure Handling Hook
 
 Errors are classified by `TS-12`. Worker must call policy-aware recovery path and never leave claimed rows in undefined state.
+
+Minimal recovery path example:
+```java
+try {
+    // claim + fetch + parse + persist
+} catch (CrawlerException e) {
+    storage.markPageAsError(row.get().pageId(), e.category().name(), e.getMessage());
+    frontier.reschedule(row.get().pageId(), e.nextAttemptAt(), e.category().name());
+}
+```
 
 ## Implementation Location
 

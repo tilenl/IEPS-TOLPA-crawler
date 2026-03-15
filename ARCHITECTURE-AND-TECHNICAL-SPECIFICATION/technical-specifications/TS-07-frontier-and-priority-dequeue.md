@@ -20,12 +20,17 @@ FOR UPDATE SKIP LOCKED;
 - frontier is DB-backed (`page` table), not in-memory queue;
 - ordering MUST be deterministic by score then age;
 - multiple workers MUST never claim same row concurrently.
+- index `idx_page_frontier_priority` is required to keep claim performance stable.
 
 ## Reschedule Semantics
 
 - rate-limited row is released and retried later;
 - retry metadata SHOULD be persisted for diagnostics;
 - rows must not remain locked while sleeping.
+
+Seed bootstrap behavior:
+- when frontier is empty at startup, configured seed URLs are inserted as `page_type_code='FRONTIER'`;
+- seeds include exact URLs listed in architecture domain scope file.
 
 ## Termination Semantics
 

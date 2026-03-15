@@ -30,6 +30,11 @@ At crawler stop, emit summary:
 - total HTML, BINARY, DUPLICATE pages;
 - total errors by category;
 - top domains by fetch count.
+- total rate-limit delays and cumulative delayed time.
+
+Summary should also include seed bootstrap metadata:
+- number of seeds configured;
+- number of seeds inserted vs already existing.
 
 ## Required Tests
 

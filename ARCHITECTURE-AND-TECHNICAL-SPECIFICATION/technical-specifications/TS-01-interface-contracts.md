@@ -4,6 +4,11 @@
 
 Define stable Java contracts for all crawler components before coding.
 
+Drift resolution for this specification set:
+- current architecture docs are source of truth when project-plan wording differs;
+- URL deduplication is DB-authoritative (no Bloom filter contract required);
+- politeness contract is per-domain for this architecture profile.
+
 ## Global Contract Rules
 
 - methods MUST be deterministic for same input and dependencies;
@@ -59,12 +64,20 @@ public interface ContentHasher {
 
 public interface Storage {
     Optional<Long> ensureSite(String domain);
-    Optional<FrontierRow> claimFrontierRow();
     PersistOutcome persistFetchOutcome(FetchContext context, FetchResult result, ParseResult parsed);
     LinkInsertResult insertLink(long fromPageId, long toPageId);
     IngestResult ingestDiscoveredUrl(DiscoveredUrl discoveredUrl);
+    InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore);
+    Optional<Long> findPageByContentHash(String sha256);
+    void storeContentHash(long pageId, String sha256);
+    void markPageAsError(long pageId, String category, String message);
 }
 ```
+
+Ownership clarification:
+- `Frontier` owns claim/release/reschedule behavior.
+- `Storage` owns persistence contracts and SQL atomicity.
+- worker orchestration in `TS-02` must call `frontier.claimNextFrontier()` (not a storage claim API).
 
 ## Data Contracts
 
@@ -73,12 +86,23 @@ public interface Storage {
 - `ParseResult`: extracted links, images, extracted metadata.
 - `RobotDecision`: `ALLOWED` or `DISALLOWED`, optional reason.
 - `RateLimitDecision`: `ALLOWED` or `DELAYED(waitNs)`.
+- `DiscoveredUrl`: `rawUrl`, `baseUrl`, `fromPageId`, `anchorText`, `contextText`.
+- `FetchContext`: `pageId`, `canonicalUrl`, `siteId`, `attempt`, `claimedAt`.
+
+`RelevanceScorer` contract detail:
+- inputs are canonical URL + normalized text context (`anchorText`, `contextText`);
+- output MUST be bounded to `[0.0, 1.0]`;
+- on missing text inputs, scorer must still return deterministic value (often URL-only heuristic);
+- on scoring failure, fallback score is `0.0` (no exception leak to worker loop).
 
 ## Invariants
 
 - canonical URL is the only URL form accepted by `Storage`.
 - `Storage` is authoritative for URL uniqueness.
 - link insertion is required even when discovered target already exists.
+- `insertFrontierIfAbsent` semantics:
+  - inserted -> new `FRONTIER` row created;
+  - conflict -> no new row, existing page id is returned/lookup-enabled for link insertion.
 
 ## Required Unit Tests
 
@@ -86,11 +110,14 @@ public interface Storage {
 - score range tests (`0.0` to `1.0`);
 - idempotence tests for ingestion contracts;
 - error mapping tests for interface exceptions.
+- ownership contract tests:
+  - frontier claim operations are exercised only via `Frontier`;
+  - SQL conflict/dedup operations are exercised only via `Storage`.
 
 ## Implementation Location
 
 - primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/contracts/`, `.../cli/`, `.../app/`
 - key file(s):
-  - `contracts/Scheduler.java`, `contracts/Frontier.java`, `contracts/Worker.java`, `contracts/Fetcher.java`, `contracts/Parser.java`, `contracts/Storage.java`
+  - `contracts/Scheduler.java`, `contracts/Frontier.java`, `contracts/Worker.java`, `contracts/Fetcher.java`, `contracts/Parser.java`, `contracts/Canonicalizer.java`, `contracts/RelevanceScorer.java`, `contracts/Storage.java`
   - bootstrap boundary contracts documented in `cli/Main.java` and `app/PreferentialCrawler.java`
 - test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/contracts/` and `.../unit/app/`

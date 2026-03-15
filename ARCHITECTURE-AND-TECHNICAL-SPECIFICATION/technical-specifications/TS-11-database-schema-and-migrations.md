@@ -32,6 +32,15 @@
 - extension columns and indexes present;
 - smoke insert/read/delete succeeds.
 
+Practical verification commands (example):
+- `SELECT * FROM crawldb.page_type;`
+- `SELECT column_name FROM information_schema.columns WHERE table_schema='crawldb' AND table_name='page';`
+- `SELECT indexname FROM pg_indexes WHERE schemaname='crawldb' AND indexname='idx_page_frontier_priority';`
+
+Bootstrap seed verification:
+- on empty frontier bootstrap, configured seeds must exist as `page_type_code='FRONTIER'`;
+- repeated bootstrap runs must be idempotent (no duplicate `url` rows).
+
 ## Implementation Location
 
 - primary folder(s): `pa1/db/`, `pa1/crawler/src/main/java/si/uni_lj/fri/wier/storage/postgres/`

@@ -30,6 +30,10 @@
 - `FOR UPDATE SKIP LOCKED` no double-claim under parallel workers;
 - robots disallow blocks before frontier insertion;
 - 5-second delay floor and overload backoff handling.
+- preferential ordering check:
+  - populate frontier with mixed `relevance_score` values and verify descending dequeue order.
+- scorer contract check:
+  - output always in `[0.0, 1.0]` and deterministic for same normalized inputs.
 
 ## Quality Gates (Pre-Coding/Pre-Merge)
 

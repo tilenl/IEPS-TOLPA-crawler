@@ -5,6 +5,10 @@
 - **Stage A (ingestion):** extracted URL -> canonicalize -> robots check -> dedup check -> score -> frontier insert + link insert.
 - **Stage B (fetch):** claim frontier row -> rate-limit gate -> fetch -> parse -> persist -> feed extracted links to Stage A.
 
+Robots metadata flow:
+- on first domain encounter in Stage A, `/robots.txt` is fetched through the same domain limiter and persisted to `site` metadata;
+- robots disallow decisions happen before any frontier insert.
+
 ## End-to-End Sequence
 
 ```mermaid
@@ -38,6 +42,7 @@ end
 
 - URL duplicate: no new `page` row, but `link` row still inserted.
 - Content duplicate: page row updated to `DUPLICATE`, `html_content` cleared.
+- Fetch overload (`429`/`503`): row is rescheduled using domain backoff policy.
 
 ## Transaction Boundaries
 

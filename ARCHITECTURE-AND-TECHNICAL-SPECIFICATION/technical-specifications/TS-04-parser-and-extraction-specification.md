@@ -32,6 +32,18 @@ Elements onclickNodes = doc.select("[onclick]");
 - normalize anchor/context text for scoring input;
 - skip malformed URLs safely (log and continue).
 
+Concrete extraction example:
+
+```java
+for (Element link : doc.select("a[href]")) {
+    String absolute = link.attr("abs:href");
+    String anchorText = link.text();
+    storage.ingestDiscoveredUrl(
+        DiscoveredUrl.of(absolute, canonicalUrl, currentPageId, anchorText, surroundingText(link))
+    );
+}
+```
+
 ## Onclick Extraction Pattern
 
 - regex MUST detect single or double quoted URL assignment patterns;
@@ -54,11 +66,22 @@ for (Element el : doc.select("[onclick]")) {
 }
 ```
 
+Accepted assignment variants include both:
+- `location.href='...'`
+- `document.location="..."`
+
 ## Image Extraction Rules
 
 - store image URL reference only; no binary download;
 - map filename/content type when inferable;
 - persist with `accessed_time`.
+
+Example:
+- image URL: `https://raw.githubusercontent.com/org/repo/main/docs/img.png`
+- persisted metadata:
+  - filename: `img.png`
+  - content_type: inferred from extension (`image/png` when inferable)
+  - data payload: not stored
 
 ## Required Tests
 

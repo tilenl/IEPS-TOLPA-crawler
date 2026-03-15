@@ -20,11 +20,16 @@
 4. workers finish in-flight page and exit;
 5. executor shutdown with timeout.
 
+Operational throughput note:
+- for a single high-volume domain with 5-second floor, effective throughput is limited by politeness gate;
+- additional workers improve overlap across different domains and CPU-bound parsing/persistence segments.
+
 ## Contention Points
 
 - DB contention on frontier claim/update;
 - shared caches (robots and buckets);
 - Selenium resource usage when many external-domain fetches exist.
+- high-rate duplicate discoveries converging on same `page.url` unique constraint.
 
 ## Required Tests
 

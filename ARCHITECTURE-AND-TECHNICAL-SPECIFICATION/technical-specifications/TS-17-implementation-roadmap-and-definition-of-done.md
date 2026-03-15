@@ -4,12 +4,13 @@
 
 1. `TS-11` schema extensions and migration scripts.
 2. `TS-10` storage contracts with integration tests.
-3. `TS-05` canonicalizer + `TS-06` robots policy.
-4. `TS-07` frontier claim/dequeue + scheduler skeleton.
-5. `TS-03` fetcher and `TS-04` parser.
-6. `TS-09` dedup logic + `TS-08` limiter/backoff.
-7. `TS-02` worker orchestration integration.
-8. `TS-15` observability finalization and run summary.
+3. `TS-01` contract stabilization (including ownership boundaries).
+4. `TS-05` canonicalizer + `TS-06` robots policy.
+5. `TS-07` frontier claim/dequeue + scheduler skeleton.
+6. `TS-03` fetcher and `TS-04` parser.
+7. `TS-09` dedup logic + `TS-08` limiter/backoff.
+8. `TS-02` worker orchestration integration.
+9. `TS-15` observability finalization and run summary.
 
 ## Milestones
 

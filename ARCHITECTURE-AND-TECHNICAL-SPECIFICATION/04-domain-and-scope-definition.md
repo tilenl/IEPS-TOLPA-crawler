@@ -7,12 +7,24 @@
 
 ## Seeds
 
+Starting frontier URLs are written in full and inserted as initial `FRONTIER` candidates when bootstrap runs on an empty frontier.
+
 - topic pages:
-  - `/topics/image-segmentation`
-  - `/topics/semantic-segmentation`
-  - `/topics/medical-image-segmentation`
-- canonical repositories (SAM, MMSeg, U-Net, DeepLab, etc.)
-- optional low-priority generic model hubs for cross-link expansion
+  - `https://github.com/topics/image-segmentation`
+  - `https://github.com/topics/semantic-segmentation`
+  - `https://github.com/topics/medical-image-segmentation`
+- canonical repositories:
+  - `https://github.com/facebookresearch/segment-anything`
+  - `https://github.com/open-mmlab/mmsegmentation`
+  - `https://github.com/jfzhang95/pytorch-deeplab-xception`
+  - `https://github.com/milesial/Pytorch-UNet`
+- low-priority generic model hubs (for cross-link expansion):
+  - `https://github.com/TexasInstruments/edgeai-modelzoo`
+  - `https://github.com/onnx/models`
+
+Notes:
+- `edgeai-modelzoo` and `onnx/models` are intentionally lower-priority seeds because they are broad model hubs and will generate more non-segmentation candidates.
+- all discovered URLs still pass canonicalization, robots policy, and relevance scoring before final frontier insertion.
 
 ## Scope Rules
 
@@ -26,6 +38,14 @@
 - primary segmentation keywords (high priority);
 - secondary adjacent CV terms (lower priority fallback);
 - score computed at ingestion, before frontier insert.
+
+Reference keyword examples for scoring dictionaries:
+- primary: `image segmentation`, `semantic segmentation`, `instance segmentation`, `mask`, `u-net`, `deeplab`, `segment anything`.
+- secondary fallback: `object detection`, `image recognition`, `feature extraction`.
+
+Scoring intent:
+- URLs with primary-term signals should dominate frontier priority;
+- secondary-term-only URLs stay crawlable but are deprioritized.
 
 ## Out Of Scope
 

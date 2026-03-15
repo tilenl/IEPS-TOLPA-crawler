@@ -17,22 +17,25 @@ Define uniform error classification, retry behavior, and terminal failure handli
 
 ## Recovery Policy Matrix
 
-| Category | Retry | Max Attempts | Delay Policy | Terminal Action |
-| --- | --- | --- | --- | --- |
-| INVALID_URL | No | 0 | None | Skip URL, log reason |
-| ROBOTS_DISALLOWED | No | 0 | None | Drop URL before frontier |
-| FETCH_TIMEOUT | Yes | 3 | Exponential | Mark failed after limit |
-| FETCH_HTTP_OVERLOAD | Yes | 5 | Domain backoff | Keep frontier entry |
-| FETCH_HTTP_CLIENT | No | 0 | None | Persist status and stop retry |
-| PARSER_FAILURE | Yes | 1 | Short delay | Mark parse error state |
-| DB_TRANSIENT | Yes | 5 | Exponential + jitter | Requeue operation |
-| DB_CONSTRAINT | No | 0 | None | Log critical and quarantine |
+
+| Category            | Retry | Max Attempts | Delay Policy         | Terminal Action               |
+| ------------------- | ----- | ------------ | -------------------- | ----------------------------- |
+| INVALID_URL         | No    | 0            | None                 | Skip URL, log reason          |
+| ROBOTS_DISALLOWED   | No    | 0            | None                 | Drop URL before frontier      |
+| FETCH_TIMEOUT       | Yes   | 3            | Exponential          | Mark failed after limit       |
+| FETCH_HTTP_OVERLOAD | Yes   | 5            | Domain backoff       | Keep frontier entry           |
+| FETCH_HTTP_CLIENT   | No    | 0            | None                 | Persist status and stop retry |
+| PARSER_FAILURE      | Yes   | 1            | Short delay          | Mark parse error state        |
+| DB_TRANSIENT        | Yes   | 5            | Exponential + jitter | Requeue operation             |
+| DB_CONSTRAINT       | No    | 0            | None                 | Log critical and quarantine   |
+
 
 ## State Handling
 
 - failed terminal pages SHOULD be marked with diagnostic metadata;
 - retries MUST not duplicate link/page inserts;
 - worker loop MUST continue after handled errors.
+- terminal-state helper contract: `markPageAsError(pageId, category, message)` with last-attempt timestamp.
 
 ## Observability Requirements
 
@@ -48,9 +51,12 @@ Define uniform error classification, retry behavior, and terminal failure handli
 - retry limit enforcement;
 - non-retryable skip behavior;
 - idempotence under repeated transient failures.
+- terminal mark-up test:
+  - when retry budget exhausted, page is marked with diagnostic metadata exactly once.
 
 ## Implementation Location
 
 - primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/error/`, `.../app/`, `.../downloader/worker/`
 - key file(s): `error/CrawlerErrorCategory.java`, `error/RecoveryPolicy.java`, `downloader/worker/WorkerLoop.java`
 - test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/error/` and `.../integration/pipeline/`
+

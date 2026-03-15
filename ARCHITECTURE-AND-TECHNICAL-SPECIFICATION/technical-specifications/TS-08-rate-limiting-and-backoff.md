@@ -9,17 +9,32 @@ Prevent excessive requests to same domain/server and handle overload responses.
 - base floor: 1 request per 5 seconds per domain;
 - if robots `Crawl-delay` is larger, use the larger value;
 - policy is enforced via Bucket4j buckets keyed by domain.
+- architecture choice: politeness is per-domain in this project profile.
 
 ## Bucket Contract
 
 - `tryConsumeAndReturnRemaining(1)` MUST be used for exact wait time;
 - worker MUST reschedule when token unavailable (never busy-wait block).
 
+Delay computation example:
+
+```java
+long buildCrawlDelayMs(long robotsDelayMs) {
+    return Math.max(robotsDelayMs > 0 ? robotsDelayMs : 0, 5000L);
+}
+```
+
 ## Backoff State Machine
 
 - on HTTP `429` or `503`: exponential backoff by domain;
 - backoff resets on successful or non-overload response;
 - cap maximum backoff with configurable upper bound.
+
+Reference formula:
+
+```java
+long delayMs = Math.min(5000L * (1L << failures), maxBackoffMs);
+```
 
 ## Cache
 

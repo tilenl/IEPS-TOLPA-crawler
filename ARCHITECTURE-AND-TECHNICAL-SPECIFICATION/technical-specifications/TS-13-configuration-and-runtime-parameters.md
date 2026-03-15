@@ -28,11 +28,18 @@ Define all runtime settings, defaults, validation, and precedence rules.
 | `crawler.db.user` | none | required | DB user |
 | `crawler.db.password` | none | required | DB password |
 
+CLI entry example:
+- `ieps-tolpa --n-crawlers 5`
+
+Worker default heuristic:
+- `nCrawlers = min(availableCpuCores * 2, 8)` when explicit override is absent.
+
 ## Startup Validation
 
 - startup MUST fail fast on missing required DB credentials;
 - startup MUST fail on invalid numeric ranges;
 - startup SHOULD print effective configuration (without secrets).
+- startup SHOULD validate `crawler.rateLimit.minDelayMs >= 5000`.
 
 ## Profiles
 

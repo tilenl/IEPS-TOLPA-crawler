@@ -18,6 +18,17 @@ Build a preferential web crawler for segmentation-related repositories, centered
 - `Parser`: extracts text, links (`href` + `onclick`), and image refs.
 - `Storage`: authoritative persistence and SQL contracts.
 
+## Drift Resolution Profile
+
+- URL deduplication authority: PostgreSQL `page.url` uniqueness and `INSERT ... ON CONFLICT DO NOTHING`.
+- No probabilistic dedup pre-check layer is part of the current architecture profile.
+- Politeness is enforced per-domain with 5-second floor and robots-aware delay override.
+
+## Preferential Scoring Placement
+
+- scoring is performed during Stage A ingestion, before frontier insertion;
+- frontier ordering is score-first (`relevance_score DESC`) and then age-based tie-break.
+
 ## Dependency Rule
 
 Components depend on interfaces, not concrete classes. Cross-component calls MUST flow through contracts in `technical-specifications/TS-01-interface-contracts.md`.
