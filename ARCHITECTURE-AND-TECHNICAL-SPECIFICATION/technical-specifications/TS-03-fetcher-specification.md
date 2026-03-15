@@ -15,6 +15,7 @@ Download/render page content and return normalized fetch response metadata.
 - `github.com`: default to Java `HttpClient` fetch + Jsoup parse compatibility.
 - external JS-heavy domains: Selenium headless Chrome path.
 - fallback MAY switch to Selenium when plain HTTP fetch indicates incomplete shell.
+- headless mode MUST be capacity-limited by runtime configuration (`TS-13`).
 
 Rationale:
 - GitHub repository/topic pages are largely server-rendered and cheaper via `HttpClient`;
@@ -52,6 +53,16 @@ String html = driver.getPageSource();
 
 This snippet is normative for behavior, not exact class placement.
 
+## Headless Capacity Governance (Normative)
+
+- concurrent headless sessions MUST be bounded by `crawler.fetch.maxHeadlessSessions`;
+- worker must acquire a headless slot with timeout `crawler.fetch.headlessAcquireTimeoutMs`;
+- if slot acquisition times out:
+  - fetcher MUST execute deterministic fallback policy (`FETCH_CAPACITY_EXHAUSTED` classification or plain-HTTP fallback when allowed by policy);
+  - worker MUST NOT block indefinitely while holding queue lease;
+- repeated slot-acquire failures above `crawler.fetch.headlessCircuitOpenThreshold` SHOULD open short circuit and skip headless attempts for cooldown period;
+- browser lifecycle MUST close/recycle driver instances on both success and error paths.
+
 ## Content Classification
 
 - HTML-like content -> parse candidate;
@@ -68,6 +79,9 @@ Examples:
 - timeout and HTTP error mapping tests;
 - binary-vs-html classification tests.
 - user-agent propagation test (`fri-wier-IEPS-TOLPA`) in both fetch modes.
+- headless slot cap test under concurrent workers;
+- saturation fallback test when all headless slots are exhausted;
+- driver cleanup test on exceptional paths.
 
 ## Implementation Location
 

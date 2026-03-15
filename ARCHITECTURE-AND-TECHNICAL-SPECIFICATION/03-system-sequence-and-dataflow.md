@@ -3,7 +3,7 @@
 ## Stage Model
 
 - **Stage A (ingestion):** extracted URL -> canonicalize -> robots check -> dedup check -> score -> frontier insert + link insert.
-- **Stage B (fetch):** claim frontier row -> rate-limit gate -> fetch -> parse -> persist -> feed extracted links to Stage A.
+- **Stage B (fetch):** atomic claim of eligible frontier row -> rate-limit gate -> fetch -> parse -> persist -> feed extracted links to Stage A.
 
 Robots metadata flow:
 - on first domain encounter in Stage A, `/robots.txt` is fetched through the same domain limiter and persisted to `site` metadata;
@@ -21,7 +21,7 @@ participant Parser
 participant Storage
 
 Worker->>Frontier: claimNextFrontier()
-Frontier-->>Worker: frontierRow(url, score)
+Frontier-->>Worker: leasedRow(url, score, lease)
 Worker->>RateLimiter: reserve(domain)
 RateLimiter-->>Worker: allowedOrDelay
 alt allowed
@@ -38,21 +38,23 @@ end
 
 ## Page Lifecycle
 
-`FRONTIER` -> `HTML` or `BINARY` or `DUPLICATE`.
+`FRONTIER` -> `PROCESSING` -> `HTML` or `BINARY` or `DUPLICATE` or `ERROR`.
 
 - URL duplicate: no new `page` row, but `link` row still inserted.
 - Content duplicate: page row updated to `DUPLICATE`, `html_content` cleared.
 - Fetch overload (`429`/`503`): row is rescheduled using domain backoff policy.
+- Retryable failures: page transitions `PROCESSING -> FRONTIER` with future `next_attempt_at`.
+- Stale lease recovery: expired `PROCESSING` rows are reclaimed back to `FRONTIER`.
 
 ## Transaction Boundaries
 
-- claim is done in transaction with row lock;
+- claim is done in transaction with row lock and state mutation (`FRONTIER -> PROCESSING`);
 - processing after claim is outside lock when possible;
-- final state update is atomic per page outcome;
+- final state update is atomic per page outcome or retry transition;
 - ingestion of extracted links is idempotent and safe under concurrent workers.
 
 ## Termination Contract
 
 Crawl is done when:
-- no `FRONTIER` rows remain, and
-- no worker currently holds a claimed row in progress.
+- no claimable `FRONTIER` rows remain (`next_attempt_at <= now()`), and
+- no worker currently holds a valid in-progress lease.

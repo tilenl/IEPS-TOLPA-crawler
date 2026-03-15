@@ -33,6 +33,12 @@ Notes:
 - do not rely on disallowed paths from robots;
 - do not clone repos or traverse full repo trees.
 
+Hard budget guardrails (normative):
+- maximum stored pages per run: `5000` (`crawler.budget.maxTotalPages`);
+- ingestion must stop inserting new frontier rows when global cap is reached;
+- per-domain and depth guardrails (`crawler.budget.maxPerDomainPages`, `crawler.budget.maxDepth`) limit expansion breadth;
+- on budget rejection, link relation MAY still be persisted when target already exists, but no new page row is created.
+
 ## Relevance Domain
 
 - primary segmentation keywords (high priority);
@@ -52,3 +58,4 @@ Scoring intent:
 - full source tree enumeration;
 - downloading binaries and image bytes for storage;
 - training/inference semantics from repository code.
+- unbounded crawl growth beyond configured queue and page budgets.

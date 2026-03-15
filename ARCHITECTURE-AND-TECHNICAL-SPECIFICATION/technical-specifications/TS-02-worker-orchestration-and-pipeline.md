@@ -10,6 +10,7 @@ Specify single ownership for Stage A and Stage B orchestration.
 - `Storage` owns DB transaction details and dedup authority.
 - `Frontier` owns claim/reschedule semantics.
 - `RobotsTxtCache` owns allow/disallow decisions before frontier insertion.
+- queue state transitions are authoritative in DB and must follow `TS-07` and `TS-12`.
 
 ## Canonical Worker Loop
 
@@ -39,6 +40,10 @@ while (!shutdownRequested) {
 }
 ```
 
+Important execution rule:
+- `claimNextFrontier()` MUST execute an atomic claim mutation (`FRONTIER -> PROCESSING`) and return leased row metadata.
+- worker MUST treat missing or expired lease as non-owning state and skip processing.
+
 ## Stage A Contract (Ingestion)
 
 1. Canonicalize URL.
@@ -58,6 +63,12 @@ Concrete URL-exists branch:
 3. Fetch and classify (`HTML`, `BINARY`, `DUPLICATE`).
 4. Persist outcome and emit discovered URLs to Stage A.
 
+Stage B claim semantics are updated:
+1. Claim highest-priority **eligible** frontier row where `next_attempt_at <= now()` using atomic `UPDATE ... RETURNING`.
+2. Page enters `PROCESSING` with lease owner and expiration.
+3. Any retryable outcome transitions row back to `FRONTIER` with future `next_attempt_at`.
+4. Any terminal outcome transitions row to `HTML`, `BINARY`, `DUPLICATE`, or `ERROR`.
+
 Concrete outcome mapping:
 - HTML response -> `page_type_code='HTML'`, `html_content` persisted;
 - binary target (`.doc/.docx/.ppt/.pptx`) -> `page_type_code='BINARY'`, `page_data` row inserted, `html_content=NULL`;
@@ -65,9 +76,10 @@ Concrete outcome mapping:
 
 ## Transaction Boundaries
 
-- claim transaction: short-lived; lock only long enough to claim;
-- persistence transaction: page outcome + related inserts atomically;
-- ingestion transaction: per discovered URL or small batch, idempotent.
+- claim transaction: short-lived; lock only long enough for atomic claim-state mutation;
+- persistence transaction: page terminal/retry outcome + related inserts atomically;
+- ingestion transaction: per discovered URL or small batch, idempotent;
+- retry metadata (`attempt_count`, `next_attempt_at`, error diagnostics) MUST update in same transaction as state transition.
 
 ## Failure Handling Hook
 
@@ -78,10 +90,32 @@ Minimal recovery path example:
 try {
     // claim + fetch + parse + persist
 } catch (CrawlerException e) {
-    storage.markPageAsError(row.get().pageId(), e.category().name(), e.getMessage());
-    frontier.reschedule(row.get().pageId(), e.nextAttemptAt(), e.category().name());
+    storage.applyRecoveryTransition(
+        row.get().pageId(),
+        e.category().name(),
+        e.getMessage(),
+        e.nextAttemptAt(),
+        e.isRetryable()
+    );
 }
 ```
+
+Recovery guarantees:
+- retryable categories: increment attempt budget and set `next_attempt_at`;
+- non-retryable categories: transition to terminal `ERROR` exactly once;
+- all recovery transitions MUST clear or preserve lease ownership deterministically (no dangling `PROCESSING`).
+
+## Backpressure And Crawl Budget Contract
+
+- ingestion MUST enforce global crawl budget and queue budget from `TS-13`;
+- when budget is exhausted, discovered URL is not inserted to frontier and decision is logged as `BUDGET_DROPPED`;
+- budget-hit path MUST remain idempotent and must not mutate already-processed terminal pages.
+- required decision order for discovered URLs:
+  1. reject if global max pages reached;
+  2. reject if per-domain cap reached;
+  3. reject if depth cap exceeded;
+  4. if frontier high-watermark reached, defer low-score URLs by setting future `next_attempt_at`;
+  5. otherwise ingest normally.
 
 ## Implementation Location
 

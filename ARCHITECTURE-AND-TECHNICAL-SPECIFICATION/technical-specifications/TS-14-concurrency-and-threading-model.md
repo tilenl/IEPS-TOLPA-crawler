@@ -16,6 +16,7 @@ The crawler implements a **Producer-Consumer architecture** using a database-bac
 - shared mutable state minimized and guarded by component ownership;
 - domain backoff counters and caches MUST be thread-safe;
 - DB row-level locking is the source of truth for frontier claim safety.
+- queue leases (`claimed_by`, `claim_expires_at`) are shared durability state and must be treated as authoritative.
 
 ## Worker Lifecycle
 
@@ -36,11 +37,27 @@ Operational throughput note:
 - Selenium resource usage when many external-domain fetches exist.
 - high-rate duplicate discoveries converging on same `page.url` unique constraint.
 
+## Capacity Budgets
+
+- maximum concurrent headless fetches is bounded by `crawler.fetch.maxHeadlessSessions` (`TS-13`);
+- headless capacity exhaustion MUST not block worker indefinitely or stall frontier progression;
+- queue lease duration (`crawler.frontier.leaseSeconds`) must exceed expected fetch/parse/persist critical path for healthy workers;
+- expired leases are recoverable and returned to `FRONTIER` before starvation occurs.
+
+## Saturation Handling
+
+- when headless capacity is saturated, worker follows deterministic fallback path from `TS-03`;
+- repeated saturation events SHOULD trigger temporary circuit-open behavior for headless mode;
+- saturation events must emit observability signals used by `TS-15` alerts.
+
 ## Required Tests
 
 - parallel claim uniqueness;
 - graceful shutdown with active workers;
 - thread-safe cache usage under concurrent access.
+- bounded headless concurrency under load;
+- lease expiration and recovery behavior under simulated worker crash;
+- no deadlock under mixed DB contention and headless saturation.
 
 ## Implementation Location
 

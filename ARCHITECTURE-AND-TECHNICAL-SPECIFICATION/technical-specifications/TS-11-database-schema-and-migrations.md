@@ -9,12 +9,29 @@
 
 - `page.relevance_score DOUBLE PRECISION NOT NULL DEFAULT 0.0`
 - `page.content_hash VARCHAR(64)` for content dedup
+- `page.next_attempt_at TIMESTAMP NOT NULL DEFAULT now()`
+- `page.attempt_count INTEGER NOT NULL DEFAULT 0`
+- `page.claimed_by VARCHAR(128)`
+- `page.claimed_at TIMESTAMP`
+- `page.claim_expires_at TIMESTAMP`
+- `page.last_error_category VARCHAR(64)`
+- `page.last_error_message TEXT`
+- `page.last_error_at TIMESTAMP`
 - supporting indexes for frontier dequeue and hash lookup
+- `content_owner` table for deterministic content-dedup ownership:
+  - `content_hash VARCHAR(64) PRIMARY KEY`
+  - `owner_page_id INTEGER NOT NULL REFERENCES crawldb.page(id)`
+  - `created_at TIMESTAMP NOT NULL`
+- `page_type` lookup extension values:
+  - `PROCESSING`
+  - `ERROR`
 
 ## Required Indexes
 
-- `idx_page_frontier_priority (page_type_code, relevance_score DESC, accessed_time ASC)`
-- index on `page(content_hash)` for duplicate checks
+- `idx_page_frontier_priority (page_type_code, next_attempt_at ASC, relevance_score DESC, accessed_time ASC, id ASC)`
+- `idx_page_processing_lease (page_type_code, claim_expires_at ASC)`
+- index on `page(content_hash)` for duplicate read path
+- unique/primary key on `content_owner(content_hash)`
 
 ## Migration Strategy
 
@@ -23,7 +40,9 @@
 - migration order:
   1. add columns
   2. backfill/defaults if needed
-  3. add indexes
+  3. add ownership table for content hash
+  4. add indexes and constraints
+  5. validate claim/retry defaults for existing rows
 
 ## Verification Checklist
 
@@ -31,14 +50,19 @@
 - required tables and lookup data present;
 - extension columns and indexes present;
 - smoke insert/read/delete succeeds.
+- `PROCESSING` lease fields are nullable/initialized correctly on existing data.
+- delayed frontier rows are excluded from claim until due time.
+- content owner uniqueness enforces one canonical page per hash.
 
 Practical verification commands (example):
 - `SELECT * FROM crawldb.page_type;`
 - `SELECT column_name FROM information_schema.columns WHERE table_schema='crawldb' AND table_name='page';`
 - `SELECT indexname FROM pg_indexes WHERE schemaname='crawldb' AND indexname='idx_page_frontier_priority';`
+- `SELECT content_hash, owner_page_id FROM crawldb.content_owner LIMIT 5;`
 
 Bootstrap seed verification:
 - on empty frontier bootstrap, configured seeds must exist as `page_type_code='FRONTIER'`;
+- seeded rows must initialize `next_attempt_at=now()` and `attempt_count=0`;
 - repeated bootstrap runs must be idempotent (no duplicate `url` rows).
 
 ## Implementation Location

@@ -5,14 +5,17 @@
 - structured log format (JSON or key-value);
 - required fields: `timestamp`, `level`, `workerId`, `pageId`, `url`, `domain`, `event`, `result`;
 - no secrets in logs (DB credentials, tokens).
+- queue-state events MUST include `fromState`, `toState`, `attemptCount`, and `nextAttemptAt` when present.
 
 ## Event Types
 
 - frontier claim/release/reschedule;
+- lease recovery and lease-expiry events;
 - fetch start/end and mode (`PLAIN_HTTP`, `HEADLESS`);
 - parse summary (links/images extracted);
 - dedup decisions (URL/content);
 - persistence outcomes and failures.
+- budget-drop and budget-defer events.
 
 ## Metrics
 
@@ -21,6 +24,17 @@
 - success/error counts by category (`TS-12`);
 - rate-limit waits and backoff events;
 - dedup hit rates.
+- in-progress lease count and oldest active lease age;
+- delayed frontier age (`now - min(next_attempt_at)` for overdue rows);
+- DB pool utilization and timeout counts;
+- headless slot utilization, saturation count, and circuit-open count.
+
+## Healthcheck Contracts
+
+- readiness MUST fail when required dependencies are unavailable (DB connectivity, schema/version mismatch);
+- readiness SHOULD degrade when DB pool or headless saturation exceeds configured threshold;
+- liveness MUST fail for unrecoverable worker-loop stall (no successful state transitions beyond configured timeout);
+- health endpoints/status reporters MUST expose lease-recovery pressure and retry backlog age.
 
 ## Run Summary
 
@@ -31,6 +45,8 @@ At crawler stop, emit summary:
 - total errors by category;
 - top domains by fetch count.
 - total rate-limit delays and cumulative delayed time.
+- total lease recoveries and max observed lease age.
+- total budget drops (`BUDGET_DROPPED`) and deferred ingestions.
 
 Summary should also include seed bootstrap metadata:
 - number of seeds configured;
@@ -41,6 +57,8 @@ Summary should also include seed bootstrap metadata:
 - required log fields present on critical events;
 - metrics counters increment correctly;
 - summary generated at graceful shutdown.
+- healthcheck transitions under DB down / saturation scenarios.
+- lease-age and delayed-queue metrics correctness tests.
 
 ## Implementation Location
 

@@ -22,6 +22,7 @@ Define uniform error classification, retry behavior, and terminal failure handli
 | ------------------- | ----- | ------------ | -------------------- | ----------------------------- |
 | INVALID_URL         | No    | 0            | None                 | Skip URL, log reason          |
 | ROBOTS_DISALLOWED   | No    | 0            | None                 | Drop URL before frontier      |
+| ROBOTS_TRANSIENT    | Yes   | 3            | Fixed + jitter       | Temporary deny, then error    |
 | FETCH_TIMEOUT       | Yes   | 3            | Exponential          | Mark failed after limit       |
 | FETCH_HTTP_OVERLOAD | Yes   | 5            | Domain backoff       | Keep frontier entry           |
 | FETCH_HTTP_CLIENT   | No    | 0            | None                 | Persist status and stop retry |
@@ -34,8 +35,18 @@ Define uniform error classification, retry behavior, and terminal failure handli
 
 - failed terminal pages SHOULD be marked with diagnostic metadata;
 - retries MUST not duplicate link/page inserts;
-- worker loop MUST continue after handled errors.
+- worker loop MUST continue after handled errors;
+- queue transitions MUST be durable and transactional:
+  - retryable: `PROCESSING -> FRONTIER` with `attempt_count=attempt_count+1`, `next_attempt_at`, and error diagnostics;
+  - terminal: `PROCESSING -> ERROR` with final diagnostics and cleared lease fields.
 - terminal-state helper contract: `markPageAsError(pageId, category, message)` with last-attempt timestamp.
+
+Retry budget rule:
+- `attempt_count` is authoritative and persisted on `page`;
+- if `attempt_count >= maxAttempts(category)`, next transition MUST be terminal `ERROR`.
+
+Eligibility rule:
+- only rows where `page_type_code='FRONTIER'` and `next_attempt_at <= now()` may be claimed.
 
 ## Observability Requirements
 
@@ -44,6 +55,7 @@ Define uniform error classification, retry behavior, and terminal failure handli
   - error count by category
   - retry count
   - terminal failures.
+  - delayed queue age and oldest overdue retry.
 
 ## Required Tests
 
@@ -53,6 +65,10 @@ Define uniform error classification, retry behavior, and terminal failure handli
 - idempotence under repeated transient failures.
 - terminal mark-up test:
   - when retry budget exhausted, page is marked with diagnostic metadata exactly once.
+- restart persistence test:
+  - attempt budget and `next_attempt_at` survive process restart and are re-enforced.
+- eligibility test:
+  - delayed rows are not claimable before due time.
 
 ## Implementation Location
 
