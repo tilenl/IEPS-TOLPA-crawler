@@ -45,10 +45,10 @@ Representative GitHub path decisions (examples):
 
 - robots raw text stored once per domain and refreshed by policy;
 - sitemap content persisted even if unused by current crawler logic.
-- recommended `site` metadata fields used by this spec:
+- `site` metadata fields required by this spec:
   - `robots_content` (raw robots text);
   - `sitemap_content` (raw or resolved sitemap directive payload).
-  - transient robots diagnostics (`robots_last_status`, `robots_failures`, `robots_deny_until`).
+- transient robots diagnostics (`robots_last_status`, `robots_failures`, `robots_deny_until`) are runtime in-memory state in this architecture profile and are emitted through observability (`TS-15`) rather than persisted in `site`.
 
 ## Required Tests
 

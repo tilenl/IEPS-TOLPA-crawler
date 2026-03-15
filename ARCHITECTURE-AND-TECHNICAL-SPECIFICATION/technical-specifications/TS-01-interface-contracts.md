@@ -84,7 +84,7 @@ Ownership clarification:
 - `FrontierRow`: `pageId`, `url`, `siteId`, `relevanceScore`.
 - `FetchResult`: `statusCode`, `contentType`, `body`, `fetchedAt`.
 - `ParseResult`: extracted links, images, extracted metadata.
-- `RobotDecision`: `ALLOWED` or `DISALLOWED`, optional reason.
+- `RobotDecision`: `ALLOWED`, `DISALLOWED`, or `TEMPORARY_DENY`, optional reason and optional `denyUntil`.
 - `RateLimitDecision`: `ALLOWED` or `DELAYED(waitNs)`.
 - `DiscoveredUrl`: `rawUrl`, `baseUrl`, `fromPageId`, `anchorText`, `contextText`.
 - `FetchContext`: `pageId`, `canonicalUrl`, `siteId`, `attempt`, `claimedAt`.
@@ -102,7 +102,7 @@ Ownership clarification:
 - link insertion is required even when discovered target already exists.
 - `insertFrontierIfAbsent` semantics:
   - inserted -> new `FRONTIER` row created;
-  - conflict -> no new row, existing page id is returned/lookup-enabled for link insertion.
+  - conflict -> no new row; implementation MUST return (or immediately resolve and return) existing page id for link insertion.
 
 ## Required Unit Tests
 

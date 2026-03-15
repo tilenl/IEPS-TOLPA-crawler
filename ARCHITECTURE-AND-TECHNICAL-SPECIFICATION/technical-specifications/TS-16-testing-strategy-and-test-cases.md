@@ -48,7 +48,7 @@
   - 3xx/5xx robots failures honor max deny window and recover on successful refresh.
 - budget guardrail checks:
   - global cap `5000` prevents new page insertion beyond limit;
-  - per-domain and depth caps enforce deterministic ingestion decisions.
+  - per-domain cap enforces deterministic ingestion decisions.
 - observability checks:
   - lease age, delayed queue age, DB pool saturation, and healthcheck transitions are emitted correctly.
 

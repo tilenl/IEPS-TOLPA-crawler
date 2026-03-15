@@ -37,8 +37,42 @@ CREATE INDEX "idx_page_page_type_code" ON crawldb.page ( page_type_code );
 ALTER TABLE crawldb.page
 	ADD COLUMN relevance_score double precision NOT NULL DEFAULT 0.0;
 
+ALTER TABLE crawldb.page
+	ADD COLUMN next_attempt_at timestamp NOT NULL DEFAULT now();
+
+ALTER TABLE crawldb.page
+	ADD COLUMN attempt_count integer NOT NULL DEFAULT 0;
+
+ALTER TABLE crawldb.page
+	ADD COLUMN claimed_by varchar(128);
+
+ALTER TABLE crawldb.page
+	ADD COLUMN claimed_at timestamp;
+
+ALTER TABLE crawldb.page
+	ADD COLUMN claim_expires_at timestamp;
+
+ALTER TABLE crawldb.page
+	ADD COLUMN content_hash varchar(64);
+
+ALTER TABLE crawldb.page
+	ADD COLUMN last_error_category varchar(64);
+
+ALTER TABLE crawldb.page
+	ADD COLUMN last_error_message text;
+
+ALTER TABLE crawldb.page
+	ADD COLUMN last_error_at timestamp;
+
+DROP INDEX IF EXISTS crawldb.idx_page_frontier_priority;
 CREATE INDEX "idx_page_frontier_priority"
-	ON crawldb.page ( page_type_code, relevance_score DESC, accessed_time ASC );
+	ON crawldb.page ( page_type_code, next_attempt_at ASC, relevance_score DESC, accessed_time ASC, id ASC );
+
+CREATE INDEX "idx_page_processing_lease"
+	ON crawldb.page ( page_type_code, claim_expires_at ASC );
+
+CREATE INDEX "idx_page_content_hash"
+	ON crawldb.page ( content_hash );
 
 CREATE TABLE crawldb.page_data ( 
 	id                   serial  NOT NULL,
@@ -74,6 +108,13 @@ CREATE INDEX "idx_link_from_page" ON crawldb.link ( from_page );
 
 CREATE INDEX "idx_link_to_page" ON crawldb.link ( to_page );
 
+CREATE TABLE crawldb.content_owner (
+	content_hash         varchar(64) NOT NULL,
+	owner_page_id        integer NOT NULL,
+	created_at           timestamp NOT NULL,
+	CONSTRAINT pk_content_owner_hash PRIMARY KEY ( content_hash )
+);
+
 ALTER TABLE crawldb.image ADD CONSTRAINT fk_image_page_data FOREIGN KEY ( page_id ) REFERENCES crawldb.page( id ) ON DELETE RESTRICT;
 
 ALTER TABLE crawldb.link ADD CONSTRAINT fk_link_page FOREIGN KEY ( from_page ) REFERENCES crawldb.page( id ) ON DELETE RESTRICT;
@@ -88,6 +129,8 @@ ALTER TABLE crawldb.page_data ADD CONSTRAINT fk_page_data_page FOREIGN KEY ( pag
 
 ALTER TABLE crawldb.page_data ADD CONSTRAINT fk_page_data_data_type FOREIGN KEY ( data_type_code ) REFERENCES crawldb.data_type( code ) ON DELETE RESTRICT;
 
+ALTER TABLE crawldb.content_owner ADD CONSTRAINT fk_content_owner_page FOREIGN KEY ( owner_page_id ) REFERENCES crawldb.page( id ) ON DELETE RESTRICT;
+
 INSERT INTO crawldb.data_type VALUES 
 	('PDF'),
 	('DOC'),
@@ -99,4 +142,6 @@ INSERT INTO crawldb.page_type VALUES
 	('HTML'),
 	('BINARY'),
 	('DUPLICATE'),
-	('FRONTIER');
+	('FRONTIER'),
+	('PROCESSING'),
+	('ERROR');

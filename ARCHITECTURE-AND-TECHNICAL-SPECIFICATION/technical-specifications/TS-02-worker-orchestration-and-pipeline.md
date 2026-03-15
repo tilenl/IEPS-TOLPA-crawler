@@ -23,19 +23,35 @@ while (!shutdownRequested) {
         continue;
     }
 
-    String domain = domainOf(row.get().url());
-    RateLimitDecision decision = rateLimiter.tryAcquire(domain);
-    if (decision.isDelayed()) {
-        frontier.reschedule(row.get().pageId(), Instant.now().plusNanos(decision.waitNs()), "rate_limited");
-        continue;
-    }
+    try {
+        String domain = domainOf(row.get().url());
+        RateLimitDecision decision = rateLimiter.tryAcquire(domain);
+        if (decision.isDelayed()) {
+            frontier.reschedule(row.get().pageId(), Instant.now().plusNanos(decision.waitNs()), "rate_limited");
+            continue;
+        }
 
-    FetchResult fetched = fetcher.fetch(row.get().url());
-    ParseResult parsed = parser.parse(row.get().url(), fetched.bodyOrEmpty());
-    storage.persistFetchOutcome(FetchContext.from(row.get()), fetched, parsed);
+        FetchResult fetched = fetcher.fetch(row.get().url());
+        ParseResult parsed = parser.parse(row.get().url(), fetched.bodyOrEmpty());
+        storage.persistFetchOutcome(FetchContext.from(row.get()), fetched, parsed);
 
-    for (DiscoveredUrl discovered : parsed.discoveredUrls()) {
-        storage.ingestDiscoveredUrl(discovered.withSource(row.get().pageId()));
+        for (DiscoveredUrl discovered : parsed.discoveredUrls()) {
+            storage.ingestDiscoveredUrl(discovered.withSource(row.get().pageId()));
+        }
+    } catch (CrawlerException e) {
+        if (e.isRetryable()) {
+            frontier.reschedule(
+                row.get().pageId(),
+                e.nextAttemptAt(),
+                e.category().name()
+            );
+        } else {
+            storage.markPageAsError(
+                row.get().pageId(),
+                e.category().name(),
+                e.getMessage()
+            );
+        }
     }
 }
 ```
@@ -77,26 +93,23 @@ Concrete outcome mapping:
 ## Transaction Boundaries
 
 - claim transaction: short-lived; lock only long enough for atomic claim-state mutation;
-- persistence transaction: page terminal/retry outcome + related inserts atomically;
+- persistence transaction: page terminal/retry outcome + direct page artifacts atomically;
 - ingestion transaction: per discovered URL or small batch, idempotent;
 - retry metadata (`attempt_count`, `next_attempt_at`, error diagnostics) MUST update in same transaction as state transition.
+- accepted limitation: if process crash occurs after `persistFetchOutcome(...)` and before ingestion loop completion, some discovered links may be missing; link-graph completeness is best-effort under crash conditions.
 
-## Failure Handling Hook
+## Failure Handling Contract
 
 Errors are classified by `TS-12`. Worker must call policy-aware recovery path and never leave claimed rows in undefined state.
 
 Minimal recovery path example:
 ```java
-try {
-    // claim + fetch + parse + persist
-} catch (CrawlerException e) {
-    storage.applyRecoveryTransition(
-        row.get().pageId(),
-        e.category().name(),
-        e.getMessage(),
-        e.nextAttemptAt(),
-        e.isRetryable()
-    );
+catch (CrawlerException e) {
+    if (e.isRetryable()) {
+        frontier.reschedule(row.get().pageId(), e.nextAttemptAt(), e.category().name());
+    } else {
+        storage.markPageAsError(row.get().pageId(), e.category().name(), e.getMessage());
+    }
 }
 ```
 
@@ -113,9 +126,8 @@ Recovery guarantees:
 - required decision order for discovered URLs:
   1. reject if global max pages reached;
   2. reject if per-domain cap reached;
-  3. reject if depth cap exceeded;
-  4. if frontier high-watermark reached, defer low-score URLs by setting future `next_attempt_at`;
-  5. otherwise ingest normally.
+  3. if frontier high-watermark reached, defer low-score URLs by setting future `next_attempt_at`;
+  4. otherwise ingest normally.
 
 ## Implementation Location
 

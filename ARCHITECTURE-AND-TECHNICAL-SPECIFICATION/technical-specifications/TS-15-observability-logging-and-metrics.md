@@ -36,6 +36,11 @@
 - liveness MUST fail for unrecoverable worker-loop stall (no successful state transitions beyond configured timeout);
 - health endpoints/status reporters MUST expose lease-recovery pressure and retry backlog age.
 
+Healthcheck exposure contract:
+- minimum required exposure is structured health status events in logs at startup and at fixed heartbeat intervals;
+- optional HTTP health server MAY be enabled via runtime config and must expose `/health/live` and `/health/ready`;
+- when HTTP health server is disabled, orchestrators MUST rely on process exit code and structured health log events.
+
 ## Run Summary
 
 At crawler stop, emit summary:

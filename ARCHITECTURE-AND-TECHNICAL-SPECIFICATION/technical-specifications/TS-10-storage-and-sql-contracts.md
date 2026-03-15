@@ -34,9 +34,10 @@ Define authoritative database operations and method-to-SQL mappings.
   - transition `PROCESSING -> ERROR` with category/message and terminal timestamp.
 - **Insert frontier if absent**
   - `INSERT ... ON CONFLICT (url) DO NOTHING`
-  - returns insertion status so caller can branch new-vs-existing URL behavior
+  - on conflict, caller MUST resolve existing row id with `SELECT id FROM crawldb.page WHERE url = ?`
+  - returns insertion status and `page_id` so caller can branch new-vs-existing URL behavior deterministically
 - **Insert link edge**
-  - `INSERT INTO crawldb.link (from_page, to_page) ...`
+  - `INSERT INTO crawldb.link (from_page, to_page) VALUES (?, ?) ON CONFLICT (from_page, to_page) DO NOTHING`
 - **Mark HTML outcome**
   - `UPDATE crawldb.page SET page_type_code='HTML', html_content=?, http_status_code=?, accessed_time=? WHERE id=?`
 - **Mark duplicate**
@@ -60,6 +61,7 @@ Define authoritative database operations and method-to-SQL mappings.
 - every discovered relation must generate a `link` record;
 - `site` must exist before `page` insert (`site_id` FK integrity).
 - conflict path MUST be idempotent across retries and concurrent workers.
+- `insertLink` MUST be idempotent across retries and concurrent workers (duplicate edge insert is a no-op).
 - content hash ownership MUST be deterministic: one canonical owner per hash, all others marked duplicate of that owner.
 - no row may remain indefinitely in `PROCESSING` without valid lease.
 

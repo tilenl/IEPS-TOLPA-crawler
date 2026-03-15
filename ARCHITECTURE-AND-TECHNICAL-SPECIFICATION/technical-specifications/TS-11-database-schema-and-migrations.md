@@ -5,7 +5,7 @@
 - baseline schema: `pa1/db/crawldb.sql`
 - core tables: `site`, `page`, `link`, `image`, `page_data`, `page_type`, `data_type`
 
-## Allowed Extensions
+## Required Extensions
 
 - `page.relevance_score DOUBLE PRECISION NOT NULL DEFAULT 0.0`
 - `page.content_hash VARCHAR(64)` for content dedup
@@ -17,7 +17,7 @@
 - `page.last_error_category VARCHAR(64)`
 - `page.last_error_message TEXT`
 - `page.last_error_at TIMESTAMP`
-- supporting indexes for frontier dequeue and hash lookup
+- supporting indexes for frontier dequeue, lease recovery, and hash lookup
 - `content_owner` table for deterministic content-dedup ownership:
   - `content_hash VARCHAR(64) PRIMARY KEY`
   - `owner_page_id INTEGER NOT NULL REFERENCES crawldb.page(id)`
@@ -32,6 +32,7 @@
 - `idx_page_processing_lease (page_type_code, claim_expires_at ASC)`
 - index on `page(content_hash)` for duplicate read path
 - unique/primary key on `content_owner(content_hash)`
+- if a legacy frontier index exists without `next_attempt_at` and `id`, migration MUST drop and recreate it.
 
 ## Migration Strategy
 
@@ -40,9 +41,10 @@
 - migration order:
   1. add columns
   2. backfill/defaults if needed
-  3. add ownership table for content hash
-  4. add indexes and constraints
-  5. validate claim/retry defaults for existing rows
+  3. add/extend `page_type` lookup (`PROCESSING`, `ERROR`)
+  4. add ownership table for content hash
+  5. add indexes and constraints (including frontier index replacement)
+  6. validate claim/retry defaults for existing rows
 
 ## Verification Checklist
 

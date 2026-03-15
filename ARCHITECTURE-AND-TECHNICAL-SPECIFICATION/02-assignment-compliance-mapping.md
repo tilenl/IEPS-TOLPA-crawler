@@ -38,7 +38,7 @@ All implementation paths below are relative to:
 - MUST honor `robots.txt` before entering frontier.
 - MUST enforce minimum per-domain delay of 5 seconds, even if robots delay is lower/absent.
 - MUST extract and process `onclick` links.
-- MUST persist link edges for discovered relationships, including already-known URLs.
+- SHOULD persist link edges for discovered relationships, including already-known URLs; crash during post-persist ingestion is treated as a documented best-effort limitation in this architecture profile (`TS-02`).
 - MUST avoid forbidden crawler frameworks in `assignment.md`.
 
 ## Library Compliance
