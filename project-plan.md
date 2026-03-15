@@ -77,7 +77,7 @@ The crawler bootstraps by populating the `page` table with seed URLs set to `pag
 
 ## 3. GitHub `robots.txt` Compliance
 
-The full `robots.txt` for `github.com` (`User-agent: `* section) disallows the following paths relevant to our crawler:
+The full `robots.txt` for `github.com` (`User-agent:` * section) disallows the following paths relevant to our crawler:
 
 ```
 Disallow: /*/tree/          ← entire file browser — blocks directory traversal
@@ -678,17 +678,17 @@ Failure fallback:
 For each extracted link, compute score in this order:
 
 1. URL token heuristic:
-   - If URL contains any target token, `heuristicScore = 0.70`
-   - Else `heuristicScore = 0.20`
+  - If URL contains any target token, `heuristicScore = 0.70`
+  - Else `heuristicScore = 0.20`
 2. Context token heuristic:
-   - If `anchorText + contextText` contains any target token, set `heuristicScore = 0.85`
+  - If `anchorText + contextText` contains any target token, set `heuristicScore = 0.85`
 3. Bag-of-words similarity:
-   - Build `targetText` by concatenating configured domain keywords and phrases
-   - Build `observedText` from normalized `anchorText + contextText`
-   - Compute cosine similarity `sim` with unigram BoW vectors
+  - Build `targetText` by concatenating configured domain keywords and phrases
+  - Build `observedText` from normalized `anchorText + contextText`
+  - Compute cosine similarity `sim` with unigram BoW vectors
 4. Final mapping to database:
-   - `relevanceScore = max(heuristicScore, sim)`
-   - Store as `page.relevance_score`
+  - `relevanceScore = max(heuristicScore, sim)`
+  - Store as `page.relevance_score`
 
 #### Bag-of-Words Configuration (Many Relevant Words)
 
@@ -748,13 +748,15 @@ The system is divided into the following components, each defined as a Java inte
 
 The assignment defines a required high-level structure with five components: HTTP downloader and renderer, data extractor, duplicate detector, URL frontier, and datastore. The current interface-based architecture is a finer-grained decomposition of the same required flow.
 
-| Assignment component           | Current implementation mapping                                                                                  | Compliance note                                                                                                  |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| HTTP downloader and renderer  | `Fetcher` (download/render), orchestrated by `Worker` and scheduled by `Scheduler`                            | Compliant: download/render is explicit and supports both headless and plain HTTP paths.                         |
-| Data extractor                | `Parser`                                                                                                        | Compliant: extraction includes `href`, `onclick`, and `<img src>` handling required by the assignment.         |
-| Duplicate detector            | `ContentHasher` + URL uniqueness checks and duplicate page updates in `Storage`                                | Compliant: distinguishes URL-seen handling from content-duplicate handling, as required in `link`/`page` flow. |
-| URL frontier                  | `Frontier` (DB-backed dequeue), with ranking support from `RelevanceScorer` and coordination via `Scheduler`  | Compliant: frontier is explicit, preferential, multi-worker safe (`FOR UPDATE SKIP LOCKED`).                   |
-| Datastore                     | `Storage` over PostgreSQL schema (`site`, `page`, `link`, `image`, `page_data`)                               | Compliant: data and metadata persistence matches assignment schema constraints and allowed extensions.           |
+
+| Assignment component         | Current implementation mapping                                                                               | Compliance note                                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| HTTP downloader and renderer | `Fetcher` (download/render), orchestrated by `Worker` and scheduled by `Scheduler`                           | Compliant: download/render is explicit and supports both headless and plain HTTP paths.                        |
+| Data extractor               | `Parser`                                                                                                     | Compliant: extraction includes `href`, `onclick`, and `<img src>` handling required by the assignment.         |
+| Duplicate detector           | `ContentHasher` + URL uniqueness checks and duplicate page updates in `Storage`                              | Compliant: distinguishes URL-seen handling from content-duplicate handling, as required in `link`/`page` flow. |
+| URL frontier                 | `Frontier` (DB-backed dequeue), with ranking support from `RelevanceScorer` and coordination via `Scheduler` | Compliant: frontier is explicit, preferential, multi-worker safe (`FOR UPDATE SKIP LOCKED`).                   |
+| Datastore                    | `Storage` over PostgreSQL schema (`site`, `page`, `link`, `image`, `page_data`)                              | Compliant: data and metadata persistence matches assignment schema constraints and allowed extensions.         |
+
 
 Architecture view used for reporting and implementation:
 
@@ -776,6 +778,8 @@ dataExtractor --> urlFrontierQueue
 httpDownloaderRenderer --> datastore[Datastore]
 duplicateDetector --> datastore
 ```
+
+
 
 > Each component is defined as a Java interface and implemented in a concrete class. No component should depend directly on a concrete implementation of another — always depend on the interface. This allows individual components to be replaced and tested in isolation with mock implementations.
 
@@ -805,18 +809,63 @@ All code must be documented with concise Javadoc. Non-obvious logic must include
 
 ---
 
+## 13. Submission Repository Structure (PA1 Compliance)
+
+Source of truth: `assignment.md`, section `5. Submission instructions`.
+
+### 13.1 Required Target Structure
+
+```text
+pa1/
+├── db
+├── report.pdf
+├── README.md
+└── crawler/
+```
+
+Required paths that must exist exactly as listed:
+
+- `pa1/db`
+- `pa1/report.pdf`
+- `pa1/README.md`
+- `pa1/crawler/`
+
+Additional requirement for `pa1/db`: export in pgAdmin Custom format, and do not include images or binary data.
+
+### 13.2 Current Repository vs Target
+
+Current repository layout (top-level) does not include `pa1/` and therefore does not yet satisfy submission packaging:
+
+- `README.md` exists at repository root, but required submission README path is `pa1/README.md`.
+- `crawldb.sql` exists at repository root, but required database submission path is `pa1/db` (Custom pgAdmin dump).
+- `report.md` is not present.
+- `pa1/crawler/` is not present yet.
+
+### 13.3 Migration Steps to Compliance
+
+1. Create `pa1/`.
+2. Create `pa1/crawler/` and place crawler implementation there.
+3. Create `pa1/README.md`:
+  - Short project description.
+  - Install/setup/run instructions.
+  - Instructions for importing the database into pgAdmin.
+4. Create `pa1/report.md` (assignment report) in which you propose how the report should be writen and how to convert it into .pdf. Also add an IMPORTANT section in which you note, that the pa1 directory should have only a `report.pdf` version at the end.
+5. Create `pa1/db.md` markdown file. In the file give instructions that the final submission should have only `pa1/db` exported database, which should be exported after our crawler is done crawling.
+
+### 13.4 Compliance Checklist
+
+- `pa1/db.md` exists.
+- `pa1/report.md` exists.
+- `pa1/README.md` exists and includes required setup and import instructions.
+- `pa1/crawler/` exists.
+
+---
+
 ## Open Questions & TODOs
 
 - **Testing and debugging strategy** — Define how each component can be tested in isolation. Propose a staged integration approach: Fetcher → Parser → Canonicalizer → Frontier → Storage. Define what observable output each component should produce to localize failures.
-
 - **GitHub API usage** — Confirm with the professor whether the GitHub REST API is permitted. It unlocks structured access to metadata and file trees without `robots.txt` restrictions, which would significantly change the fetching and parsing architecture.
-
 - **Document splitting** — Split this plan into per-component specification files for the implementation phase. Proposed split: `01-domain.md`, `02-url-pipeline.md`, `03-fetcher.md`, `04-frontier.md`, `05-parser.md`, `06-storage.md`, `07-concurrency.md`. Each file should define the Java interface, describe the logic flow, specify libraries, and include a section on programming patterns.
-
-- **Domain section expansion** — Expand the crawl domain section with more specifics about what constitutes a relevant page, how the relevance score maps to queue ordering, and edge cases in link discovery.
-
 - `**abhinavsingh/fuge` reference** — Review `https://github.com/abhinavsingh/fuge` and assess whether its crawler architecture has patterns applicable to our implementation.
-
 - **Pre-implementation review** — Confirm all design decisions are resolved before moving into the specification writing phase. Identify any remaining gaps.
 
-- **Submision of private github directory structure should be obeyed** Add a section of creating the right directory structure and how the current files and structure should be changed to comply with the submission structure.
