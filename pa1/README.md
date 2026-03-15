@@ -8,26 +8,14 @@ This project is a preferential web crawler designed to explore the `github.com` 
 
 1. **Prerequisites**:
    - **JDK 21**: Required for Java 21 Virtual Threads and modern language features.
-   - **Docker**: Recommended for running the PostgreSQL database (see `project-plan.md` for Docker commands).
+   - **Docker**: Recommended for running the PostgreSQL database (see `pa1/db/database-setup.md` for the full setup flow).
    - **Chrome/Chromium**: Required for Selenium headless rendering.
    - **Gradle Wrapper**: No global Gradle installation is needed; the project uses `./gradlew`.
 
 2. **Database Setup**:
-   - The project uses PostgreSQL. A Docker-based setup is recommended:
-    ```bash
-    # From the repository root
-    mkdir -p .docker/pgdata .docker/init-scripts
-    cp pa1/db/crawldb.sql .docker/init-scripts/01-crawldb.sql
-    docker run --name postgresql-wier \
-        -e POSTGRES_PASSWORD=SecretPassword \
-        -e POSTGRES_USER=user \
-        -e POSTGRES_DB=crawldb \
-        -v "$PWD/.docker/pgdata:/var/lib/postgresql/data" \
-        -v "$PWD/.docker/init-scripts:/docker-entrypoint-initdb.d" \
-        -p 5432:5432 \
-        -d pgvector/pgvector:pg17
-    ```
-   - Alternatively, manually run `pa1/db/crawldb.sql` on a local PostgreSQL instance.
+   - The project uses PostgreSQL.
+   - For the full staged setup process (prerequisites, Docker startup, manual import path, troubleshooting, and verification checks), see `pa1/db/database-setup.md`.
+   - The schema source file remains `pa1/db/crawldb.sql`.
 
 3. **Building and Running**:
    - **Build**: `./gradlew build`

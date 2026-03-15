@@ -1,5 +1,7 @@
 # PA1 Database Submission Instructions
 
+For local database initialization and verification steps, see `pa1/db/database-setup.md`.
+
 ## Final Submission Requirement
 The final submission in the `pa1` directory should only contain the `pa1/db` file, which is a Custom pgAdmin export of the `crawldb` database.
 
