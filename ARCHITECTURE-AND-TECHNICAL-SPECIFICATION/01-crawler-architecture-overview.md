@@ -6,6 +6,8 @@ Build a preferential web crawler for segmentation-related repositories, centered
 
 ## Architecture Layers
 
+The system follows a **Producer-Consumer pattern** where the `Frontier` acts as the decoupled, persistent buffer between link discovery (producers) and page processing (consumers).
+
 - **Layer 1 (assignment view)**: HTTP downloader/renderer, data extractor, duplicate detector, URL frontier, datastore.
 - **Layer 2 (engineering view)**: `Scheduler`, `Worker`, `Fetcher`, `Parser`, `Canonicalizer`, `RobotsTxtCache`, `RateLimiterRegistry`, `RelevanceScorer`, `ContentHasher`, `Storage`, `Frontier`.
 

@@ -2,6 +2,11 @@
 
 ## Threading Model
 
+The crawler implements a **Producer-Consumer architecture** using a database-backed queue:
+- **Producers**: Workers discovering new URLs during parsing and ingesting them into the `FRONTIER`.
+- **Consumers**: Workers claiming rows from the `FRONTIER` for processing.
+- **Buffer**: The PostgreSQL `FRONTIER` table, providing persistence and thread-safe coordination.
+
 - Java 21 virtual threads via `Executors.newVirtualThreadPerTaskExecutor()`;
 - one worker loop per configured crawler worker;
 - blocking IO is acceptable under virtual-thread model.

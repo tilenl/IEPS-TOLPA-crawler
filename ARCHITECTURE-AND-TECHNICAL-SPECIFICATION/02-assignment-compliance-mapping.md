@@ -11,25 +11,27 @@
 | URL frontier                 | `Frontier` + `Scheduler`                   | DB-backed preferential dequeue with `FOR UPDATE SKIP LOCKED`.                      |
 | Datastore                    | `Storage` over PostgreSQL schema           | Uses `site`, `page`, `link`, `image`, `page_data`, and allowed schema extensions.  |
 
+
 ## Assignment Component To Package Path Mapping
 
 All implementation paths below are relative to:
 `pa1/crawler/src/main/java/si/uni_lj/fri/wier/`
 
-| Assignment Component | Primary Package Paths |
-| --- | --- |
+
+| Assignment Component         | Primary Package Paths                                               |
+| ---------------------------- | ------------------------------------------------------------------- |
 | HTTP downloader and renderer | `downloader/fetch/`, `downloader/worker/`, `downloader/politeness/` |
-| Data extractor | `downloader/extract/` |
-| Duplicate detector | `queue/dedup/`, `downloader/dedup/`, `storage/postgres/` |
-| URL frontier | `queue/claim/`, `queue/enqueue/`, `storage/frontier/`, `scheduler/` |
-| Datastore | `storage/postgres/`, `storage/frontier/` |
+| Data extractor               | `downloader/extract/`                                               |
+| Duplicate detector           | `queue/dedup/`, `downloader/dedup/`, `storage/postgres/`            |
+| URL frontier                 | `queue/claim/`, `queue/enqueue/`, `storage/frontier/`, `scheduler/` |
+| Datastore                    | `storage/postgres/`, `storage/frontier/`                            |
+
 
 ## Bootstrap Ownership
 
 - CLI entrypoint is `pa1/crawler/src/main/java/si/uni_lj/fri/wier/cli/Main.java`.
 - Main delegates crawler lifecycle orchestration to `pa1/crawler/src/main/java/si/uni_lj/fri/wier/app/PreferentialCrawler.java`.
 - Startup preflight validation (config + DB reachability + required runtime checks) is owned by `app/PreferentialCrawler.java` and specified in `TS-13`/`TS-14`.
-
 
 ## Hard Compliance Requirements
 
