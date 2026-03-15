@@ -67,3 +67,9 @@ for (Element el : doc.select("[onclick]")) {
 - malformed HTML resilience;
 - image extraction count and metadata inference.
 
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/downloader/extract/`
+- key file(s): `downloader/extract/HtmlParser.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/downloader/extract/` and `.../integration/downloader/extract/`
+

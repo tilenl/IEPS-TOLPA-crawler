@@ -32,3 +32,9 @@ Prevent excessive requests to same domain/server and handle overload responses.
 - robots-delay override;
 - overload backoff growth and reset behavior;
 - non-blocking worker reschedule behavior.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/scheduler/policies/`, `.../downloader/politeness/`
+- key file(s): `scheduler/policies/SchedulingPolicy.java`, `downloader/politeness/PolitenessGate.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/scheduler/policies/`, `.../unit/downloader/politeness/`, `.../integration/pipeline/`

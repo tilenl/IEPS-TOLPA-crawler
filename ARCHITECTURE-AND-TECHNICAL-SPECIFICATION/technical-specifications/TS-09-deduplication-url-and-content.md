@@ -28,3 +28,9 @@ Ensure crawler processes each URL once while identifying content-equivalent page
 - content duplicate path sets `DUPLICATE` and clears HTML;
 - distinct URLs with same content are correctly detected;
 - non-duplicate content remains `HTML`.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/queue/dedup/`, `.../downloader/dedup/`, `.../storage/postgres/`
+- key file(s): `queue/dedup/UrlSeenIndex.java`, `downloader/dedup/ContentHasherImpl.java`, `storage/postgres/repositories/PageRepository.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/queue/dedup/`, `.../unit/downloader/dedup/`, `.../integration/storage/postgres/`

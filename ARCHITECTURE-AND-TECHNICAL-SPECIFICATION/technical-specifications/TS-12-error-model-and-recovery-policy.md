@@ -48,3 +48,9 @@ Define uniform error classification, retry behavior, and terminal failure handli
 - retry limit enforcement;
 - non-retryable skip behavior;
 - idempotence under repeated transient failures.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/error/`, `.../app/`, `.../downloader/worker/`
+- key file(s): `error/CrawlerErrorCategory.java`, `error/RecoveryPolicy.java`, `downloader/worker/WorkerLoop.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/error/` and `.../integration/pipeline/`

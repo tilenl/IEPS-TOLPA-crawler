@@ -35,3 +35,9 @@ Transform raw/discovered URLs into canonical, dedup-safe forms.
 - allowlist behavior with mixed query params;
 - malformed URL handling.
 
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/downloader/normalize/`
+- key file(s): `downloader/normalize/UrlCanonicalizer.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/downloader/normalize/` and `.../integration/pipeline/`
+

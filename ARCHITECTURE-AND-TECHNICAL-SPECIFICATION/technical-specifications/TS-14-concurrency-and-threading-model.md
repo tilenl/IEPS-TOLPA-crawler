@@ -32,3 +32,14 @@
 - graceful shutdown with active workers;
 - thread-safe cache usage under concurrent access.
 
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/app/`, `.../scheduler/`, `.../downloader/worker/`, `.../config/`, `.../cli/`
+- key file(s):
+  - `app/PreferentialCrawler.java` (lifecycle start/stop and preflight gate before worker launch)
+  - `scheduler/policies/SchedulingPolicy.java`
+  - `downloader/worker/WorkerLoop.java`
+  - `config/RuntimeConfig.java`
+  - `cli/Main.java` (entrypoint delegation only)
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/app/`, `.../unit/downloader/worker/`, `.../integration/pipeline/`
+

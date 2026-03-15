@@ -46,3 +46,9 @@ Define authoritative database operations and method-to-SQL mappings.
 - contract tests with real PostgreSQL for each method;
 - conflict-path tests (`ON CONFLICT`) for URL dedup;
 - multi-worker claim contention tests.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/storage/`, `.../storage/postgres/`, `.../storage/frontier/`
+- key file(s): `storage/postgres/repositories/PageRepository.java`, `storage/frontier/FrontierStore.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/integration/storage/postgres/` and `.../integration/storage/frontier/`

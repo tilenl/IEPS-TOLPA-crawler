@@ -62,3 +62,12 @@ while (!shutdownRequested) {
 ## Failure Handling Hook
 
 Errors are classified by `TS-12`. Worker must call policy-aware recovery path and never leave claimed rows in undefined state.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/app/`, `.../scheduler/`, `.../downloader/worker/`
+- key file(s):
+  - `app/PreferentialCrawler.java` (startup sequence and lifecycle owner)
+  - `scheduler/policies/SchedulingPolicy.java`
+  - `downloader/worker/WorkerLoop.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/app/`, `.../unit/downloader/worker/`, `.../integration/pipeline/`

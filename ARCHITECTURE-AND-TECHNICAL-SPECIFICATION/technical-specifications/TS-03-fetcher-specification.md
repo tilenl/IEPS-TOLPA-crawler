@@ -43,3 +43,9 @@ Download/render page content and return normalized fetch response metadata.
 - timeout and HTTP error mapping tests;
 - binary-vs-html classification tests.
 
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/downloader/fetch/`
+- key file(s): `downloader/fetch/HttpFetcher.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/downloader/fetch/` and `.../integration/downloader/fetch/`
+

@@ -31,3 +31,12 @@
 - assignment compliance checks pass (`TS-02`, `TS-04`, `TS-06`, `TS-08`);
 - no critical open issues in dedup/frontier correctness;
 - run summary generated and reproducible with seed set.
+
+## Implementation Location
+
+- primary folder(s): all mapped implementation folders in `ARCHITECTURE-AND-TECHNICAL-SPECIFICATION/07-implementation-directory-structure-and-ts-mapping.md`
+- key file(s):
+  - `ARCHITECTURE-AND-TECHNICAL-SPECIFICATION/07-implementation-directory-structure-and-ts-mapping.md`
+  - `pa1/crawler/src/main/java/si/uni_lj/fri/wier/cli/Main.java`
+  - `pa1/crawler/src/main/java/si/uni_lj/fri/wier/app/PreferentialCrawler.java`
+- test location(s): roadmap milestones are validated through `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/` and `.../integration/`

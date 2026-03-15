@@ -36,3 +36,9 @@ FOR UPDATE SKIP LOCKED;
 - descending priority claim order;
 - parallel worker uniqueness (`SKIP LOCKED` behavior);
 - reschedule path correctness for delayed domains.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/queue/claim/`, `.../queue/enqueue/`, `.../storage/frontier/`
+- key file(s): `queue/claim/ClaimService.java`, `queue/enqueue/EnqueueService.java`, `storage/frontier/FrontierStore.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/queue/`, `.../integration/storage/frontier/`, `.../integration/pipeline/`

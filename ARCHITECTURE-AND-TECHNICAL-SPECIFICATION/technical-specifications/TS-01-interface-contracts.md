@@ -86,3 +86,11 @@ public interface Storage {
 - score range tests (`0.0` to `1.0`);
 - idempotence tests for ingestion contracts;
 - error mapping tests for interface exceptions.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/contracts/`, `.../cli/`, `.../app/`
+- key file(s):
+  - `contracts/Scheduler.java`, `contracts/Frontier.java`, `contracts/Worker.java`, `contracts/Fetcher.java`, `contracts/Parser.java`, `contracts/Storage.java`
+  - bootstrap boundary contracts documented in `cli/Main.java` and `app/PreferentialCrawler.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/contracts/` and `.../unit/app/`

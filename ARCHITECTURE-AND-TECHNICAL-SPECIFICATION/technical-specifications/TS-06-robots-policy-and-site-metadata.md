@@ -34,3 +34,9 @@ Manage robots parsing, caching, and persistence in `site` metadata.
 - cache hit/miss behavior;
 - DB persistence on first domain encounter;
 - parser behavior on 4xx and 5xx robots fetch responses.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/downloader/politeness/`, `.../storage/postgres/`
+- key file(s): `downloader/politeness/PolitenessGate.java`, `storage/postgres/repositories/SiteRepository.java`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/downloader/politeness/` and `.../integration/storage/postgres/`

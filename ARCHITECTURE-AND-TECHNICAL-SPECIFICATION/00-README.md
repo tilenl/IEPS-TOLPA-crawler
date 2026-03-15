@@ -16,7 +16,8 @@ This folder is the implementation-ready replacement for `project-plan.md`.
 4. `04-domain-and-scope-definition.md`
 5. `05-non-functional-requirements.md`
 6. `06-library-rationale-and-usage-matrix.md`
-7. `technical-specifications/TS-01` to `TS-17`
+7. `07-implementation-directory-structure-and-ts-mapping.md`
+8. `technical-specifications/TS-01-interface-contracts.md` to `technical-specifications/TS-17-implementation-roadmap-and-definition-of-done.md`
 
 ## Document Rules
 
@@ -29,6 +30,11 @@ This folder is the implementation-ready replacement for `project-plan.md`.
   - library constraints
   - data flow and edge cases
   - testing requirements
+  - implementation location (`primary folder(s)`, `key file(s)`, `test location(s)`)
+- implementation location convention:
+  - crawler code is implemented under `pa1/crawler/src/main/java/si/uni_lj/fri/wier/`
+  - tests are implemented under `pa1/crawler/src/test/java/si/uni_lj/fri/wier/`
+  - `cli/Main.java` is the only CLI entrypoint and delegates lifecycle orchestration to `app/PreferentialCrawler.java`
 - changes must keep alignment with `assignment.md` and `pa1/db/crawldb.sql`.
 
 ## Versioning

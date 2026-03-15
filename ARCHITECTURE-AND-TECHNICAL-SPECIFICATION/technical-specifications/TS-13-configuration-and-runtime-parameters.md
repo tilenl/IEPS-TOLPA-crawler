@@ -45,3 +45,12 @@ Define all runtime settings, defaults, validation, and precedence rules.
 - precedence resolution tests;
 - invalid value rejection tests;
 - effective config snapshot tests.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/config/`, `.../cli/`, `.../app/`
+- key file(s):
+  - `config/RuntimeConfig.java`
+  - `cli/Main.java` (CLI argument precedence and binding)
+  - `app/PreferentialCrawler.java` (startup preflight validation and effective config logging without secrets)
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/config/`, `.../unit/cli/`, `.../integration/app/`

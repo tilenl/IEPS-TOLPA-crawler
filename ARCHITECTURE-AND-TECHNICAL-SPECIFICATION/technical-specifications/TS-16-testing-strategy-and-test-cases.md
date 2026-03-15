@@ -43,3 +43,12 @@
 - run unit tests on every push;
 - run integration tests on PR and nightly;
 - publish test report artifacts for failures.
+
+## Implementation Location
+
+- primary folder(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/`, `.../integration/`, `pa1/crawler/src/test/resources/`
+- key file(s): `*UnitTest` for deterministic unit tests, `*IT` for integration tests with DB/network behavior
+- test location(s):
+  - `unit/` mirrors owned main packages
+  - `integration/` contains cross-component and external-system tests
+  - tests MUST NOT be colocated in `src/main/java`
