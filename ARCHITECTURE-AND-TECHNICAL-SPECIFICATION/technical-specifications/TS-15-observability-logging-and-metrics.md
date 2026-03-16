@@ -16,6 +16,7 @@
 - dedup decisions (URL/content);
 - persistence outcomes and failures.
 - budget-drop and budget-defer events.
+- robots fetch outcomes (`2xx`, `4xx`, `3xx/5xx`) and robots decision outcomes.
 
 ## Metrics
 
@@ -28,6 +29,8 @@
 - delayed frontier age (`now - min(next_attempt_at)` for overdue rows);
 - DB pool utilization and timeout counts;
 - headless slot utilization, saturation count, and circuit-open count.
+- `robots_temporary_deny_domains` gauge;
+- `robots_fetch_failures_total` counter (at minimum by domain and status class).
 
 ## Healthcheck Contracts
 
@@ -64,6 +67,7 @@ Summary should also include seed bootstrap metadata:
 - summary generated at graceful shutdown.
 - healthcheck transitions under DB down / saturation scenarios.
 - lease-age and delayed-queue metrics correctness tests.
+- robots metrics correctness tests (`robots_temporary_deny_domains`, `robots_fetch_failures_total`).
 
 ## Implementation Location
 

@@ -85,9 +85,11 @@ WHERE p.id = s.id;
 - retry metadata MUST be persisted for diagnostics and retry-budget enforcement.
 
 Seed bootstrap behavior:
-- when frontier is empty at startup, configured seed URLs are inserted as `page_type_code='FRONTIER'`;
+- when frontier is empty at startup, configured seeds MUST be canonicalized (`TS-05`) before insertion;
+- each canonicalized seed MUST receive a relevance score before insertion (from configured seed score policy or `RelevanceScorer`);
+- when frontier is empty at startup, canonicalized seed URLs are inserted as `page_type_code='FRONTIER'`;
 - seeded rows MUST set `next_attempt_at = now()` and `attempt_count = 0`;
-- repeated bootstrap runs MUST remain idempotent by URL uniqueness.
+- repeated bootstrap runs MUST remain idempotent by canonical URL uniqueness.
 
 ## Termination Semantics
 
@@ -117,6 +119,8 @@ WHERE page_type_code = 'PROCESSING'
 - lease expiration recovery path returns stale `PROCESSING` rows to `FRONTIER` with per-cycle cap enforcement;
 - reschedule path correctness for delayed domains.
 - termination grace-window test preventing premature completion when frontier/leases oscillate.
+- seed bootstrap canonicalization test (seed variants collapse to one canonical URL);
+- seed bootstrap scoring test (seed rows have deterministic non-null score at insertion).
 
 ## Implementation Location
 

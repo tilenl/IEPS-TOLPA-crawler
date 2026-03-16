@@ -32,6 +32,25 @@ while (true) {
             continue;
         }
 
+        robotsTxtCache.ensureLoaded(domain);
+        RobotDecision robotDecision = robotsTxtCache.evaluate(row.get().url());
+        if (robotDecision == RobotDecision.DISALLOWED) {
+            storage.markPageAsError(
+                row.get().pageId(),
+                "ROBOTS_DISALLOWED",
+                "Disallowed after robots refresh for claimed URL"
+            );
+            continue;
+        }
+        if (robotDecision == RobotDecision.TEMPORARY_DENY) {
+            frontier.reschedule(
+                row.get().pageId(),
+                robotDecision.denyUntilOrDefault(),
+                "ROBOTS_TRANSIENT"
+            );
+            continue;
+        }
+
         FetchResult fetched = fetcher.fetch(row.get().url());
         ParseResult parsed = parser.parse(row.get().url(), fetched.bodyOrEmpty());
         List<DiscoveredUrl> discovered = parsed.discoveredUrls().stream()
@@ -84,14 +103,24 @@ Concrete URL-exists branch:
 
 1. Claim highest-priority frontier row (`SKIP LOCKED`).
 2. Apply rate-limit gate.
-3. Fetch and classify (`HTML`, `BINARY`, `DUPLICATE`).
-4. Persist outcome and discovered-link ingestion in one transaction.
+3. Ensure robots rules are loaded for claimed row domain before any content fetch.
+4. Evaluate robots decision for claimed URL.
+5. Fetch and classify (`HTML`, `BINARY`, `DUPLICATE`) only when robots decision is `ALLOWED`.
+6. Persist outcome and discovered-link ingestion in one transaction.
 
 Stage B claim semantics are updated:
 1. Claim highest-priority **eligible** frontier row where `next_attempt_at <= now()` using atomic `UPDATE ... RETURNING`.
 2. Page enters `PROCESSING` with lease owner and expiration.
 3. Any retryable outcome transitions row back to `FRONTIER` with future `next_attempt_at`.
 4. Any terminal outcome transitions row to `HTML`, `BINARY`, `DUPLICATE`, or `ERROR`.
+
+Stage B robots pre-fetch gate (normative):
+- for any claimed URL, worker MUST call `robotsTxtCache.ensureLoaded(domain)` before calling `fetcher.fetch(url)`;
+- `ensureLoaded(domain)` MUST fetch `/robots.txt` on first encounter via the same per-domain limiter budget (`TS-06`, `TS-08`);
+- worker MUST call `robotsTxtCache.evaluate(canonicalUrl)` only after rules are loaded;
+- if decision is `DISALLOWED`, row transitions to terminal non-retryable outcome (`ROBOTS_DISALLOWED`);
+- if decision is `TEMPORARY_DENY`, row is rescheduled with future `next_attempt_at`;
+- seed/bootstrap URLs follow the same Stage B gate and MUST NOT bypass this contract.
 
 Concrete outcome mapping:
 - HTML response -> `page_type_code='HTML'`, `html_content` persisted;
@@ -146,6 +175,23 @@ Recovery guarantees:
 2. no active leases remain:
    - `SELECT COUNT(*) FROM crawldb.page WHERE page_type_code='PROCESSING' AND claim_expires_at > now()`
 3. conditions (1) and (2) remain true continuously for `crawler.frontier.terminationGraceMs` before scheduler declares completion.
+
+## Bootstrap And Startup Sequence
+
+Startup sequence is normative and MUST execute in this order:
+
+1. validate runtime configuration (`TS-13`);
+2. verify DB connectivity and schema compatibility;
+3. if frontier is empty:
+   - canonicalize each configured seed URL (`TS-05`);
+   - compute seed relevance score;
+   - ensure `site` row exists per seed domain;
+   - insert seed page rows as `FRONTIER` with `next_attempt_at=now()` and `attempt_count=0` idempotently;
+4. start worker loops.
+
+Bootstrap note:
+- startup does not prefetch robots for all seeds in bulk;
+- first worker claiming a seed/domain performs robots loading via Stage B robots pre-fetch gate before page content fetch.
 
 ## Implementation Location
 

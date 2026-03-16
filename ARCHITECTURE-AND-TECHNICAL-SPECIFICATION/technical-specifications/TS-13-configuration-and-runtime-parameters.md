@@ -28,9 +28,11 @@ Define all runtime settings, defaults, validation, and precedence rules.
 | `crawler.rateLimit.minDelayMs`               | `5000`                   | `>=5000`     | assignment floor               |
 | `crawler.rateLimit.maxBackoffMs`             | `300000`                 | `>=5000`     | overload cap                   |
 | `crawler.robots.cacheTtlHours`               | `24`                     | `>=1`        | rules cache TTL                |
+| `crawler.robots.cacheMaxEntries`             | `10000`                  | `>=100`      | max robots cache entries       |
 | `crawler.robots.temporaryDenyMaxMinutes`     | `10`                     | `1..120`     | max robots failure deny window |
 | `crawler.robots.temporaryDenyRetryMinutes`   | `2`                      | `1..60`      | robots refresh retry cadence   |
 | `crawler.buckets.cacheTtlHours`              | `1`                      | `>=1`        | bucket cache TTL               |
+| `crawler.buckets.cacheMaxEntries`            | `10000`                  | `>=100`      | max bucket cache entries       |
 | `crawler.retry.jitterMs`                     | `250`                    | `0..10000`   | retry jitter amplitude         |
 | `crawler.retry.maxAttempts.fetchTimeout`     | `3`                      | `0..20`      | must match TS-12 policy        |
 | `crawler.retry.maxAttempts.fetchOverload`    | `5`                      | `0..20`      | must match TS-12 policy        |
@@ -82,6 +84,7 @@ Worker default heuristic:
 - startup MUST validate `crawler.db.poolSize >= crawler.nCrawlers + 1` for claim + persistence overlap.
 - startup MUST validate `crawler.frontier.leaseRecoveryBatchSize >= 1`.
 - startup MUST validate robots temporary-deny bounds and retry cadence consistency.
+- startup MUST validate robots/bucket cache size bounds (`crawler.robots.cacheMaxEntries`, `crawler.buckets.cacheMaxEntries`).
 - startup MUST parse and validate `crawler.scoring.keywordConfig` structure (not just path existence).
 
 ## Runtime Enforcement Rules
@@ -93,6 +96,7 @@ Worker default heuristic:
 - lease recovery MUST run in bounded batches using `crawler.frontier.leaseRecoveryBatchSize`;
 - scheduler termination decision MUST honor `crawler.frontier.terminationGraceMs` continuous-stability window;
 - headless slot acquisition timeout triggers deterministic fallback/error path (defined in `TS-03`);
+- robots and bucket caches MUST apply both TTL and maximum-size eviction from runtime config.
 - effective retry and budget configuration snapshot MUST be emitted at startup.
 
 ## Profiles
@@ -112,6 +116,7 @@ Worker default heuristic:
 - DB pool-size validation test (`poolSize >= nCrawlers + 1`);
 - lease-recovery batch-size wiring test;
 - headless config validation tests.
+- robots and bucket cache max-entry validation tests.
 
 ## Implementation Location
 

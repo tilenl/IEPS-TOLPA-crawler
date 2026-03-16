@@ -17,6 +17,7 @@ The crawler implements a **Producer-Consumer architecture** using a database-bac
 - domain backoff counters and caches MUST be thread-safe;
 - DB row-level locking is the source of truth for frontier claim safety.
 - queue leases (`claimed_by`, `claim_expires_at`) are shared durability state and must be treated as authoritative.
+- robots first-encounter loading MUST be coordinated with per-domain single-flight guard so only one worker fetches `/robots.txt` per domain at a time.
 
 ## Worker Lifecycle
 
@@ -38,6 +39,7 @@ Operational throughput note:
 
 - DB contention on frontier claim/update;
 - shared caches (robots and buckets);
+- robots single-flight guard contention on first domain encounter;
 - Selenium resource usage when many external-domain fetches exist.
 - high-rate duplicate discoveries converging on same `page.url` unique constraint.
 - JDBC connection-pool starvation when `poolSize` is below active worker concurrency.
@@ -61,6 +63,7 @@ Operational throughput note:
 - parallel claim uniqueness;
 - graceful shutdown with active workers;
 - thread-safe cache usage under concurrent access.
+- concurrent first-encounter test proving a single robots fetch for N workers claiming same new domain.
 - bounded headless concurrency under load;
 - lease expiration and recovery behavior under simulated worker crash;
 - no deadlock under mixed DB contention and headless saturation.

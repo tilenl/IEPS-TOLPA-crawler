@@ -10,13 +10,20 @@ Manage robots parsing, caching, and persistence in `site` metadata.
 - cache: Caffeine domain-keyed rules cache;
 - TTL: 24h default, configurable via `TS-13`.
 - temporary deny window and retry cadence MUST be configurable via `TS-13`.
+- first-encounter robots load MUST be single-flight per domain (concurrent workers share one in-progress load).
 
 ## First Encounter Flow
 
-1. fetch `/robots.txt` for domain via same domain limiter;
-2. parse rules and extract sitemap directives;
-3. upsert `site` with `robots_content` and `sitemap_content`;
-4. cache parsed rules for runtime checks.
+1. acquire per-domain robots load guard (`domain` single-flight owner);
+2. if rules already loaded by another worker while waiting, return cached rules and release guard;
+3. fetch `/robots.txt` for domain via same domain limiter;
+4. parse rules and extract sitemap directives;
+5. upsert `site` with `robots_content` and `sitemap_content`;
+6. cache parsed rules for runtime checks and release guard.
+
+Fetch-path trigger:
+- Stage B worker flow (`TS-02`) MUST call `robotsTxtCache.ensureLoaded(domain)` before any `fetcher.fetch(url)` call;
+- this applies to seed/bootstrap URLs and discovered URLs equally.
 
 Robots limiter contract (normative):
 - robots fetch MUST consume one token from the same per-domain bucket used for content fetches;
@@ -41,6 +48,9 @@ Temporary deny policy (normative):
   - `DISALLOWED` -> drop URL before frontier insertion;
   - `TEMPORARY_DENY` -> defer URL by setting `next_attempt_at` and keeping `FRONTIER` state;
   - `ALLOWED` -> continue ingestion pipeline.
+- fetch path precondition:
+  - caller MUST ensure rules are loaded for URL domain before calling `evaluate(canonicalUrl)`;
+  - for content-fetch decisions, calling `evaluate(...)` without prior `ensureLoaded(domain)` is contract violation.
 
 Representative GitHub path decisions (examples):
 - allowed: `/topics/image-segmentation`, repository landing pages `/owner/repo`;
@@ -64,6 +74,8 @@ Representative GitHub path decisions (examples):
 - bounded temporary-deny behavior and max-deny cap;
 - recovery from temporary deny after successful robots refresh.
 - robots fetch rate-limit test proving token consumption through the same domain bucket.
+- concurrent first-encounter test: N workers for same new domain produce a single robots fetch (single-flight guard).
+- fetch-path precondition test: worker loads robots before `evaluate(...)` and before content fetch.
 
 ## Implementation Location
 

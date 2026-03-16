@@ -46,6 +46,7 @@ public interface Canonicalizer {
 }
 
 public interface RobotsTxtCache {
+    void ensureLoaded(String domain);
     RobotDecision evaluate(String canonicalUrl);
     BaseRobotRules getRulesForDomain(String domain);
 }
@@ -89,6 +90,11 @@ Ownership clarification:
 - `DiscoveredUrl`: `rawUrl`, `baseUrl`, `fromPageId`, `anchorText`, `contextText`.
 - `FetchContext`: `pageId`, `canonicalUrl`, `siteId`, `attempt`, `claimedAt`.
 
+`RobotsTxtCache` contract detail:
+- `ensureLoaded(domain)` loads or refreshes domain robots rules and MUST apply single-flight semantics per domain;
+- callers in fetch path MUST call `ensureLoaded(domain)` before `evaluate(canonicalUrl)`;
+- `evaluate(canonicalUrl)` assumes rules are loaded and only interprets policy decision.
+
 `RelevanceScorer` contract detail:
 - inputs are canonical URL + normalized text context (`anchorText`, `contextText`);
 - output MUST be bounded to `[0.0, 1.0]`;
@@ -113,6 +119,9 @@ Ownership clarification:
 - ownership contract tests:
   - frontier claim operations are exercised only via `Frontier`;
   - SQL conflict/dedup operations are exercised only via `Storage`.
+- robots contract tests:
+  - fetch path calls `ensureLoaded(domain)` before `evaluate(...)`;
+  - concurrent `ensureLoaded(domain)` calls produce one fetch side effect.
 
 ## Implementation Location
 
