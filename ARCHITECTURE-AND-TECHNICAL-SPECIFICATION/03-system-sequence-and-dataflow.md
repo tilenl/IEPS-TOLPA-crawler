@@ -6,8 +6,10 @@
 - **Stage B (fetch):** atomic claim of eligible frontier row -> rate-limit gate -> fetch -> parse -> persist -> feed extracted links to Stage A.
 
 Robots metadata flow:
-- on first domain encounter in Stage A, `/robots.txt` is fetched through the same domain limiter and persisted to `site` metadata;
-- robots disallow decisions happen before any frontier insert.
+- robots loading may be triggered from Stage A ingestion and Stage B fetch path;
+- both paths MUST call the same `robotsTxtCache.ensureLoaded(domain)` implementation with per-domain single-flight semantics;
+- `/robots.txt` fetch uses the same domain limiter budget as content fetches and persists `site` metadata;
+- robots disallow decisions in Stage A happen before frontier insert; Stage B performs a pre-fetch robots gate before content fetch.
 
 ## End-to-End Sequence
 
@@ -29,8 +31,7 @@ alt allowed
   Fetcher-->>Worker: fetchResult
   Worker->>Parser: parse(fetchResult)
   Parser-->>Worker: parsedArtifacts
-  Worker->>Storage: persistPageOutcome(...)
-  Worker->>Storage: ingestExtractedLinks(...)
+  Worker->>Storage: persistFetchOutcomeWithLinks(...)
 else delayed
   Worker->>Frontier: releaseAndReschedule(...)
 end

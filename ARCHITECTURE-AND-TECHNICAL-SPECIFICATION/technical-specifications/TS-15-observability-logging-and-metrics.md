@@ -6,6 +6,7 @@
 - required fields: `timestamp`, `level`, `workerId`, `pageId`, `url`, `domain`, `event`, `result`;
 - no secrets in logs (DB credentials, tokens).
 - queue-state events MUST include `fromState`, `toState`, `attemptCount`, and `nextAttemptAt` when present.
+- `workerId` in logs MUST match the frontier lease owner identity used in `claimed_by` (`TS-07`, `TS-14`).
 
 ## Event Types
 
@@ -16,6 +17,7 @@
 - dedup decisions (URL/content);
 - persistence outcomes and failures.
 - budget-drop and budget-defer events.
+- URL-length rejection events (`URL_TOO_LONG`) for canonical URLs rejected before DB insert.
 - robots fetch outcomes (`2xx`, `4xx`, `3xx/5xx`) and robots decision outcomes.
 
 ## Metrics
@@ -35,6 +37,7 @@
 ## Healthcheck Contracts
 
 - readiness MUST fail when required dependencies are unavailable (DB connectivity, schema/version mismatch);
+- schema mismatch diagnostics MUST include at minimum `expectedVersion`, `dbVersion`, and a remediation hint to apply/align DB schema;
 - readiness SHOULD degrade when DB pool or headless saturation exceeds configured threshold;
 - liveness MUST fail for unrecoverable worker-loop stall (no successful state transitions beyond configured timeout);
 - health endpoints/status reporters MUST expose lease-recovery pressure and retry backlog age.

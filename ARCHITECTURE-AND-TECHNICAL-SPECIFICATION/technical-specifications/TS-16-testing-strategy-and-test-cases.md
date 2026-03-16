@@ -42,6 +42,7 @@
   - stale `PROCESSING` rows are recovered to `FRONTIER` exactly once.
 - content dedup race check:
   - concurrent same-hash pages produce one canonical owner and deterministic duplicates.
+  - repeat the same concurrency test multiple times and assert stable deterministic owner rule outcome (`min(page_id)`).
 - headless saturation check:
   - max headless session cap enforced and fallback path is deterministic.
 - robots temporary-deny TTL check:
@@ -51,6 +52,13 @@
   - per-domain cap enforces deterministic ingestion decisions.
 - observability checks:
   - lease age, delayed queue age, DB pool saturation, and healthcheck transitions are emitted correctly.
+- SQL safety checks:
+  - injection-shaped URL/error payloads are handled via bound parameters and do not alter query semantics.
+- schema version checks:
+  - matching schema version passes startup/readiness;
+  - mismatched schema version fails fast with deterministic diagnostic payload.
+- URL length boundary check:
+  - canonical URL length `3001` is rejected as `URL_TOO_LONG` before DB insert attempt.
 
 ## Quality Gates (Pre-Coding/Pre-Merge)
 

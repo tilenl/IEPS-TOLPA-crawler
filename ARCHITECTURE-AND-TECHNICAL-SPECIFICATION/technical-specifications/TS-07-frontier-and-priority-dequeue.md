@@ -48,6 +48,11 @@ Standalone `SELECT ... FOR UPDATE SKIP LOCKED` without state mutation is NOT all
 - claim lease MUST be durable in DB (`claimed_by`, `claimed_at`, `claim_expires_at`);
 - index `idx_page_frontier_priority` is required to keep claim performance stable.
 
+Worker identity contract:
+- `claimed_by` MUST be a stable internal worker identity (recommended format: startup UUID + host/pid or equivalent);
+- worker identity MUST NOT be user-controlled input;
+- claim/reschedule/recovery logs MUST include the same worker identity value used in `claimed_by`.
+
 ## Lease Recovery Semantics
 
 - rows in `PROCESSING` with `claim_expires_at < now()` MUST be eligible for lease recovery;
@@ -83,6 +88,8 @@ WHERE p.id = s.id;
 - reschedule MUST set `next_attempt_at` to computed due time;
 - reschedule MUST clear lease fields (`claimed_by`, `claimed_at`, `claim_expires_at`);
 - retry metadata MUST be persisted for diagnostics and retry-budget enforcement.
+- if a reschedule/error-mark update fails transiently, implementation MAY rely on lease expiry + stale-lease recovery path;
+- this assignment profile does not require nested recovery orchestration beyond logging and bounded stale-lease recovery.
 
 Seed bootstrap behavior:
 - when frontier is empty at startup, configured seeds MUST be canonicalized (`TS-05`) before insertion;

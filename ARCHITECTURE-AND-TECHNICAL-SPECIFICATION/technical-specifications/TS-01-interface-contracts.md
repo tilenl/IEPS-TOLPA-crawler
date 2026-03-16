@@ -8,6 +8,7 @@ Drift resolution for this specification set:
 - current architecture docs are source of truth when project-plan wording differs;
 - URL deduplication is DB-authoritative (no Bloom filter contract required);
 - politeness contract is per-domain for this architecture profile.
+- storage write-path source of truth is the atomic Stage B contract in `TS-02` + `TS-10`.
 
 ## Global Contract Rules
 
@@ -65,9 +66,14 @@ public interface ContentHasher {
 
 public interface Storage {
     Optional<Long> ensureSite(String domain);
-    PersistOutcome persistFetchOutcome(FetchContext context, FetchResult result, ParseResult parsed);
+    PersistOutcome persistFetchOutcomeWithLinks(
+        FetchContext context,
+        FetchResult result,
+        ParseResult parsed,
+        Collection<DiscoveredUrl> discovered
+    );
     LinkInsertResult insertLink(long fromPageId, long toPageId);
-    IngestResult ingestDiscoveredUrl(DiscoveredUrl discoveredUrl);
+    IngestResult ingestDiscoveredUrls(Collection<DiscoveredUrl> discoveredUrls);
     InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore);
     Optional<Long> findPageByContentHash(String sha256);
     void storeContentHash(long pageId, String sha256);
@@ -106,6 +112,7 @@ Ownership clarification:
 - canonical URL is the only URL form accepted by `Storage`.
 - `Storage` is authoritative for URL uniqueness.
 - link insertion is required even when discovered target already exists.
+- Stage B completion MUST use `persistFetchOutcomeWithLinks(...)` as the only normative storage write path.
 - `insertFrontierIfAbsent` semantics:
   - inserted -> new `FRONTIER` row created;
   - conflict -> no new row; implementation MUST return (or immediately resolve and return) existing page id for link insertion.

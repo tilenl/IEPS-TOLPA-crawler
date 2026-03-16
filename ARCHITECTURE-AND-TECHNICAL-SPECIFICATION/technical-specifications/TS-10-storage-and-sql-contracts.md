@@ -23,6 +23,12 @@ Define authoritative database operations and method-to-SQL mappings.
 - `registerContentOwnership(...)`
 - `resolveContentOwner(...)`
 
+## SQL Safety Contract (Normative)
+
+- all SQL execution MUST use prepared/bound parameters; string interpolation/concatenation with runtime input is forbidden;
+- this applies to URLs, worker identifiers, error fields, and all dynamic predicates/values;
+- query snippets shown in this spec are logical templates; concrete implementation MUST preserve bound-parameter semantics.
+
 ## SQL Catalog (Normative)
 
 - **Claim next eligible frontier row (atomic)**
@@ -48,9 +54,13 @@ Define authoritative database operations and method-to-SQL mappings.
 - **Mark duplicate**
   - `UPDATE crawldb.page SET page_type_code='DUPLICATE', html_content=NULL, content_hash=?, accessed_time=? WHERE id=?`
 - **Register content ownership (atomic dedup)**
-  - `INSERT INTO crawldb.content_owner(content_hash, owner_page_id, created_at) VALUES (?, ?, now()) ON CONFLICT (content_hash) DO NOTHING`
-- **Resolve content owner**
-  - `SELECT owner_page_id FROM crawldb.content_owner WHERE content_hash=?`
+  - deterministic winner rule for same-hash concurrency: smallest `owner_page_id` wins;
+  - canonical pattern:
+    - `INSERT INTO crawldb.content_owner(content_hash, owner_page_id, created_at)
+       VALUES (?, ?, now())
+       ON CONFLICT (content_hash) DO UPDATE
+       SET owner_page_id = LEAST(crawldb.content_owner.owner_page_id, EXCLUDED.owner_page_id)
+       RETURNING owner_page_id`
 - **Persist fetch outcome with links (atomic)**
   - `persistFetchOutcomeWithLinks(...)` MUST execute page outcome transition and discovered-link ingestion for the current source page in one transaction;
   - if any non-tolerable DB failure occurs, both outcome and associated discovered-link effects MUST roll back together.
@@ -58,6 +68,8 @@ Define authoritative database operations and method-to-SQL mappings.
 ## Transaction Rules
 
 - claim transaction isolated and short with atomic state mutation;
+- minimum isolation level for storage transactions is `READ COMMITTED`;
+- if concurrency anomalies are observed in content-dedup stress tests, implementation MUST elevate dedup flow isolation/locking (e.g., `SERIALIZABLE` for that flow);
 - page outcome update and related insertions MUST be atomic;
 - page outcome + discovered-link ingestion for the current fetched page MUST be atomic via `persistFetchOutcomeWithLinks(...)`;
 - ingestion insertions MUST be idempotent for retry safety;
@@ -82,6 +94,7 @@ Define authoritative database operations and method-to-SQL mappings.
 - reschedule and retry-attempt persistence tests;
 - expired lease recovery tests;
 - concurrent same-hash dedup ownership tests.
+- deterministic same-hash winner tests (`min(page_id)` ownership rule across repeated runs).
 - atomicity test ensuring discovered links and page terminal state commit/rollback together.
 - batch ingestion contract tests for mixed valid/invalid discovered URLs.
 

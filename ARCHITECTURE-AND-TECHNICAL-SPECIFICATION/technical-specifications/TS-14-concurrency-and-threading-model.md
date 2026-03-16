@@ -19,6 +19,11 @@ The crawler implements a **Producer-Consumer architecture** using a database-bac
 - queue leases (`claimed_by`, `claim_expires_at`) are shared durability state and must be treated as authoritative.
 - robots first-encounter loading MUST be coordinated with per-domain single-flight guard so only one worker fetches `/robots.txt` per domain at a time.
 
+Worker identity rules:
+- each worker loop MUST use a stable generated `workerId` for its lifetime;
+- `workerId` SHOULD be generated at startup (UUID or host+pid+worker-index equivalent);
+- `workerId` MUST be propagated consistently to frontier lease ownership (`claimed_by`) and observability fields.
+
 ## Worker Lifecycle
 
 1. scheduler starts worker pool;

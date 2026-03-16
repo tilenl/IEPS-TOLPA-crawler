@@ -154,6 +154,8 @@ Recovery guarantees:
 - retryable categories: increment attempt budget and set `next_attempt_at`;
 - non-retryable categories: transition to terminal `ERROR` exactly once;
 - all recovery transitions MUST clear or preserve lease ownership deterministically (no dangling `PROCESSING`).
+- assignment-scope minimal policy: if `reschedule`/`markPageAsError` fails transiently, worker may rely on lease expiry + stale-lease recovery (`TS-07`) rather than nested recovery loops.
+- recovery-path failures MUST emit structured logs including `workerId`, `pageId`, error category, and lease fields.
 
 ## Backpressure And Crawl Budget Contract
 

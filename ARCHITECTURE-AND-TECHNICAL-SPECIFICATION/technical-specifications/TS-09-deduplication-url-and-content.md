@@ -43,12 +43,17 @@ Ensure crawler processes each URL once while identifying content-equivalent page
 
 For each fetched HTML page with hash `H`:
 
-1. In one transaction, attempt to register ownership in `content_owner` using `INSERT ... ON CONFLICT DO NOTHING`.
-2. Read `owner_page_id` for `H`.
+1. In one transaction, execute deterministic ownership upsert with winner rule `min(page_id)`:
+   - `INSERT ... ON CONFLICT (content_hash) DO UPDATE SET owner_page_id = LEAST(existing.owner_page_id, EXCLUDED.owner_page_id) RETURNING owner_page_id`.
+2. Use returned `owner_page_id` in the same transaction.
 3. If `owner_page_id == currentPageId`, mark page as canonical `HTML` and persist `content_hash`.
 4. If `owner_page_id != currentPageId`, mark page `DUPLICATE`, clear HTML payload, persist duplicate linkage.
 
 This contract MUST yield deterministic outcome under concurrent workers.
+
+Isolation expectation:
+- minimum transaction isolation is `READ COMMITTED`;
+- if anomalies appear in stress tests, dedup flow MUST be elevated to stronger isolation/locking semantics.
 
 ## Required Tests
 
@@ -57,6 +62,7 @@ This contract MUST yield deterministic outcome under concurrent workers.
 - distinct URLs with same content are correctly detected;
 - non-duplicate content remains `HTML`.
 - concurrent same-hash workers produce one canonical owner and deterministic duplicates.
+- repeated reruns of same-hash concurrency tests must produce identical owner selection outcome.
 
 ## Implementation Location
 

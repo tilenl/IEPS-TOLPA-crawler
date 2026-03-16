@@ -25,6 +25,10 @@ Fetch-path trigger:
 - Stage B worker flow (`TS-02`) MUST call `robotsTxtCache.ensureLoaded(domain)` before any `fetcher.fetch(url)` call;
 - this applies to seed/bootstrap URLs and discovered URLs equally.
 
+Ingestion-path trigger:
+- Stage A ingestion MAY also call `robotsTxtCache.ensureLoaded(domain)` before `evaluate(canonicalUrl)` for first-encounter domains;
+- Stage A and Stage B MUST share the same per-domain single-flight loader so only one robots fetch side effect occurs for concurrent first encounters.
+
 Robots limiter contract (normative):
 - robots fetch MUST consume one token from the same per-domain bucket used for content fetches;
 - if no token is currently available, robots fetch MUST be delayed/rescheduled (never bypass limiter);

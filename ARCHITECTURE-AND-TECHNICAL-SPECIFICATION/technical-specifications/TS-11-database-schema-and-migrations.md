@@ -22,13 +22,16 @@
   - `content_hash VARCHAR(64) PRIMARY KEY`
   - `owner_page_id INTEGER NOT NULL REFERENCES crawldb.page(id)`
   - `created_at TIMESTAMP NOT NULL`
+- `schema_version` table for assignment-scope drift checks:
+  - `version INTEGER NOT NULL`
+  - exactly one row is required in this table.
 - `page_type` lookup extension values:
   - `PROCESSING`
   - `ERROR`
 
 ## Required Indexes
 
-- `idx_page_frontier_priority (page_type_code, next_attempt_at ASC, relevance_score DESC, accessed_time ASC, id ASC)`
+- `idx_page_frontier_priority (page_type_code, relevance_score DESC, next_attempt_at ASC, accessed_time ASC, id ASC)`
 - `idx_page_processing_lease (page_type_code, claim_expires_at ASC)`
 - index on `page(content_hash)` for duplicate read path
 - unique/primary key on `content_owner(content_hash)`
@@ -43,8 +46,14 @@
   2. backfill/defaults if needed
   3. add/extend `page_type` lookup (`PROCESSING`, `ERROR`)
   4. add ownership table for content hash
-  5. add indexes and constraints (including frontier index replacement)
-  6. validate claim/retry defaults for existing rows
+  5. add `schema_version` table and set expected version row
+  6. add indexes and constraints (including frontier index replacement)
+  7. validate claim/retry defaults for existing rows
+
+Assignment-scope migration policy:
+- complex rollback/compatibility matrices are out of scope;
+- schema drift handling relies on startup/readiness exact-version checks (`TS-15`);
+- migration policy expansion is deferred unless real migration incidents occur.
 
 ## Verification Checklist
 
@@ -61,6 +70,7 @@ Practical verification commands (example):
 - `SELECT column_name FROM information_schema.columns WHERE table_schema='crawldb' AND table_name='page';`
 - `SELECT indexname FROM pg_indexes WHERE schemaname='crawldb' AND indexname='idx_page_frontier_priority';`
 - `SELECT content_hash, owner_page_id FROM crawldb.content_owner LIMIT 5;`
+- `SELECT version FROM crawldb.schema_version;`
 
 Bootstrap seed verification:
 - on empty frontier bootstrap, configured seeds must exist as `page_type_code='FRONTIER'`;

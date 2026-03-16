@@ -101,6 +101,12 @@ Important note:
 
 ## Error Policy
 
+- scheme allowlist is mandatory: only `http` and `https` URLs are eligible for ingestion;
+- non-http(s) schemes (e.g., `javascript:`, `data:`, `file:`, `vbscript:`) MUST be rejected as non-retryable ingestion skips with diagnostic log;
+- canonical URL length guard is mandatory for assignment scope:
+  - if `finalCanonicalUrl.length() > 3000`, URL MUST be rejected as non-retryable `URL_TOO_LONG`;
+  - check MUST run after canonicalization/filtering and before any Stage A DB insert/upsert;
+  - rejection MUST be logged with source context and MUST NOT crash or block batch processing.
 - invalid URL -> non-retryable ingestion skip with diagnostic log;
 - canonicalization failure MUST NOT crash worker loop.
 - malformed relative URL or illegal URI reconstruction after filtering -> skip URL, log reason and source page context.

@@ -4,6 +4,11 @@
 
 Extract assignment-required artifacts from HTML document.
 
+Parser boundary is strict:
+- parser extracts artifacts and returns `ParseResult` only;
+- parser MUST NOT call `Storage` directly;
+- Stage A ingestion (canonicalize -> policy checks -> dedup/upsert -> link insert) is owned by worker/storage contracts (`TS-02`, `TS-10`).
+
 ## Library Requirement
 
 - parser MUST use `Jsoup` as the HTML/DOM parsing engine;
@@ -38,7 +43,7 @@ Concrete extraction example:
 for (Element link : doc.select("a[href]")) {
     String absolute = link.attr("abs:href");
     String anchorText = link.text();
-    storage.ingestDiscoveredUrl(
+    discovered.add(
         DiscoveredUrl.of(absolute, canonicalUrl, currentPageId, anchorText, surroundingText(link))
     );
 }
@@ -49,6 +54,7 @@ for (Element link : doc.select("a[href]")) {
 - regex MUST detect single or double quoted URL assignment patterns;
 - parser MUST include text context from clickable element;
 - results are passed to Stage A pipeline identically to `href` links.
+- non-http(s) schemes are rejected in Stage A (`TS-05`) and MUST NOT trigger fetch/persistence.
 
 Jsoup is used to identify elements containing the `onclick` attribute, but since it does not parse JavaScript, a regular expression is required to extract the target URL from the attribute's string value.
 

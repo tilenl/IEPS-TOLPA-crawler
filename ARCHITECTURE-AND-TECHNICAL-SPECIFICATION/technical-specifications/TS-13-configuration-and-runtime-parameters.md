@@ -45,6 +45,7 @@ Define all runtime settings, defaults, validation, and precedence rules.
 | `crawler.db.user`                            | none                     | required     | DB user                        |
 | `crawler.db.password`                        | none                     | required     | DB password                    |
 | `crawler.db.poolSize`                        | `min(nCrawlers + 2, 20)` | `>=2`        | JDBC connection pool size      |
+| `crawler.db.expectedSchemaVersion`           | none                     | required     | startup/readiness schema drift check |
 
 `crawler.scoring.keywordConfig` file format (normative):
 
@@ -82,6 +83,7 @@ Worker default heuristic:
 - startup MUST validate `crawler.fetch.maxHeadlessSessions <= crawler.nCrawlers`.
 - startup MUST validate `crawler.budget.maxPerDomainPages <= crawler.budget.maxTotalPages`.
 - startup MUST validate `crawler.db.poolSize >= crawler.nCrawlers + 1` for claim + persistence overlap.
+- startup MUST validate DB schema version equality (`crawler.db.expectedSchemaVersion` vs `crawldb.schema_version.version`) before worker start.
 - startup MUST validate `crawler.frontier.leaseRecoveryBatchSize >= 1`.
 - startup MUST validate robots temporary-deny bounds and retry cadence consistency.
 - startup MUST validate robots/bucket cache size bounds (`crawler.robots.cacheMaxEntries`, `crawler.buckets.cacheMaxEntries`).
@@ -93,6 +95,7 @@ Worker default heuristic:
 - retry delays MUST include jitter for transient categories;
 - when `crawler.budget.maxTotalPages` is reached, Stage A insertion stops and logs budget-drop events;
 - when `crawler.budget.maxPerDomainPages` is reached for a domain, Stage A rejects additional URLs for that domain and logs `BUDGET_DROPPED`;
+- when canonical URL length exceeds DB contract (`>3000`), Stage A rejects URL as non-retryable `URL_TOO_LONG` and logs structured diagnostics;
 - lease recovery MUST run in bounded batches using `crawler.frontier.leaseRecoveryBatchSize`;
 - scheduler termination decision MUST honor `crawler.frontier.terminationGraceMs` continuous-stability window;
 - headless slot acquisition timeout triggers deterministic fallback/error path (defined in `TS-03`);
