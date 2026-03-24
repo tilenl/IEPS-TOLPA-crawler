@@ -1,2 +1,5 @@
 NOTEBOOKS/
 .cursor/
+
+# Local PostgreSQL data (see pa1/db/database-setup.md)
+.docker/pgdata/
