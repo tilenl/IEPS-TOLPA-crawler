@@ -75,8 +75,6 @@ public interface Storage {
     LinkInsertResult insertLink(long fromPageId, long toPageId);
     IngestResult ingestDiscoveredUrls(Collection<DiscoveredUrl> discoveredUrls);
     InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore);
-    Optional<Long> findPageByContentHash(String sha256);
-    void storeContentHash(long pageId, String sha256);
     void markPageAsError(long pageId, String category, String message);
 }
 ```
@@ -113,6 +111,7 @@ Ownership clarification:
 - `Storage` is authoritative for URL uniqueness.
 - link insertion is required even when discovered target already exists.
 - Stage B completion MUST use `persistFetchOutcomeWithLinks(...)` as the only normative storage write path.
+- content-hash deduplication MUST NOT be exposed as separate `Storage` methods (no check-then-act API); ownership and `DUPLICATE` vs `HTML` outcomes are determined only inside `persistFetchOutcomeWithLinks` under [TS-09](TS-09-deduplication-url-and-content.md) / [TS-10](TS-10-storage-and-sql-contracts.md).
 - the worker MUST call `persistFetchOutcomeWithLinks(...)` **at most once** per successful completion of a **leased** claim cycle; MUST NOT blind-retry after a commit; full rules in [TS-10](TS-10-storage-and-sql-contracts.md) / [TS-02](TS-02-worker-orchestration-and-pipeline.md).
 - `insertFrontierIfAbsent` semantics ([TS-10](TS-10-storage-and-sql-contracts.md)):
   - inserted -> new `FRONTIER` row created;
