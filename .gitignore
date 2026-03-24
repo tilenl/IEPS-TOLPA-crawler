@@ -4,7 +4,8 @@ pa1/.gradle/
 pa1/build/
 
 .gradle-local/
-.docker/
+# Local PostgreSQL data (see pa1/db/database-setup.md)
+.docker/pgdata/
 
 pa1/db/crawldb
 
