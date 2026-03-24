@@ -53,6 +53,7 @@ Operational throughput note:
 
 - maximum concurrent headless fetches is bounded by `crawler.fetch.maxHeadlessSessions` (`TS-13`);
 - DB connection pool size is controlled by `crawler.db.poolSize` (`TS-13`) and SHOULD satisfy `poolSize >= nCrawlers + 1`;
+- JDBC connections SHOULD be held **only** for database work (claim, persist, Stage A writes)—not across entire fetch/parse/headless segments—so the pool is not exhausted while workers block on network or WebDriver ([TS-13](TS-13-configuration-and-runtime-parameters.md)).
 - headless capacity exhaustion MUST not block worker indefinitely or stall frontier progression;
 - queue lease duration (`crawler.frontier.leaseSeconds`) must exceed expected fetch/parse/persist critical path for healthy workers;
 - expired leases are recoverable and returned to `FRONTIER` before starvation occurs.

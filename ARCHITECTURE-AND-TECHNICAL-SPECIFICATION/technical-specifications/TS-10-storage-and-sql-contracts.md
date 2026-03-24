@@ -87,6 +87,8 @@ Atomicity clarification (normative):
 - retry transition updates (`attempt_count`, `next_attempt_at`, diagnostics) MUST be atomic with queue state transition;
 - content dedup owner registration and duplicate/owner state update MUST happen in one transaction.
 
+**Assignment-scale concurrency note:** `SERIALIZABLE` on `persistFetchOutcomeWithLinks` can produce `40001` aborts when many workers touch the same hot rows (e.g. shared `content_hash`). The expected worker count for this project follows `crawler.nCrawlers` in [TS-13](TS-13-configuration-and-runtime-parameters.md) (default heuristic `min(cpu*2, 8)`). Raising parallelism without capacity testing increases serialization retry pressure.
+
 ## `persistFetchOutcomeWithLinks` process contract (normative)
 
 - **Only `Storage`** performs writes for Stage B page outcome and batch discovered-link effects; the **worker** MUST NOT bypass `Storage` with ad-hoc JDBC on this path ([TS-01](TS-01-interface-contracts.md), [TS-02](TS-02-worker-orchestration-and-pipeline.md)).

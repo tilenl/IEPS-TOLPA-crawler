@@ -39,10 +39,11 @@ Reference formula:
 long delayMs = Math.min(5000L * (1L << failures), maxBackoffMs);
 ```
 
-## Cache
+## Per-domain bucket cache (normative)
 
-- bucket registry uses Caffeine with inactivity eviction;
-- size and eviction policy configurable in `TS-13`.
+- Bucket4j state for a domain encodes spacing relative to the **last** request. If a Caffeine entry is **evicted** and a **new** bucket is created, the process can immediately send another request **without** respecting the 5s floor since the real last HTTP request—**lost state**, not a skipped `tryAcquire` check. That violates [05-non-functional-requirements.md](../05-non-functional-requirements.md) (“MUST enforce per-domain request delay floor of 5 seconds”) for domains that are still crawlable in the same run.
+- **Assignment-scale policy:** Configure the bucket registry so entries are **not** dropped under normal assignment loads—use **very large** `crawler.buckets.cacheMaxEntries` and a **TTL far longer** than any realistic idle gap between requests to the same host (normative defaults in [TS-13](TS-13-configuration-and-runtime-parameters.md)). Operators who tighten eviction MUST verify politeness under load.
+- **Future / internet-scale:** If strong eviction or multiple processes are required, add a **durable** last-request timestamp per domain (e.g. on `site`) and combine with buckets; that is **out of assignment scope** unless explicitly added.
 
 ## Required Tests
 
@@ -52,6 +53,7 @@ long delayMs = Math.min(5000L * (1L << failures), maxBackoffMs);
 - non-blocking worker reschedule behavior on the **pre-fetch** gate;
 - redirect mid-chain: bounded block within lease vs reschedule when lease margin insufficient ([TS-03](TS-03-fetcher-specification.md)).
 - robots fetch token-consumption test using shared domain limiter bucket.
+- regression: with default `crawler.buckets.*` from [TS-13](TS-13-configuration-and-runtime-parameters.md), per-domain spacing is not reset by TTL eviction during a bounded assignment crawl (no burst below the floor after long idle on a domain still in scope).
 
 ## Implementation Location
 

@@ -41,6 +41,15 @@ public final class ConfigRemediation {
                         + " or adjust crawler.rateLimit.maxBackoffMs within policy limits.");
     }
 
+    public static Remediation fetchCapacityExhausted() {
+        return new Remediation(
+                "crawler.retry.maxAttempts.fetchCapacity",
+                "To allow more headless capacity exhaustion retries before terminal handling, increase"
+                        + " crawler.retry.maxAttempts.fetchCapacity; to reduce saturation, increase"
+                        + " crawler.fetch.maxHeadlessSessions (must remain <= crawler.nCrawlers) or"
+                        + " crawler.fetch.headlessAcquireTimeoutMs per TS-13.");
+    }
+
     public static Remediation dbTransientExhausted() {
         return new Remediation(
                 "crawler.retry.maxAttempts.dbTransient",
@@ -98,7 +107,8 @@ public final class ConfigRemediation {
     public static Remediation bucketCacheEviction() {
         return new Remediation(
                 "crawler.buckets.cacheMaxEntries",
-                "To reduce per-domain bucket re-creation, increase crawler.buckets.cacheMaxEntries or"
+                "Defaults are assignment-safe per TS-08. If you tightened TTL or max entries and see"
+                        + " burst traffic to origins, increase crawler.buckets.cacheMaxEntries or"
                         + " crawler.buckets.cacheTtlHours.");
     }
 

@@ -33,6 +33,7 @@ public record RuntimeConfig(
         int recoveryPathBaseBackoffMs,
         int retryMaxAttemptsFetchTimeout,
         int retryMaxAttemptsFetchOverload,
+        int retryMaxAttemptsFetchCapacity,
         int retryMaxAttemptsDbTransient,
         int budgetMaxTotalPages,
         int budgetMaxFrontierRows,
@@ -67,13 +68,14 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.robots.cacheMaxEntries", 10_000),
                 parseInt(p, "crawler.robots.temporaryDenyMaxMinutes", 10),
                 parseInt(p, "crawler.robots.temporaryDenyRetryMinutes", 2),
-                parseInt(p, "crawler.buckets.cacheTtlHours", 1),
-                parseInt(p, "crawler.buckets.cacheMaxEntries", 10_000),
+                parseInt(p, "crawler.buckets.cacheTtlHours", 8760),
+                parseInt(p, "crawler.buckets.cacheMaxEntries", 100_000),
                 parseInt(p, "crawler.retry.jitterMs", 250),
                 parseInt(p, "crawler.recoveryPath.maxAttempts", 3),
                 parseInt(p, "crawler.recoveryPath.baseBackoffMs", 100),
                 parseInt(p, "crawler.retry.maxAttempts.fetchTimeout", 3),
                 parseInt(p, "crawler.retry.maxAttempts.fetchOverload", 5),
+                parseInt(p, "crawler.retry.maxAttempts.fetchCapacity", 3),
                 parseInt(p, "crawler.retry.maxAttempts.dbTransient", 5),
                 parseInt(p, "crawler.budget.maxTotalPages", 5000),
                 parseInt(p, "crawler.budget.maxFrontierRows", 20_000),
@@ -146,6 +148,10 @@ public record RuntimeConfig(
         require(
                 retryMaxAttemptsFetchOverload >= 0 && retryMaxAttemptsFetchOverload <= 20,
                 "crawler.retry.maxAttempts.fetchOverload",
+                "0..20");
+        require(
+                retryMaxAttemptsFetchCapacity >= 0 && retryMaxAttemptsFetchCapacity <= 20,
+                "crawler.retry.maxAttempts.fetchCapacity",
                 "0..20");
         require(
                 retryMaxAttemptsDbTransient >= 0 && retryMaxAttemptsDbTransient <= 20,

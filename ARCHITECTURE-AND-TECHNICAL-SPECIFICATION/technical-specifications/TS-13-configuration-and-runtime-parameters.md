@@ -52,8 +52,8 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 | `crawler.robots.cacheMaxEntries` | `10000` | `>=100` | Max distinct domains in robots cache; eviction when full. |
 | `crawler.robots.temporaryDenyMaxMinutes` | `10` | `1..120` | Max wall-clock window robots fetch failures can mark a domain as temporarily denied. |
 | `crawler.robots.temporaryDenyRetryMinutes` | `2` | `1..60` | Cadence for retrying robots refresh after transient failure. |
-| `crawler.buckets.cacheTtlHours` | `1` | `>=1` | TTL for per-domain rate-limiter bucket state in memory. |
-| `crawler.buckets.cacheMaxEntries` | `10000` | `>=100` | Max domains tracked in bucket cache; eviction when full. |
+| `crawler.buckets.cacheTtlHours` | `8760` | `>=1` | Hours after last access before an idle per-domain **rate-limiter** bucket entry may expire in the Caffeine registry. Default **8760** (one year) so TTL eviction does **not** reset Bucket4j spacing during typical assignment crawls ([TS-08](TS-08-rate-limiting-and-backoff.md)). |
+| `crawler.buckets.cacheMaxEntries` | `100000` | `>=100` | Max distinct per-domain buckets in memory; size eviction when full. Default **100000** to avoid eviction for bounded host cardinality in the assignment profile ([TS-08](TS-08-rate-limiting-and-backoff.md)). |
 
 ### Retry, recovery path, and attempt budgets
 
@@ -64,6 +64,7 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 | `crawler.recoveryPath.baseBackoffMs` | `100` | `10..5000` | Base delay for exponential backoff on recovery-path retries. |
 | `crawler.retry.maxAttempts.fetchTimeout` | `3` | `0..20` | Max persisted attempts for `FETCH_TIMEOUT` before terminal error (`TS-12`). |
 | `crawler.retry.maxAttempts.fetchOverload` | `5` | `0..20` | Max attempts for `FETCH_HTTP_OVERLOAD` / 429–503 style backoff. |
+| `crawler.retry.maxAttempts.fetchCapacity` | `3` | `0..20` | Max attempts for `FETCH_CAPACITY_EXHAUSTED` (headless slot timeout / capacity path, [TS-03](TS-03-fetcher-specification.md), [TS-12](TS-12-error-model-and-recovery-policy.md)). |
 | `crawler.retry.maxAttempts.dbTransient` | `5` | `0..20` | Max attempts for `DB_TRANSIENT` during worker-visible operations. |
 
 ### Budget
@@ -134,6 +135,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 | Frontier high-watermark deferral (`FRONTIER_DEFERRED` or equivalent) | `crawler.budget.maxFrontierRows` | To admit more URLs into the frontier sooner, increase `crawler.budget.maxFrontierRows`, or reduce discovery breadth via scoring seeds and link policy; very large queues increase memory and DB load. |
 | Fetch timeout retries exhausted (terminal `FETCH_TIMEOUT`) | `crawler.retry.maxAttempts.fetchTimeout` (and optionally `crawler.fetch.connectTimeoutMs`, `crawler.fetch.readTimeoutMs`) | To allow more attempts before giving up, increase `crawler.retry.maxAttempts.fetchTimeout`; to wait longer per attempt, increase `crawler.fetch.connectTimeoutMs` or `crawler.fetch.readTimeoutMs` if appropriate for slow origins. |
 | Overload retries exhausted (terminal overload path) | `crawler.retry.maxAttempts.fetchOverload` (and optionally `crawler.rateLimit.maxBackoffMs`) | To tolerate longer overload episodes, increase `crawler.retry.maxAttempts.fetchOverload` or adjust `crawler.rateLimit.maxBackoffMs` within policy limits. |
+| Headless capacity retries exhausted (`FETCH_CAPACITY_EXHAUSTED`) | `crawler.retry.maxAttempts.fetchCapacity` (and optionally `crawler.fetch.maxHeadlessSessions`, `crawler.fetch.headlessAcquireTimeoutMs`) | To allow more capacity-exhaustion retries before terminal handling, increase `crawler.retry.maxAttempts.fetchCapacity`; to reduce saturation, increase `crawler.fetch.maxHeadlessSessions` (must remain `<= crawler.nCrawlers`) or `crawler.fetch.headlessAcquireTimeoutMs` per headless guidance. |
 | DB transient retries exhausted in worker path | `crawler.retry.maxAttempts.dbTransient` | To tolerate longer DB outages per row, increase `crawler.retry.maxAttempts.dbTransient`; persistent failures require infrastructure or schema fixes, not only config. |
 | Recovery-path retries exhausted (`reschedule` / `markPageAsError`) | `crawler.recoveryPath.maxAttempts` | To allow more transient DB retries on state transitions, increase `crawler.recoveryPath.maxAttempts` or tune `crawler.recoveryPath.baseBackoffMs` / `crawler.retry.jitterMs`. |
 | Rate-limit reschedule (long observed waits) | `crawler.rateLimit.minDelayMs`, `crawler.rateLimit.maxBackoffMs` | The assignment enforces a minimum delay per domain; lowering below 5000 ms is not valid. To change politeness, adjust `crawler.rateLimit.minDelayMs` (within `>=5000`) or overload cap `crawler.rateLimit.maxBackoffMs`. |
@@ -141,7 +143,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 | Headless circuit open (repeated saturation) | `crawler.fetch.headlessCircuitOpenThreshold` | To make the circuit less sensitive, increase `crawler.fetch.headlessCircuitOpenThreshold`; to reduce saturation events, add headless slots or workers per headless guidance above. |
 | Robots cache eviction / short TTL pressure | `crawler.robots.cacheTtlHours`, `crawler.robots.cacheMaxEntries` | To reduce robots refetch churn, increase `crawler.robots.cacheTtlHours` or `crawler.robots.cacheMaxEntries` within operational memory limits. |
 | Robots temporary deny persists | `crawler.robots.temporaryDenyMaxMinutes`, `crawler.robots.temporaryDenyRetryMinutes` | To shorten deny windows or change retry cadence, adjust `crawler.robots.temporaryDenyMaxMinutes` and `crawler.robots.temporaryDenyRetryMinutes` within validated bounds. |
-| Bucket cache eviction | `crawler.buckets.cacheTtlHours`, `crawler.buckets.cacheMaxEntries` | To reduce per-domain bucket re-creation, increase `crawler.buckets.cacheMaxEntries` or `crawler.buckets.cacheTtlHours`. |
+| Bucket cache eviction (politeness risk if too aggressive) | `crawler.buckets.cacheTtlHours`, `crawler.buckets.cacheMaxEntries` | Defaults are assignment-safe per [TS-08](TS-08-rate-limiting-and-backoff.md). If you lower TTL or max entries and see burst traffic to origins, increase `crawler.buckets.cacheMaxEntries` or `crawler.buckets.cacheTtlHours`. |
 | Startup validation failure (any numeric or relational bound) | (the key that failed validation) | Logs MUST name the property and valid range from this document; fix the config file, environment variable, or CLI flag that sets that key. |
 | Schema version mismatch | `crawler.db.expectedSchemaVersion` | Align `crawler.db.expectedSchemaVersion` with the migrated database version, or run migrations to match the configured expectation (`TS-15`). |
 | JDBC pool exhaustion (if surfaced as warning) | `crawler.db.poolSize`, `crawler.nCrawlers` | Increase `crawler.db.poolSize` to at least `crawler.nCrawlers + 1`, or reduce `crawler.nCrawlers` to match pool capacity. |
@@ -161,7 +163,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - startup MUST fail on invalid numeric ranges;
 - startup SHOULD print effective configuration (without secrets).
 - startup SHOULD validate `crawler.rateLimit.minDelayMs >= 5000`.
-- startup MUST validate retry-attempt parameters against `TS-12` policy categories.
+- startup MUST validate retry-attempt parameters against `TS-12` policy categories (including `crawler.retry.maxAttempts.fetchCapacity` in `0..20`).
 - startup MUST validate budget values: positive `crawler.budget.maxTotalPages` and `crawler.budget.maxFrontierRows`.
 - startup MUST validate `crawler.fetch.maxHeadlessSessions <= crawler.nCrawlers`.
 - startup MUST validate `crawler.fetch.maxRedirects` in `0..20` (inclusive).
@@ -188,7 +190,8 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - scheduler termination decision MUST honor `crawler.frontier.terminationGraceMs` continuous-stability window while `COUNT(FRONTIER)+COUNT(PROCESSING)=0` per [TS-02](TS-02-worker-orchestration-and-pipeline.md);
 - the runtime MUST emit structured **heartbeat** logs on `crawler.health.heartbeatIntervalMs` per [TS-15](TS-15-observability-logging-and-metrics.md);
 - headless slot acquisition timeout triggers deterministic fallback/error path (defined in `TS-03`);
-- robots and bucket caches MUST apply both TTL and maximum-size eviction from runtime config.
+- robots cache MUST apply both TTL and maximum-size eviction from runtime config;
+- rate-limiter **bucket** cache MUST honor `crawler.buckets.cacheTtlHours` and `crawler.buckets.cacheMaxEntries`; default values are chosen so assignment-scale crawls do not lose per-domain spacing to eviction ([TS-08](TS-08-rate-limiting-and-backoff.md)).
 - effective retry and budget configuration snapshot MUST be emitted at startup.
 
 ## Profiles
@@ -202,7 +205,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - precedence resolution tests;
 - invalid value rejection tests;
 - effective config snapshot tests.
-- retry/budget parameter wiring tests in integration pipeline;
+- retry/budget parameter wiring tests in integration pipeline (including `crawler.retry.maxAttempts.fetchCapacity` validation);
 - assignment cap enforcement test for `crawler.budget.maxTotalPages=5000`;
 - frontier high-watermark deferral test for `crawler.budget.maxFrontierRows`;
 - DB pool-size validation test (`poolSize >= nCrawlers + 1`);

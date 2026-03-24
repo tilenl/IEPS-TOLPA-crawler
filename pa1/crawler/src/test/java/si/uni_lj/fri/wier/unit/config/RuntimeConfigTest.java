@@ -1,5 +1,6 @@
 package si.uni_lj.fri.wier.unit.config;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.Properties;
@@ -7,6 +8,14 @@ import org.junit.jupiter.api.Test;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 
 class RuntimeConfigTest {
+
+    @Test
+    void validate_rejectsFetchCapacityMaxAttemptsOutOfRange() {
+        Properties p = baseProps();
+        p.setProperty("crawler.retry.maxAttempts.fetchCapacity", "21");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
 
     @Test
     void validate_rejectsHeadlessSessionsGreaterThanWorkers() {
@@ -22,6 +31,9 @@ class RuntimeConfigTest {
         Properties p = baseProps();
         RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
         cfg.validate();
+        assertEquals(8760, cfg.bucketsCacheTtlHours());
+        assertEquals(100_000, cfg.bucketsCacheMaxEntries());
+        assertEquals(3, cfg.retryMaxAttemptsFetchCapacity());
     }
 
     private static Properties baseProps() {

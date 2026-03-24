@@ -3,8 +3,10 @@ package si.uni_lj.fri.wier.error;
 public enum CrawlerErrorCategory {
     INVALID_URL,
     ROBOTS_DISALLOWED,
+    ROBOTS_TRANSIENT,
     FETCH_TIMEOUT,
     FETCH_HTTP_OVERLOAD,
+    FETCH_CAPACITY_EXHAUSTED,
     FETCH_HTTP_CLIENT,
     PARSER_FAILURE,
     DB_TRANSIENT,
