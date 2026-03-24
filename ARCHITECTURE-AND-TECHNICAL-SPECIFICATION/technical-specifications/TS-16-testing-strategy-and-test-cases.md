@@ -49,7 +49,7 @@
   - 3xx/5xx robots failures honor max deny window and recover on successful refresh.
 - budget guardrail checks:
   - global cap `5000` prevents new page insertion beyond limit;
-  - per-domain cap enforces deterministic ingestion decisions.
+  - frontier high-watermark (`crawler.budget.maxFrontierRows`) defers low-priority ingestion deterministically.
 - observability checks:
   - lease age, delayed queue age, DB pool saturation, and healthcheck transitions are emitted correctly.
 - SQL safety checks:

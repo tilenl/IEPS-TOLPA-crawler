@@ -36,7 +36,7 @@ Notes:
 Hard budget guardrails (normative):
 - maximum stored pages per run: `5000` (`crawler.budget.maxTotalPages`);
 - ingestion must stop inserting new frontier rows when global cap is reached;
-- per-domain guardrails (`crawler.budget.maxPerDomainPages`) limit expansion breadth;
+- frontier queue size is bounded by `crawler.budget.maxFrontierRows` (high-watermark deferral per `TS-02` / `TS-13`);
 - on budget rejection, link relation MAY still be persisted when target already exists, but no new page row is created.
 
 ## Relevance Domain

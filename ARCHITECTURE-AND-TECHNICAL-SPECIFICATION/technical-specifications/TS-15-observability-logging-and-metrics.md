@@ -8,6 +8,15 @@
 - queue-state events MUST include `fromState`, `toState`, `attemptCount`, and `nextAttemptAt` when present.
 - `workerId` in logs MUST match the frontier lease owner identity used in `claimed_by` (`TS-07`, `TS-14`).
 
+### Parameter-linked remediation fields
+
+- For warnings and errors that occur **because a configured limit, retry ceiling, or validation bound was reached** (see **Parameter-linked diagnostics** in `TS-13`), logs MUST additionally include:
+  - `configKey`: string, the dotted runtime property name (for example `crawler.budget.maxTotalPages`);
+  - `remediationHint`: string, human-readable guidance; MUST match or closely paraphrase the normative hint for that event class in `TS-13` so operators can grep logs and adjust the same key in CLI, environment, or `application.properties`.
+- For events **not** driven by a `TS-13` knob or `crawler.retry.maxAttempts.*` ceiling (for example `ROBOTS_DISALLOWED`, stable `4xx`, malformed URLs), implementations MUST NOT emit misleading `remediationHint` text implying a configuration change will fix site policy or remote behavior (`TS-13` remediation scope).
+- Startup validation failures MUST log the failing `configKey` (or equivalent), the invalid value (when safe), and the allowed range from `TS-13`.
+- Schema version mismatch diagnostics MUST include `configKey` `crawler.db.expectedSchemaVersion`, plus `expectedVersion`, `dbVersion`, and a remediation hint aligned with `TS-13` / this document.
+
 ## Event Types
 
 - frontier claim/release/reschedule;
@@ -16,7 +25,7 @@
 - parse summary (links/images extracted);
 - dedup decisions (URL/content);
 - persistence outcomes and failures.
-- budget-drop and budget-defer events.
+- budget-drop (`BUDGET_DROPPED`) and frontier deferral at high-watermark (`FRONTIER_DEFERRED` or equivalent) with `configKey` / `remediationHint` per `TS-13`;
 - URL-length rejection events (`URL_TOO_LONG`) for canonical URLs rejected before DB insert.
 - robots fetch outcomes (`2xx`, `4xx`, `3xx/5xx`) and robots decision outcomes.
 
@@ -37,7 +46,7 @@
 ## Healthcheck Contracts
 
 - readiness MUST fail when required dependencies are unavailable (DB connectivity, schema/version mismatch);
-- schema mismatch diagnostics MUST include at minimum `expectedVersion`, `dbVersion`, and a remediation hint to apply/align DB schema;
+- schema mismatch diagnostics MUST include at minimum `configKey` (`crawler.db.expectedSchemaVersion`), `expectedVersion`, `dbVersion`, and `remediationHint` to apply/align DB schema or config (`TS-13` Parameter-linked diagnostics);
 - readiness SHOULD degrade when DB pool or headless saturation exceeds configured threshold;
 - liveness MUST fail for unrecoverable worker-loop stall (no successful state transitions beyond configured timeout);
 - health endpoints/status reporters MUST expose lease-recovery pressure and retry backlog age.
@@ -66,6 +75,7 @@ Summary should also include seed bootstrap metadata:
 ## Required Tests
 
 - required log fields present on critical events;
+- limit-driven events include `configKey` and `remediationHint` per Parameter-linked diagnostics (`TS-13`);
 - metrics counters increment correctly;
 - summary generated at graceful shutdown.
 - healthcheck transitions under DB down / saturation scenarios.
@@ -74,7 +84,7 @@ Summary should also include seed bootstrap metadata:
 
 ## Implementation Location
 
-- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/observability/`, `.../app/`
-- key file(s): `observability/CrawlerMetrics.java`, `observability/RunSummaryReporter.java`, `app/PreferentialCrawler.java`
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/observability/`, `.../app/`, `.../config/`
+- key file(s): `observability/CrawlerMetrics.java`, `observability/RunSummaryReporter.java`, `app/PreferentialCrawler.java`, `config/ConfigRemediation.java`
 - test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/observability/` and `.../integration/pipeline/`
 

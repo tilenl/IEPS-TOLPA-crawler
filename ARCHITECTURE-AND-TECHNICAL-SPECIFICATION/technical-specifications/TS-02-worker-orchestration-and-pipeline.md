@@ -167,9 +167,8 @@ Recovery guarantees:
 - budget-hit path MUST remain idempotent and must not mutate already-processed terminal pages.
 - required decision order for discovered URLs:
   1. reject if global max pages reached;
-  2. reject if per-domain cap reached;
-  3. if frontier high-watermark reached, defer low-score URLs by setting future `next_attempt_at`;
-  4. otherwise ingest normally.
+  2. if frontier high-watermark reached, defer low-score URLs by setting future `next_attempt_at`;
+  3. otherwise ingest normally.
 
 ## Termination Evaluation Contract
 

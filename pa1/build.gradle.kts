@@ -21,7 +21,7 @@ dependencies {
     
     // Performance & Logic
     implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
-    implementation("io.github.bucket4j:bucket4j-core:8.7.0")
+    implementation("com.bucket4j:bucket4j-core:8.7.0")
     
     // Database
     implementation("org.postgresql:postgresql:42.7.2")
@@ -41,8 +41,19 @@ java {
     }
 }
 
+sourceSets {
+    main {
+        java.setSrcDirs(listOf("crawler/src/main/java"))
+        resources.setSrcDirs(listOf("crawler/src/main/resources"))
+    }
+    test {
+        java.setSrcDirs(listOf("crawler/src/test/java"))
+        resources.setSrcDirs(listOf("crawler/src/test/resources"))
+    }
+}
+
 application {
-    mainClass.set("si.uni-lj.fri.wier.crawler.Main")
+    mainClass.set("si.uni-lj.fri.wier.cli.Main")
 }
 
 tasks.test {
