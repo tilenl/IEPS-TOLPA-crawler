@@ -113,9 +113,10 @@ Ownership clarification:
 - `Storage` is authoritative for URL uniqueness.
 - link insertion is required even when discovered target already exists.
 - Stage B completion MUST use `persistFetchOutcomeWithLinks(...)` as the only normative storage write path.
-- `insertFrontierIfAbsent` semantics:
+- the worker MUST call `persistFetchOutcomeWithLinks(...)` **at most once** per successful completion of a **leased** claim cycle; MUST NOT blind-retry after a commit; full rules in [TS-10](TS-10-storage-and-sql-contracts.md) / [TS-02](TS-02-worker-orchestration-and-pipeline.md).
+- `insertFrontierIfAbsent` semantics ([TS-10](TS-10-storage-and-sql-contracts.md)):
   - inserted -> new `FRONTIER` row created;
-  - conflict -> no new row; implementation MUST return (or immediately resolve and return) existing page id for link insertion.
+  - conflict -> **sentinel upsert** returns existing row `id` via **`RETURNING`** in one statement (no mandatory separate `SELECT` as primary contract).
 
 ## Required Unit Tests
 

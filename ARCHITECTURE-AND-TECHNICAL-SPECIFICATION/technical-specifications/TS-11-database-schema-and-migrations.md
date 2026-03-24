@@ -23,8 +23,10 @@
   - `owner_page_id INTEGER NOT NULL REFERENCES crawldb.page(id)`
   - `created_at TIMESTAMP NOT NULL`
 - `schema_version` table for assignment-scope drift checks:
+  - `id INTEGER NOT NULL PRIMARY KEY` with **`CHECK (id = 1)`** (singleton anchor row only)
   - `version INTEGER NOT NULL`
-  - exactly one row is required in this table.
+  - exactly **one** row (`id = 1`) is required; migrations MUST **upsert** the version in place, never append a second row:
+    - `INSERT INTO crawldb.schema_version (id, version) VALUES (1, :new_version) ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version`
 - `page_type` lookup extension values:
   - `PROCESSING`
   - `ERROR`
@@ -46,7 +48,7 @@
   2. backfill/defaults if needed
   3. add/extend `page_type` lookup (`PROCESSING`, `ERROR`)
   4. add ownership table for content hash
-  5. add `schema_version` table and set expected version row
+  5. add `schema_version` table (`id=1` PK + `CHECK (id=1)`) and set expected version via upsert
   6. add indexes and constraints (including frontier index replacement)
   7. validate claim/retry defaults for existing rows
 
@@ -73,7 +75,8 @@ Practical verification commands (example):
 - `SELECT column_name FROM information_schema.columns WHERE table_schema='crawldb' AND table_name='page';`
 - `SELECT indexname FROM pg_indexes WHERE schemaname='crawldb' AND indexname='idx_page_frontier_priority';`
 - `SELECT content_hash, owner_page_id FROM crawldb.content_owner LIMIT 5;`
-- `SELECT version FROM crawldb.schema_version;`
+- `SELECT id, version FROM crawldb.schema_version WHERE id = 1;`
+- `SELECT COUNT(*) FROM crawldb.schema_version;` MUST be `1`
 
 Bootstrap seed verification:
 - on empty frontier bootstrap, configured seeds must exist as `page_type_code='FRONTIER'`;

@@ -36,8 +36,10 @@ Robots limiter contract (normative):
 
 Fetcher behavior for robots responses:
 - 2xx: parse and enforce returned rules;
-- 4xx on `/robots.txt`: treat as allow-all for that domain;
+- 4xx on `/robots.txt`: treat as **allow-all** for that domain;
 - 3xx/5xx on `/robots.txt`: treat as temporary deny-all with bounded duration.
+
+**Product decision (normative):** A **4xx** on `/robots.txt` is interpreted as **no robots rules file** being available at that URL (not served as `200`). The crawler therefore applies the usual default: **no path-specific `robots.txt` disallow** for that domain, and may crawl broadly subject to canonicalization, scoring, budgets, and politeness ([TS-08](TS-08-rate-limiting-and-backoff.md)). This behavior is **intentional by design** for this project, not an oversight. Some sites return **403/404** for reasons other than “missing file” (bot blocking, WAF); operators accept residual risk (blocks, stricter policy debates) for assignment scope. Optional future work: config to map specific codes (e.g. **403**) to deny or temporary deny.
 
 Temporary deny policy (normative):
 - initial 3xx/5xx failure sets domain robots state to `TEMPORARY_DENY` with `deny_until = now() + crawler.robots.temporaryDenyRetryMinutes`;

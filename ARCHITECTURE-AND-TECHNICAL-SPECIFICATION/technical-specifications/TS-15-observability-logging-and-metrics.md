@@ -28,6 +28,8 @@
 - budget-drop (`BUDGET_DROPPED`) and frontier deferral at high-watermark (`FRONTIER_DEFERRED` or equivalent) with `configKey` / `remediationHint` per `TS-13`;
 - URL-length rejection events (`URL_TOO_LONG`) for canonical URLs rejected before DB insert.
 - robots fetch outcomes (`2xx`, `4xx`, `3xx/5xx`) and robots decision outcomes.
+- **`FETCH_INCOMPLETE_SHELL`**: emitted when the fetcher escalates from plain HTTP to headless (or flags shell HTML) per [TS-03](TS-03-fetcher-specification.md); MUST include `url`, `domain`, `workerId`.
+- **`CRAWLER_HEARTBEAT`** (or `event=heartbeat` with the same required fields): emitted every `crawler.health.heartbeatIntervalMs` ([TS-13](TS-13-configuration-and-runtime-parameters.md)); SHOULD include optional snapshot fields: `frontierDepth`, `processingCount`, `workerCount`, optional `oldestLeaseAgeMs`.
 
 ## Metrics
 
@@ -48,13 +50,13 @@
 - readiness MUST fail when required dependencies are unavailable (DB connectivity, schema/version mismatch);
 - schema mismatch diagnostics MUST include at minimum `configKey` (`crawler.db.expectedSchemaVersion`), `expectedVersion`, `dbVersion`, and `remediationHint` to apply/align DB schema or config (`TS-13` Parameter-linked diagnostics);
 - readiness SHOULD degrade when DB pool or headless saturation exceeds configured threshold;
-- liveness MUST fail for unrecoverable worker-loop stall (no successful state transitions beyond configured timeout);
-- health endpoints/status reporters MUST expose lease-recovery pressure and retry backlog age.
+- **Assignment-scope liveness:** structured **`CRAWLER_HEARTBEAT`** (or equivalent) events MUST be emitted on **`crawler.health.heartbeatIntervalMs`** ([TS-13](TS-13-configuration-and-runtime-parameters.md)) so operators can confirm the process is running and observe coarse queue snapshot fields; **stall-based fatal liveness** timeouts are **not** normatively required unless added later.
+- optional HTTP health server MAY expose `/health/live` and `/health/ready`; when disabled, rely on process exit code and heartbeat logs.
 
 Healthcheck exposure contract:
-- minimum required exposure is structured health status events in logs at startup and at fixed heartbeat intervals;
-- optional HTTP health server MAY be enabled via runtime config and must expose `/health/live` and `/health/ready`;
-- when HTTP health server is disabled, orchestrators MUST rely on process exit code and structured health log events.
+- minimum required exposure is structured logs at **startup**, **`CRAWLER_HEARTBEAT` on the configured interval**, and shutdown summary;
+- optional HTTP health server MAY be enabled via runtime config and must expose `/health/live` and `/health/ready` when present;
+- when HTTP health server is disabled, orchestrators MUST rely on process exit code and structured log events (including heartbeat).
 
 ## Run Summary
 
@@ -79,6 +81,7 @@ Summary should also include seed bootstrap metadata:
 - metrics counters increment correctly;
 - summary generated at graceful shutdown.
 - healthcheck transitions under DB down / saturation scenarios.
+- heartbeat events emitted on schedule with expected fields; `FETCH_INCOMPLETE_SHELL` present when shell escalation occurs.
 - lease-age and delayed-queue metrics correctness tests.
 - robots metrics correctness tests (`robots_temporary_deny_domains`, `robots_fetch_failures_total`).
 

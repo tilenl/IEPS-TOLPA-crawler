@@ -1,7 +1,10 @@
 CREATE SCHEMA IF NOT EXISTS crawldb;
 
 CREATE TABLE crawldb.schema_version (
-	version              integer NOT NULL
+	id                   integer NOT NULL DEFAULT 1,
+	version              integer NOT NULL,
+	CONSTRAINT pk_schema_version_id PRIMARY KEY (id),
+	CONSTRAINT ck_schema_version_singleton_id CHECK (id = 1)
 );
 
 CREATE TABLE crawldb.data_type ( 
@@ -150,4 +153,4 @@ INSERT INTO crawldb.page_type VALUES
 	('PROCESSING'),
 	('ERROR');
 
-INSERT INTO crawldb.schema_version (version) VALUES (1);
+INSERT INTO crawldb.schema_version (id, version) VALUES (1, 1);

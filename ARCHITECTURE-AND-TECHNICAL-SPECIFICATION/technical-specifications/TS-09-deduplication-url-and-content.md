@@ -9,8 +9,7 @@ Ensure crawler processes each URL once while identifying content-equivalent page
 - authoritative check is DB uniqueness on canonical URL;
 - use insert-if-absent contract;
 - if URL exists, skip new `page` row but still insert `link`.
-- canonical SQL mechanism:
-  - `INSERT INTO crawldb.page (...) VALUES (...) ON CONFLICT (url) DO NOTHING`.
+- canonical storage mechanism: [TS-10](TS-10-storage-and-sql-contracts.md) **`insertFrontierIfAbsent`** (sentinel `ON CONFLICT ... DO UPDATE ... RETURNING id`).
 
 ## Level 2: Content Deduplication
 
@@ -51,9 +50,10 @@ For each fetched HTML page with hash `H`:
 
 This contract MUST yield deterministic outcome under concurrent workers.
 
-Isolation expectation:
-- minimum transaction isolation is `READ COMMITTED`;
-- if anomalies appear in stress tests, dedup flow MUST be elevated to stronger isolation/locking semantics.
+Isolation (normative):
+- the **whole transaction** that performs steps 1–4 (ownership upsert + `page` updates) MUST use **`SERIALIZABLE`** isolation, or **`REPEATABLE READ`** only if explicitly justified for the statement mix under PostgreSQL;
+- on **`SQLSTATE 40001`** (`serialization_failure`), the implementation MUST **retry** the transaction with bounded backoff + jitter per [TS-10](TS-10-storage-and-sql-contracts.md) / [TS-12](TS-12-error-model-and-recovery-policy.md);
+- **do not** use a “raise isolation only if stress tests fail” posture; stronger isolation for this path is **required by spec**, not test-gated.
 
 ## Required Tests
 

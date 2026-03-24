@@ -21,14 +21,27 @@ Rationale:
 - GitHub repository/topic pages are largely server-rendered and cheaper via `HttpClient`;
 - external linked domains may require JS execution for content/links and use Selenium path.
 
+## HTTP Redirects (normative)
+
+- Java `HttpClient` MUST **automatically follow** HTTP redirect responses (`3xx` with `Location`) up to **`crawler.fetch.maxRedirects`** ([TS-13](TS-13-configuration-and-runtime-parameters.md)).
+- **Collapsed persistence:** the **claimed / canonical URL** from the frontier remains `page.url`; the stored **`http_status_code`** and **body** come from the **final** non-redirect response after following the chain. Intermediate hop URLs do **not** create additional `page` rows ([TS-10](TS-10-storage-and-sql-contracts.md)).
+- exceeding the hop limit or detecting a redirect loop MUST yield a **fetch failure** classified per [TS-12](TS-12-error-model-and-recovery-policy.md) (typically retryable or terminal `FETCH_HTTP_CLIENT` / overload-style policy as documented in implementation notes).
+- **Robots / politeness:** pre-fetch `robotsTxtCache.evaluate` applies to the **claimed URL**; following redirects during fetch is part of retrieving that resource for **assignment scope**.
+- **`meta refresh` / HTML redirects** are **not** handled by `HttpClient`; defer or document as unsupported unless implemented elsewhere (parser-driven).
+
+## Incomplete shell → headless escalation (observability)
+
+- when plain `HttpClient` response is treated as an **incomplete shell** and the fetcher **escalates** to **headless** (or otherwise flags shell HTML), the implementation MUST emit structured log event **`FETCH_INCOMPLETE_SHELL`** with `url`, `domain`, `workerId` per [TS-15](TS-15-observability-logging-and-metrics.md). **No** normative link-count or DOM-marker thresholds are required for this assignment.
+
 ## FetchResult Contract
 
-- `canonicalUrl`
-- `httpStatusCode`
+- `canonicalUrl` (frontier / claimed URL)
+- `httpStatusCode` (from **final** response after redirects when using `HttpClient`)
 - `contentType`
 - `body` (optional for binary outcomes)
 - `accessedTime`
 - `fetchMode` (`PLAIN_HTTP` or `HEADLESS`)
+- optional `finalUrlAfterRedirects` (for diagnostics/logging when redirects were followed; may be omitted if same as claimed URL)
 
 ## Timeout Policy
 
@@ -77,7 +90,9 @@ Examples:
 
 - mode selection tests by domain;
 - timeout and HTTP error mapping tests;
+- redirect follow + max-hops / loop failure tests (`crawler.fetch.maxRedirects`);
 - binary-vs-html classification tests.
+- `FETCH_INCOMPLETE_SHELL` log emission when escalating plain HTTP → headless.
 - user-agent propagation test (`fri-wier-IEPS-TOLPA`) in both fetch modes.
 - headless slot cap test under concurrent workers;
 - saturation fallback test when all headless slots are exhausted;

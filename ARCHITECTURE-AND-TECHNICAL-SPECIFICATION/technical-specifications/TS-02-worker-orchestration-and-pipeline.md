@@ -97,8 +97,8 @@ Important execution rule:
 5. Insert `link` edge in all cases where target exists or was created.
 
 Concrete URL-exists branch:
-- if `insertFrontierIfAbsent` reports conflict, worker must still resolve target page id and call `insertLink(from=current, to=existing)`;
-- this preserves assignment-required link graph completeness.
+- `insertFrontierIfAbsent` MUST return `page_id` for both insert and conflict paths ([TS-10](TS-10-storage-and-sql-contracts.md) sentinel upsert + `RETURNING`);
+- worker MUST call `insertLink(from=current, to=targetPageId)` using that `page_id` so the link graph stays complete.
 
 ## Stage B Contract (Fetch Path)
 
@@ -136,6 +136,10 @@ Concrete outcome mapping:
 - retry metadata (`attempt_count`, `next_attempt_at`, error diagnostics) MUST update in same transaction as state transition.
 - crash window between terminal page persistence and discovered-link ingestion is NOT allowed; both effects must commit or roll back together.
 
+## Stage B `persistFetchOutcomeWithLinks` invocation (normative)
+
+- **Process contract** (not a DB dedupe key for this assignment): the worker MUST call **`persistFetchOutcomeWithLinks` at most once** per **successful** handling of a **single lease** (claim → fetch → parse → persist). **Only `Storage`** performs writes for that outcome and discovered-link batch; see [TS-10](TS-10-storage-and-sql-contracts.md) and [TS-01](TS-01-interface-contracts.md).
+
 ## Failure Handling Contract
 
 Errors are classified by `TS-12`. Worker must call policy-aware recovery path and never leave claimed rows in undefined state.
@@ -160,6 +164,8 @@ Recovery guarantees:
 - if bounded retries are exhausted, worker MAY rely on lease expiry + stale-lease recovery (`TS-07`) as final fallback.
 - recovery-path failures MUST emit structured logs including `workerId`, `pageId`, error category, and lease fields.
 
+**Optional enhancement (recommended):** after recovery-path retries are **exhausted**, the implementation MAY issue a **last-chance idempotent** `UPDATE` via `Storage` (conditional on `page.id`, `page_type_code='PROCESSING'`, `claimed_by` = this worker) to either (1) transition **`PROCESSING → FRONTIER`**, clear lease fields, and set `next_attempt_at` / attempt metadata per the same rules as `reschedule`, or (2) apply **`markPageAsError`** when the failure category is terminal—**without** waiting for natural lease expiry. The update MUST be safe to retry and MUST NOT overwrite a row another worker has already completed. If this path is **not** implemented, stale-lease recovery remains the **authoritative** fallback ([TS-07](TS-07-frontier-and-priority-dequeue.md)).
+
 ## Backpressure And Crawl Budget Contract
 
 - ingestion MUST enforce global crawl budget and queue budget from `TS-13`;
@@ -174,11 +180,13 @@ Recovery guarantees:
 
 `terminationConditionMet()` MUST evaluate all of the following conditions:
 
-1. no claimable rows remain in frontier:
-   - `SELECT COUNT(*) FROM crawldb.page WHERE page_type_code='FRONTIER' AND next_attempt_at <= now()`
-2. no active leases remain:
-   - `SELECT COUNT(*) FROM crawldb.page WHERE page_type_code='PROCESSING' AND claim_expires_at > now()`
-3. conditions (1) and (2) remain true continuously for `crawler.frontier.terminationGraceMs` before scheduler declares completion.
+1. **no queue or in-flight work remains** — there are **zero** rows still in `FRONTIER` or `PROCESSING` (including `FRONTIER` rows with `next_attempt_at > now()`, which are delayed pending work, not completion):
+   - `SELECT COUNT(*) FROM crawldb.page WHERE page_type_code IN ('FRONTIER', 'PROCESSING')` MUST be `0`
+2. condition (1) remains true **continuously** for `crawler.frontier.terminationGraceMs` before the scheduler declares completion.
+
+Rationale: treating “no claimable frontier” alone as completion contradicts [TS-07](TS-07-frontier-and-priority-dequeue.md) (delayed `FRONTIER` rows are still pending work). A single aggregate over `FRONTIER` and `PROCESSING` matches “all pages have reached a terminal `page_type_code` (`HTML`, `BINARY`, `DUPLICATE`, `ERROR`).”
+
+For **intentional abandonment** of deferred backlog, the run MUST transition or remove those rows (e.g. explicit drain/pause policy) so the count above can reach zero; see [03-system-sequence-and-dataflow.md](../03-system-sequence-and-dataflow.md).
 
 ## Bootstrap And Startup Sequence
 

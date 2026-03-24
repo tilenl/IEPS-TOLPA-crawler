@@ -57,5 +57,9 @@ end
 ## Termination Contract
 
 Crawl is done when:
-- no claimable `FRONTIER` rows remain (`next_attempt_at <= now()`), and
-- no worker currently holds a valid in-progress lease.
+
+- **no rows** remain in **`FRONTIER` or `PROCESSING`** — equivalently  
+  `SELECT COUNT(*) FROM crawldb.page WHERE page_type_code IN ('FRONTIER','PROCESSING')` is **zero** (every page has reached a terminal type: `HTML`, `BINARY`, `DUPLICATE`, or `ERROR`), **and**
+- that condition stays true continuously for **`crawler.frontier.terminationGraceMs`** ([TS-02](technical-specifications/TS-02-worker-orchestration-and-pipeline.md), [TS-07](technical-specifications/TS-07-frontier-and-priority-dequeue.md)).
+
+Delayed `FRONTIER` rows (`next_attempt_at > now()`) are **not** complete; only an explicit drain/abandon policy may clear them so shutdown can proceed.

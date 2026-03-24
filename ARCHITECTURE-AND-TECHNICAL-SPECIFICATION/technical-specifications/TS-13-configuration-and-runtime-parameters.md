@@ -24,7 +24,7 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 | `crawler.frontier.leaseSeconds` | `60` | `10..900` | Duration of a claimed row lease (`PROCESSING`). Affects how long a crashed worker blocks a URL before stale-lease recovery requeues it. |
 | `crawler.frontier.leaseRecoveryBatchSize` | `10` | `1..1000` | Upper bound on stale leases reclaimed per periodic recovery cycle during the crawl. Larger batches drain stuck work faster but increase burst DB load. |
 | `crawler.frontier.startupLeaseRecoveryBatchSize` | `100` | `1..5000` | Upper bound per batch when reclaiming all expired leases before workers start. |
-| `crawler.frontier.terminationGraceMs` | `2000` | `0..60000` | Scheduler requires empty claimable frontier and no active leases to remain true for this continuous window before declaring completion. Reduces premature shutdown flapping. |
+| `crawler.frontier.terminationGraceMs` | `2000` | `0..60000` | Scheduler requires **zero** rows in `FRONTIER` or `PROCESSING` ([TS-02](TS-02-worker-orchestration-and-pipeline.md)) to remain true for this continuous window before declaring completion. Reduces premature shutdown flapping. |
 
 ### Fetch and headless
 
@@ -35,6 +35,7 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 | `crawler.fetch.maxHeadlessSessions` | `2` | `>=1` | Concurrent headless browser slots. When saturated, workers wait up to `headlessAcquireTimeoutMs` then follow deterministic fallback (`TS-03`). MUST be `<= crawler.nCrawlers`. |
 | `crawler.fetch.headlessAcquireTimeoutMs` | `2000` | `100..30000` | Max wait for a free headless slot before fallback/error path. |
 | `crawler.fetch.headlessCircuitOpenThreshold` | `20` | `>=1` | After this many repeated saturation events (semantics per `TS-03`), circuit behavior changes to protect the system. |
+| `crawler.fetch.maxRedirects` | `10` | `0..20` | Max HTTP redirect hops `HttpClient` follows per request ([TS-03](TS-03-fetcher-specification.md)). Excess hops or loops map to fetch error per `TS-12`. |
 
 ### Rate limiting
 
@@ -88,7 +89,13 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 | `crawler.db.user` | none | required | DB user (never log). |
 | `crawler.db.password` | none | required | DB password (never log). |
 | `crawler.db.poolSize` | `min(nCrawlers + 2, 20)` | `>=2` | Hikari (or equivalent) pool size. MUST be `>= crawler.nCrawlers + 1` so claim and persistence can overlap without exhaustion. |
-| `crawler.db.expectedSchemaVersion` | none | required | Expected `crawldb.schema_version.version`; mismatch fails startup/readiness (`TS-15`). |
+| `crawler.db.expectedSchemaVersion` | none | required | Expected `crawldb.schema_version.version` for singleton row `id=1`; mismatch fails startup/readiness (`TS-15`). |
+
+### Health (heartbeat logs)
+
+| Key | Default | Validation | Crawler impact |
+| --- | --- | --- | --- |
+| `crawler.health.heartbeatIntervalMs` | `45000` | `5000..300000` | Interval for structured **heartbeat** log events so operators can see crawl progress (process alive, optional `FRONTIER`/`PROCESSING` counts, worker count); see [TS-15](TS-15-observability-logging-and-metrics.md). |
 
 `crawler.scoring.keywordConfig` file format (normative):
 
@@ -139,7 +146,8 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 | Schema version mismatch | `crawler.db.expectedSchemaVersion` | Align `crawler.db.expectedSchemaVersion` with the migrated database version, or run migrations to match the configured expectation (`TS-15`). |
 | JDBC pool exhaustion (if surfaced as warning) | `crawler.db.poolSize`, `crawler.nCrawlers` | Increase `crawler.db.poolSize` to at least `crawler.nCrawlers + 1`, or reduce `crawler.nCrawlers` to match pool capacity. |
 | Lease recovery falling behind (operational warning) | `crawler.frontier.leaseRecoveryBatchSize`, `crawler.frontier.leaseSeconds` | Increase `crawler.frontier.leaseRecoveryBatchSize` to reclaim more stale leases per cycle, or shorten `crawler.frontier.leaseSeconds` so stuck leases expire sooner (trade-off with crash recovery latency). |
-| Premature or delayed shutdown vs empty frontier | `crawler.frontier.terminationGraceMs` | Increase `crawler.frontier.terminationGraceMs` if the scheduler stops while work still appears; decrease only if intentional faster exit is desired and flapping is acceptable. |
+| Premature or delayed shutdown vs queue state | `crawler.frontier.terminationGraceMs` | Increase `crawler.frontier.terminationGraceMs` if the scheduler stops while `FRONTIER`/`PROCESSING` rows still exist or conditions oscillate; decrease only if intentional faster exit is desired and flapping is acceptable. |
+| Redirect hop limit exceeded (`TS-03` / `TS-12`) | `crawler.fetch.maxRedirects` | Increase `crawler.fetch.maxRedirects` within `0..20` if legitimate chains are cut off; investigate redirect loops if failures persist. |
 
 ### Remediation hint scope (normative)
 
@@ -156,6 +164,8 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - startup MUST validate retry-attempt parameters against `TS-12` policy categories.
 - startup MUST validate budget values: positive `crawler.budget.maxTotalPages` and `crawler.budget.maxFrontierRows`.
 - startup MUST validate `crawler.fetch.maxHeadlessSessions <= crawler.nCrawlers`.
+- startup MUST validate `crawler.fetch.maxRedirects` in `0..20` (inclusive).
+- startup MUST validate `crawler.health.heartbeatIntervalMs` in `5000..300000` (inclusive).
 - startup MUST validate `crawler.db.poolSize >= crawler.nCrawlers + 1` for claim + persistence overlap.
 - startup MUST validate DB schema version equality (`crawler.db.expectedSchemaVersion` vs `crawldb.schema_version.version`) before worker start.
 - startup MUST validate `crawler.frontier.leaseRecoveryBatchSize >= 1`.
@@ -175,7 +185,8 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - lease recovery MUST run in bounded batches using `crawler.frontier.leaseRecoveryBatchSize`;
 - startup lease recovery MUST run before worker loops and continue until no stale leases remain, using `crawler.frontier.startupLeaseRecoveryBatchSize`;
 - recovery-path transition writes (`reschedule` / `markPageAsError`) MUST apply bounded transient retries using `crawler.recoveryPath.maxAttempts`, `crawler.recoveryPath.baseBackoffMs`, and `crawler.retry.jitterMs`.
-- scheduler termination decision MUST honor `crawler.frontier.terminationGraceMs` continuous-stability window;
+- scheduler termination decision MUST honor `crawler.frontier.terminationGraceMs` continuous-stability window while `COUNT(FRONTIER)+COUNT(PROCESSING)=0` per [TS-02](TS-02-worker-orchestration-and-pipeline.md);
+- the runtime MUST emit structured **heartbeat** logs on `crawler.health.heartbeatIntervalMs` per [TS-15](TS-15-observability-logging-and-metrics.md);
 - headless slot acquisition timeout triggers deterministic fallback/error path (defined in `TS-03`);
 - robots and bucket caches MUST apply both TTL and maximum-size eviction from runtime config.
 - effective retry and budget configuration snapshot MUST be emitted at startup.
@@ -199,6 +210,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - startup lease-recovery batch-size wiring test;
 - recovery-path bounded-retry config wiring test;
 - headless config validation tests.
+- `crawler.fetch.maxRedirects` and `crawler.health.heartbeatIntervalMs` validation tests.
 - robots and bucket cache max-entry validation tests.
 - where structured logging is implemented: assert `configKey` and `remediationHint` on at least one `BUDGET_DROPPED` event and one frontier-deferral event (`TS-15`).
 

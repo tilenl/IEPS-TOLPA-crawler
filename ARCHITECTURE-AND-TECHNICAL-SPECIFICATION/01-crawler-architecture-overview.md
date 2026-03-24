@@ -35,6 +35,10 @@ The system follows a **Producer-Consumer pattern** where the `Frontier` acts as 
 
 Components depend on interfaces, not concrete classes. Cross-component calls MUST flow through contracts in `technical-specifications/TS-01-interface-contracts.md`.
 
+## Deployment Invariant (Single Process Per Database)
+
+Politeness (`RateLimiterRegistry`, [TS-08](technical-specifications/TS-08-rate-limiting-and-backoff.md)) and robots loading/cache ([TS-06](technical-specifications/TS-06-robots-policy-and-site-metadata.md)) are **in-process** (e.g. Bucket4j + Caffeine). **Exactly one crawler JVM process** MUST run against a given PostgreSQL database for a crawl. Starting **two** CLI instances (or two processes) pointing at the **same** `crawler.db.url` **doubles effective per-domain request rate** and **breaks** per-domain robots single-flight — violating the intended politeness and robots contracts. For multiple crawls or environments, use **separate databases** or explicitly documented external coordination (out of assignment scope).
+
 ## Core Diagram
 
 ```mermaid

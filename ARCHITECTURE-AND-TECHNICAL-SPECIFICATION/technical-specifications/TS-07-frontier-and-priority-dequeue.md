@@ -102,22 +102,18 @@ Seed bootstrap behavior:
 ## Termination Semantics
 
 - scheduler can stop when all of the following are true:
-  1. no claimable frontier rows remain (`FRONTIER` with `next_attempt_at <= now()`);
-  2. no active leases remain (`PROCESSING` with `claim_expires_at > now()`);
-  3. conditions (1) and (2) remain true continuously for `crawler.frontier.terminationGraceMs`.
-- rows delayed into the future MUST be treated as pending work, not completion.
+  1. **no `FRONTIER` or `PROCESSING` rows exist** — delayed `FRONTIER` rows (`next_attempt_at > now()`) are **pending work** and MUST keep the crawl **not** complete until they are processed, terminalized, or removed by an explicit abandonment/drain policy;
+  2. condition (1) remains true continuously for `crawler.frontier.terminationGraceMs`.
+- aligns with [TS-02](TS-02-worker-orchestration-and-pipeline.md) `terminationConditionMet()` and [03-system-sequence-and-dataflow.md](../03-system-sequence-and-dataflow.md).
 
-Reference termination checks:
+Reference termination check:
 
 ```sql
 SELECT COUNT(*) FROM crawldb.page
-WHERE page_type_code = 'FRONTIER'
-  AND next_attempt_at <= now();
-
-SELECT COUNT(*) FROM crawldb.page
-WHERE page_type_code = 'PROCESSING'
-  AND claim_expires_at > now();
+WHERE page_type_code IN ('FRONTIER', 'PROCESSING');
 ```
+
+Completion requires this count to be **zero** (plus the grace window in [TS-02](TS-02-worker-orchestration-and-pipeline.md)).
 
 ## Required Tests
 

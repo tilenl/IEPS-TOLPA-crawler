@@ -41,9 +41,10 @@ Define authoritative database operations and method-to-SQL mappings.
 - **Mark terminal error**
   - transition `PROCESSING -> ERROR` with category/message and terminal timestamp.
 - **Insert frontier if absent**
-  - `INSERT ... ON CONFLICT (url) DO NOTHING`
-  - on conflict, caller MUST resolve existing row id with `SELECT id FROM crawldb.page WHERE url = ?`
-  - returns insertion status and `page_id` so caller can branch new-vs-existing URL behavior deterministically
+  - normative pattern (single round-trip, **Option 2** sentinel upsert):
+    - `INSERT INTO crawldb.page (...) VALUES (...) ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url RETURNING id`
+  - the `DO UPDATE` clause is a **no-op** on the existing row (same `url`) so **both** insert and conflict paths return `page_id` via `RETURNING`;
+  - do **not** rely on `ON CONFLICT DO NOTHING` plus a mandatory follow-up `SELECT id ... WHERE url = ?` as the primary contract
 - **Insert link edge**
   - `INSERT INTO crawldb.link (from_page, to_page) VALUES (?, ?) ON CONFLICT (from_page, to_page) DO NOTHING`
 - **Batch ingest discovered URLs**
@@ -75,14 +76,21 @@ Atomicity clarification (normative):
 ## Transaction Rules
 
 - claim transaction isolated and short with atomic state mutation;
-- minimum isolation level for storage transactions is `READ COMMITTED`;
-- if concurrency anomalies are observed in content-dedup stress tests, implementation MUST elevate dedup flow isolation/locking (e.g., `SERIALIZABLE` for that flow);
+- default minimum isolation level for **most** storage transactions is `READ COMMITTED`;
+- **content dedup + page outcome path (normative):** the transaction that performs `content_owner` upsert / `LEAST` owner rule **and** the related `page` terminal updates (`HTML` / `DUPLICATE` per [TS-09](TS-09-deduplication-url-and-content.md)) MUST run at **`SERIALIZABLE`** isolation, or **`REPEATABLE READ`** only if the implementation team documents that the exact statement mix is safe under PostgreSQL rules for this project;
+- **serialization failures:** PostgreSQL **`SQLSTATE 40001`** (`serialization_failure`) on that transaction MUST map to **bounded retries** with exponential backoff + jitter (align with `crawler.recoveryPath.*` / [TS-12](TS-12-error-model-and-recovery-policy.md)); after retry exhaustion, classify as `DB_TRANSIENT` or terminal per [TS-12](TS-12-error-model-and-recovery-policy.md);
 - page outcome update and related insertions MUST be atomic;
 - page outcome + discovered-link ingestion for the current fetched page MUST be atomic via `persistFetchOutcomeWithLinks(...)`;
 - ingestion insertions MUST be idempotent for retry safety;
 - rejected discovered URLs MUST be represented in batch outcome metadata (with reason), not silently dropped.
 - retry transition updates (`attempt_count`, `next_attempt_at`, diagnostics) MUST be atomic with queue state transition;
 - content dedup owner registration and duplicate/owner state update MUST happen in one transaction.
+
+## `persistFetchOutcomeWithLinks` process contract (normative)
+
+- **Only `Storage`** performs writes for Stage B page outcome and batch discovered-link effects; the **worker** MUST NOT bypass `Storage` with ad-hoc JDBC on this path ([TS-01](TS-01-interface-contracts.md), [TS-02](TS-02-worker-orchestration-and-pipeline.md)).
+- The worker MUST call **`persistFetchOutcomeWithLinks` at most once** per **successful** completion of a **single lease** (claim → fetch → parse → persist). Recovery after failure uses `frontier.reschedule` / `markPageAsError` (or lease expiry), **not** a second persist for the same successful outcome. After a **new** claim, a new persist is allowed.
+- **Do not** wrap `persistFetchOutcomeWithLinks` in blind “retry until success” if a prior invocation may have **committed**; retries MUST be limited to known rollback / transient connection errors only.
 
 ## Data Integrity Rules
 
@@ -101,7 +109,7 @@ Atomicity clarification (normative):
 - multi-worker claim contention tests with atomic claim transition;
 - reschedule and retry-attempt persistence tests;
 - expired lease recovery tests;
-- concurrent same-hash dedup ownership tests.
+- concurrent same-hash dedup ownership tests under **SERIALIZABLE** (or chosen RR) with **`40001`** retry behavior.
 - deterministic same-hash winner tests (`min(page_id)` ownership rule across repeated runs).
 - atomicity test ensuring discovered links and page terminal state commit/rollback together.
 - batch ingestion contract tests for mixed valid/invalid discovered URLs.
