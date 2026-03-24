@@ -48,7 +48,8 @@ Define authoritative database operations and method-to-SQL mappings.
   - `INSERT INTO crawldb.link (from_page, to_page) VALUES (?, ?) ON CONFLICT (from_page, to_page) DO NOTHING`
 - **Batch ingest discovered URLs**
   - storage API MUST accept a batch (`ingestDiscoveredUrls(Collection<DiscoveredUrl>)`) and process each discovered URL through canonicalization policy, URL upsert, and idempotent link insert;
-  - implementation MAY apply per-item savepoints for partial tolerance, but contract outcome MUST clearly report accepted/rejected URLs.
+  - implementation MAY apply per-item savepoints inside the same transaction only; savepoints MUST NOT imply intermediate commits;
+  - contract outcome MUST explicitly report accepted/rejected URLs with reason codes.
 - **Mark HTML outcome**
   - `UPDATE crawldb.page SET page_type_code='HTML', html_content=?, http_status_code=?, accessed_time=? WHERE id=?`
 - **Mark duplicate**
@@ -63,7 +64,13 @@ Define authoritative database operations and method-to-SQL mappings.
        RETURNING owner_page_id`
 - **Persist fetch outcome with links (atomic)**
   - `persistFetchOutcomeWithLinks(...)` MUST execute page outcome transition and discovered-link ingestion for the current source page in one transaction;
-  - if any non-tolerable DB failure occurs, both outcome and associated discovered-link effects MUST roll back together.
+  - if any non-tolerable DB failure occurs, both outcome and associated discovered-link effects MUST roll back together;
+  - expected per-URL policy rejections in a healthy transaction (for example `URL_TOO_LONG` or disallowed canonicalized URL) are recorded as rejected outcomes and do NOT require transaction rollback.
+
+Atomicity clarification (normative):
+- "atomic" means one commit unit for the fetched source page: page outcome + all accepted discovered-link effects become visible together, or none become visible;
+- non-tolerable failures are storage/transaction failures (connection loss, deadlock/serialization abort, forced rollback, equivalent infrastructure errors) and MUST roll back the full unit of work;
+- tolerable per-URL rejections are policy outcomes, not storage failures; they MUST be present in batch outcome reporting and MUST NOT be treated as atomicity violations.
 
 ## Transaction Rules
 
@@ -73,6 +80,7 @@ Define authoritative database operations and method-to-SQL mappings.
 - page outcome update and related insertions MUST be atomic;
 - page outcome + discovered-link ingestion for the current fetched page MUST be atomic via `persistFetchOutcomeWithLinks(...)`;
 - ingestion insertions MUST be idempotent for retry safety;
+- rejected discovered URLs MUST be represented in batch outcome metadata (with reason), not silently dropped.
 - retry transition updates (`attempt_count`, `next_attempt_at`, diagnostics) MUST be atomic with queue state transition;
 - content dedup owner registration and duplicate/owner state update MUST happen in one transaction.
 
@@ -97,6 +105,8 @@ Define authoritative database operations and method-to-SQL mappings.
 - deterministic same-hash winner tests (`min(page_id)` ownership rule across repeated runs).
 - atomicity test ensuring discovered links and page terminal state commit/rollback together.
 - batch ingestion contract tests for mixed valid/invalid discovered URLs.
+- atomicity failure-injection test: force non-tolerable mid-transaction failure and assert no partial persistence.
+- expected-rejection atomicity test: batch with policy rejections still commits source page outcome and accepted links.
 
 ## Implementation Location
 

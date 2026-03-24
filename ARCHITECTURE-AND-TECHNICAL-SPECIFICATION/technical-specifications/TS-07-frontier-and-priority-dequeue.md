@@ -57,7 +57,8 @@ Worker identity contract:
 
 - rows in `PROCESSING` with `claim_expires_at < now()` MUST be eligible for lease recovery;
 - recovery path resets row to `FRONTIER`, increments diagnostic counter, clears stale lease owner;
-- recovery MUST run as part of `claimNextFrontier()` before candidate selection, with bounded batch size `crawler.frontier.leaseRecoveryBatchSize` (default `10`);
+- startup MUST run a reclaim-only lease recovery loop before worker start (`TS-02`) using `crawler.frontier.startupLeaseRecoveryBatchSize` (default `100`) until no stale leases remain;
+- recovery MUST also run as part of `claimNextFrontier()` before candidate selection, with bounded batch size `crawler.frontier.leaseRecoveryBatchSize` (default `10`);
 - each claim cycle MUST recover at most `leaseRecoveryBatchSize` stale rows to avoid long recovery transactions;
 - row recovery MUST be idempotent.
 
@@ -88,8 +89,8 @@ WHERE p.id = s.id;
 - reschedule MUST set `next_attempt_at` to computed due time;
 - reschedule MUST clear lease fields (`claimed_by`, `claimed_at`, `claim_expires_at`);
 - retry metadata MUST be persisted for diagnostics and retry-budget enforcement.
-- if a reschedule/error-mark update fails transiently, implementation MAY rely on lease expiry + stale-lease recovery path;
-- this assignment profile does not require nested recovery orchestration beyond logging and bounded stale-lease recovery.
+- if a reschedule/error-mark update fails transiently, worker MUST apply bounded transient retries first (`crawler.recoveryPath.maxAttempts=3`, short exponential backoff + jitter), then MAY rely on lease expiry + stale-lease recovery path as final fallback.
+- abnormal termination may still leave leased rows transiently until expiry; this is expected and handled by stale-lease recovery.
 
 Seed bootstrap behavior:
 - when frontier is empty at startup, configured seeds MUST be canonicalized (`TS-05`) before insertion;
@@ -124,6 +125,7 @@ WHERE page_type_code = 'PROCESSING'
 - parallel worker uniqueness for atomic claim (`UPDATE ... RETURNING` path);
 - no immediate reclaim of delayed rows (`next_attempt_at > now()`);
 - lease expiration recovery path returns stale `PROCESSING` rows to `FRONTIER` with per-cycle cap enforcement;
+- startup lease-recovery test proving stale lease backlog is reclaimed before first worker claim;
 - reschedule path correctness for delayed domains.
 - termination grace-window test preventing premature completion when frontier/leases oscillate.
 - seed bootstrap canonicalization test (seed variants collapse to one canonical URL);

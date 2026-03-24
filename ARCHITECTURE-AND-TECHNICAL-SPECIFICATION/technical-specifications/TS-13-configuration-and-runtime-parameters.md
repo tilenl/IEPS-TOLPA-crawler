@@ -19,6 +19,7 @@ Define all runtime settings, defaults, validation, and precedence rules.
 | `crawler.frontier.pollMs`                    | `500`                    | `50..5000`   | empty-queue polling            |
 | `crawler.frontier.leaseSeconds`              | `60`                     | `10..900`    | claim lease duration           |
 | `crawler.frontier.leaseRecoveryBatchSize`    | `10`                     | `1..1000`    | max stale leases recovered per claim cycle |
+| `crawler.frontier.startupLeaseRecoveryBatchSize` | `100`                | `1..5000`    | max stale leases reclaimed per startup recovery batch |
 | `crawler.frontier.terminationGraceMs`        | `2000`                   | `0..60000`   | stable-termination observation window |
 | `crawler.fetch.connectTimeoutMs`             | `5000`                   | `>=100`      | HTTP connect timeout           |
 | `crawler.fetch.readTimeoutMs`                | `10000`                  | `>=1000`     | read/render timeout            |
@@ -34,6 +35,8 @@ Define all runtime settings, defaults, validation, and precedence rules.
 | `crawler.buckets.cacheTtlHours`              | `1`                      | `>=1`        | bucket cache TTL               |
 | `crawler.buckets.cacheMaxEntries`            | `10000`                  | `>=100`      | max bucket cache entries       |
 | `crawler.retry.jitterMs`                     | `250`                    | `0..10000`   | retry jitter amplitude         |
+| `crawler.recoveryPath.maxAttempts`           | `3`                      | `1..10`      | bounded retries for recovery-path DB transitions |
+| `crawler.recoveryPath.baseBackoffMs`         | `100`                    | `10..5000`   | base delay for recovery-path exponential backoff |
 | `crawler.retry.maxAttempts.fetchTimeout`     | `3`                      | `0..20`      | must match TS-12 policy        |
 | `crawler.retry.maxAttempts.fetchOverload`    | `5`                      | `0..20`      | must match TS-12 policy        |
 | `crawler.retry.maxAttempts.dbTransient`      | `5`                      | `0..20`      | must match TS-12 policy        |
@@ -85,6 +88,8 @@ Worker default heuristic:
 - startup MUST validate `crawler.db.poolSize >= crawler.nCrawlers + 1` for claim + persistence overlap.
 - startup MUST validate DB schema version equality (`crawler.db.expectedSchemaVersion` vs `crawldb.schema_version.version`) before worker start.
 - startup MUST validate `crawler.frontier.leaseRecoveryBatchSize >= 1`.
+- startup MUST validate `crawler.frontier.startupLeaseRecoveryBatchSize >= 1`.
+- startup MUST validate `crawler.recoveryPath.maxAttempts >= 1` and `crawler.recoveryPath.baseBackoffMs >= 10`.
 - startup MUST validate robots temporary-deny bounds and retry cadence consistency.
 - startup MUST validate robots/bucket cache size bounds (`crawler.robots.cacheMaxEntries`, `crawler.buckets.cacheMaxEntries`).
 - startup MUST parse and validate `crawler.scoring.keywordConfig` structure (not just path existence).
@@ -97,6 +102,8 @@ Worker default heuristic:
 - when `crawler.budget.maxPerDomainPages` is reached for a domain, Stage A rejects additional URLs for that domain and logs `BUDGET_DROPPED`;
 - when canonical URL length exceeds DB contract (`>3000`), Stage A rejects URL as non-retryable `URL_TOO_LONG` and logs structured diagnostics;
 - lease recovery MUST run in bounded batches using `crawler.frontier.leaseRecoveryBatchSize`;
+- startup lease recovery MUST run before worker loops and continue until no stale leases remain, using `crawler.frontier.startupLeaseRecoveryBatchSize`;
+- recovery-path transition writes (`reschedule` / `markPageAsError`) MUST apply bounded transient retries using `crawler.recoveryPath.maxAttempts`, `crawler.recoveryPath.baseBackoffMs`, and `crawler.retry.jitterMs`.
 - scheduler termination decision MUST honor `crawler.frontier.terminationGraceMs` continuous-stability window;
 - headless slot acquisition timeout triggers deterministic fallback/error path (defined in `TS-03`);
 - robots and bucket caches MUST apply both TTL and maximum-size eviction from runtime config.
@@ -118,6 +125,8 @@ Worker default heuristic:
 - per-domain budget enforcement test for `crawler.budget.maxPerDomainPages`;
 - DB pool-size validation test (`poolSize >= nCrawlers + 1`);
 - lease-recovery batch-size wiring test;
+- startup lease-recovery batch-size wiring test;
+- recovery-path bounded-retry config wiring test;
 - headless config validation tests.
 - robots and bucket cache max-entry validation tests.
 

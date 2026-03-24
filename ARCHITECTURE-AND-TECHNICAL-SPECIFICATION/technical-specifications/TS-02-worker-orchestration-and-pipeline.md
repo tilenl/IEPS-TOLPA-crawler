@@ -85,7 +85,8 @@ Important execution rule:
 - worker MUST treat missing or expired lease as non-owning state and skip processing.
 - graceful shutdown MUST be drain-safe:
   - if shutdown is requested while no row is leased, worker exits loop;
-  - if shutdown is requested while a row is leased, worker MUST finish outcome persistence or call `frontier.reschedule(...)` before exiting.
+  - if shutdown is requested while a row is leased, worker MUST finish outcome persistence or apply `frontier.reschedule(...)` / `storage.markPageAsError(...)` after bounded recovery-path retries before exiting.
+- abnormal termination (process crash, `kill -9`, OOM) MAY leave leased rows in `PROCESSING`; this is expected and resolved by lease expiry plus stale-lease recovery (`TS-07`).
 
 ## Stage A Contract (Ingestion)
 
@@ -154,7 +155,9 @@ Recovery guarantees:
 - retryable categories: increment attempt budget and set `next_attempt_at`;
 - non-retryable categories: transition to terminal `ERROR` exactly once;
 - all recovery transitions MUST clear or preserve lease ownership deterministically (no dangling `PROCESSING`).
-- assignment-scope minimal policy: if `reschedule`/`markPageAsError` fails transiently, worker may rely on lease expiry + stale-lease recovery (`TS-07`) rather than nested recovery loops.
+- recovery-path transitions (`frontier.reschedule`, `storage.markPageAsError`) MUST use bounded transient retry: `crawler.recoveryPath.maxAttempts=3` with short exponential backoff + jitter (`crawler.recoveryPath.baseBackoffMs`, `crawler.retry.jitterMs`).
+- retries apply only to transient DB failures; non-transient failures MUST be rethrown immediately.
+- if bounded retries are exhausted, worker MAY rely on lease expiry + stale-lease recovery (`TS-07`) as final fallback.
 - recovery-path failures MUST emit structured logs including `workerId`, `pageId`, error category, and lease fields.
 
 ## Backpressure And Crawl Budget Contract
@@ -189,11 +192,13 @@ Startup sequence is normative and MUST execute in this order:
    - compute seed relevance score;
    - ensure `site` row exists per seed domain;
    - insert seed page rows as `FRONTIER` with `next_attempt_at=now()` and `attempt_count=0` idempotently;
-4. start worker loops.
+4. run startup lease recovery loop (`PROCESSING` with expired `claim_expires_at` -> `FRONTIER`) in bounded batches until no stale leases remain;
+5. start worker loops.
 
 Bootstrap note:
 - startup does not prefetch robots for all seeds in bulk;
 - first worker claiming a seed/domain performs robots loading via Stage B robots pre-fetch gate before page content fetch.
+- startup lease recovery is reclaim-only (it does not fetch or claim work for execution).
 
 ## Implementation Location
 

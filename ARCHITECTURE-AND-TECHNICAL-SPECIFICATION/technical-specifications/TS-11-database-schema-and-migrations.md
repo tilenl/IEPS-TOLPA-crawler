@@ -53,7 +53,10 @@
 Assignment-scope migration policy:
 - complex rollback/compatibility matrices are out of scope;
 - schema drift handling relies on startup/readiness exact-version checks (`TS-15`);
-- migration policy expansion is deferred unless real migration incidents occur.
+- migration policy expansion is deferred unless real migration incidents occur;
+- migration execution owner for this project is manual local execution before crawler start (`psql -f pa1/db/crawldb.sql`, IDE SQL runner, or documented Gradle task if added later);
+- crawler startup MUST validate connectivity and `schema_version` only, and MUST NOT auto-apply DDL migrations on process start;
+- manual rollback procedure is documented in `ARCHITECTURE-AND-TECHNICAL-SPECIFICATION/migration-rollback-runbook.md`.
 
 ## Verification Checklist
 

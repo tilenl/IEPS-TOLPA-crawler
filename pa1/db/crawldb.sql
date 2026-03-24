@@ -1,5 +1,9 @@
 CREATE SCHEMA IF NOT EXISTS crawldb;
 
+CREATE TABLE crawldb.schema_version (
+	version              integer NOT NULL
+);
+
 CREATE TABLE crawldb.data_type ( 
 	code                 varchar(20)  NOT NULL,
 	CONSTRAINT pk_data_type_code PRIMARY KEY ( code )
@@ -66,7 +70,7 @@ ALTER TABLE crawldb.page
 
 DROP INDEX IF EXISTS crawldb.idx_page_frontier_priority;
 CREATE INDEX "idx_page_frontier_priority"
-	ON crawldb.page ( page_type_code, next_attempt_at ASC, relevance_score DESC, accessed_time ASC, id ASC );
+	ON crawldb.page ( page_type_code, relevance_score DESC, next_attempt_at ASC, accessed_time ASC, id ASC );
 
 CREATE INDEX "idx_page_processing_lease"
 	ON crawldb.page ( page_type_code, claim_expires_at ASC );
@@ -145,3 +149,5 @@ INSERT INTO crawldb.page_type VALUES
 	('FRONTIER'),
 	('PROCESSING'),
 	('ERROR');
+
+INSERT INTO crawldb.schema_version (version) VALUES (1);

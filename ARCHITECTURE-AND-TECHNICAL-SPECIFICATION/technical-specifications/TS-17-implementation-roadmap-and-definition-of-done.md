@@ -3,6 +3,7 @@
 ## Recommended Implementation Order
 
 1. `TS-11` schema extensions for queue leases/retry durability/content ownership.
+   - execute schema manually in local workflow before crawler runtime; app startup performs validation only (no DDL-on-start).
 2. `TS-10` storage contracts with atomic claim/reschedule/dedup transactions.
 3. `TS-07` frontier claim/dequeue with due-time eligibility and lease recovery.
 4. `TS-12` error transitions wired to durable retry state.
@@ -25,6 +26,7 @@
 
 - interfaces in `TS-01` are stable and agreed by team;
 - SQL contracts in `TS-10` validated on local PostgreSQL;
+- migration execution path and rollback runbook are documented and reviewed (`TS-11`, `ARCHITECTURE-AND-TECHNICAL-SPECIFICATION/migration-rollback-runbook.md`);
 - worker flow in `TS-02` implemented with deterministic behavior;
 - error policy in `TS-12` and configuration in `TS-13` enforced in runtime;
 - test gates from `TS-16` pass in local and CI runs.
