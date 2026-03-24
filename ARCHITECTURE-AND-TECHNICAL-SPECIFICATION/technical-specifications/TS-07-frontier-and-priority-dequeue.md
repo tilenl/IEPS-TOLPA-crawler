@@ -46,6 +46,8 @@ Standalone `SELECT ... FOR UPDATE SKIP LOCKED` without state mutation is NOT all
 - ordering MUST be deterministic by score then due-time then age then id;
 - multiple workers MUST never hold lease on same row concurrently;
 - claim lease MUST be durable in DB (`claimed_by`, `claimed_at`, `claim_expires_at`);
+- **`PROCESSING` lease invariant ([TS-11](TS-11-database-schema-and-migrations.md)):** whenever `page_type_code = 'PROCESSING'`, **`claimed_by`**, **`claimed_at`**, and **`claim_expires_at`** MUST all be **non-null** (`CHECK` constraint on `crawldb.page`). Otherwise `claim_expires_at < now()` recovery never matches **NULL**, orphaning rows. Non-`PROCESSING` rows keep lease columns **NULL**.
+- claim MUST set all three lease columns in the **same** `UPDATE` as `PROCESSING`; terminal/reschedule transitions MUST clear lease fields when leaving `PROCESSING` without violating the `CHECK` (typically one atomic `UPDATE` that changes `page_type_code` and nulls lease columns together).
 - index `idx_page_frontier_priority` is required to keep claim performance stable.
 
 Worker identity contract:
@@ -121,6 +123,7 @@ Completion requires this count to be **zero** (plus the grace window in [TS-02](
 - parallel worker uniqueness for atomic claim (`UPDATE ... RETURNING` path);
 - no immediate reclaim of delayed rows (`next_attempt_at > now()`);
 - lease expiration recovery path returns stale `PROCESSING` rows to `FRONTIER` with per-cycle cap enforcement;
+- schema / invariant test: `PROCESSING` row cannot be inserted or updated with null `claim_expires_at` (DB `CHECK`);
 - startup lease-recovery test proving stale lease backlog is reclaimed before first worker claim;
 - reschedule path correctness for delayed domains.
 - termination grace-window test preventing premature completion when frontier/leases oscillate.

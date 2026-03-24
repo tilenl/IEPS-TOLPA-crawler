@@ -29,6 +29,19 @@ Provide a manual rollback path for local schema changes in this project scope.
    - `UPDATE crawldb.schema_version SET version = <previous_version> WHERE id = 1;`
 4. rerun verification checks from `TS-11`.
 
+## Concrete rollback: schema version 2 → 1 (`ck_page_processing_lease`)
+
+Use when **`V002__processing_lease_check_schema_v2.sql`** was applied and you must revert to the prior shape (e.g. local experiment failed).
+
+**Preconditions:** crawler stopped; you accept losing the invariant (not recommended for shared environments).
+
+```sql
+ALTER TABLE crawldb.page DROP CONSTRAINT IF EXISTS ck_page_processing_lease;
+UPDATE crawldb.schema_version SET version = 1 WHERE id = 1;
+```
+
+Then set **`crawler.db.expectedSchemaVersion=1`** in `application.properties` (or env/CLI) to match. Re-apply **`V002`** and set expected version **2** when you want the constraint again.
+
 ## SQL Snippets For Current Baseline
 
 Recreate the frontier priority index **exactly** as in [TS-11](technical-specifications/TS-11-database-schema-and-migrations.md) / [TS-07](technical-specifications/TS-07-frontier-and-priority-dequeue.md) claim ordering (only if explicitly needed). **Do not** change column order relative to TS-11 — wrong order breaks preferential dequeue.
@@ -63,6 +76,10 @@ ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version;
 - `SELECT id, version FROM crawldb.schema_version WHERE id = 1;`
 - `SELECT indexdef FROM pg_indexes WHERE schemaname='crawldb' AND indexname='idx_page_frontier_priority';`
 - run crawler startup validation; confirm schema version check outcome is as expected.
+
+## Crawl behavior limitations (reference, not migrations)
+
+- **`meta refresh` / HTML redirects** are **not** normatively implemented on the plain HTTP path ([TS-03](technical-specifications/TS-03-fetcher-specification.md)). Operators may see **thin pages** or **missing links** on sites that depend on those mechanisms; this is a **known limitation**, not a migration topic.
 
 ## Ownership
 

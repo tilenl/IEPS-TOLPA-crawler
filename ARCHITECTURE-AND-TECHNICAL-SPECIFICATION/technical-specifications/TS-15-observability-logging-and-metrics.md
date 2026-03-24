@@ -29,7 +29,10 @@
 - URL-length rejection events (`URL_TOO_LONG`) for canonical URLs rejected before DB insert.
 - robots fetch outcomes (`2xx`, `4xx`, `3xx/5xx`) and robots decision outcomes.
 - **`FETCH_INCOMPLETE_SHELL`**: emitted when the fetcher escalates from plain HTTP to headless (or flags shell HTML) per [TS-03](TS-03-fetcher-specification.md); MUST include `url`, `domain`, `workerId`.
-- **`CRAWLER_HEARTBEAT`** (or `event=heartbeat` with the same required fields): emitted every `crawler.health.heartbeatIntervalMs` ([TS-13](TS-13-configuration-and-runtime-parameters.md)); SHOULD include optional snapshot fields: `frontierDepth`, `processingCount`, `workerCount`, optional `oldestLeaseAgeMs`.
+- **`CRAWLER_HEARTBEAT`** (or `event=heartbeat` with the same required fields): emitted every `crawler.health.heartbeatIntervalMs` ([TS-13](TS-13-configuration-and-runtime-parameters.md)).
+  - **MUST** include numeric snapshot fields **`frontierDepth`** (count of `page_type_code='FRONTIER'`) and **`processingCount`** (count of `page_type_code='PROCESSING'`), sourced from a DB query or accurate in-process counters refreshed for that heartbeat.
+  - **SHOULD** include **`pagesTerminalTotal`** (count of rows in terminal types: `HTML`, `BINARY`, `DUPLICATE`, `ERROR`) or an equivalent coarse throughput breakdown by `page_type_code`.
+  - **MAY** include `workerCount`, `oldestLeaseAgeMs`, and other diagnostics.
 
 ## Metrics
 
@@ -81,7 +84,7 @@ Summary should also include seed bootstrap metadata:
 - metrics counters increment correctly;
 - summary generated at graceful shutdown.
 - healthcheck transitions under DB down / saturation scenarios.
-- heartbeat events emitted on schedule with expected fields; `FETCH_INCOMPLETE_SHELL` present when shell escalation occurs.
+- heartbeat events emitted on schedule with **MUST** fields `frontierDepth` and `processingCount`; `FETCH_INCOMPLETE_SHELL` present when shell escalation occurs.
 - lease-age and delayed-queue metrics correctness tests.
 - robots metrics correctness tests (`robots_temporary_deny_domains`, `robots_fetch_failures_total`).
 

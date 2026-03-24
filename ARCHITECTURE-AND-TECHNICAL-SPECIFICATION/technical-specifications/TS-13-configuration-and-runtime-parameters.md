@@ -95,7 +95,7 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 
 | Key | Default | Validation | Crawler impact |
 | --- | --- | --- | --- |
-| `crawler.health.heartbeatIntervalMs` | `45000` | `5000..300000` | Interval for structured **heartbeat** log events so operators can see crawl progress (process alive, optional `FRONTIER`/`PROCESSING` counts, worker count); see [TS-15](TS-15-observability-logging-and-metrics.md). |
+| `crawler.health.heartbeatIntervalMs` | `45000` | `5000..300000` | Interval for structured **`CRAWLER_HEARTBEAT`** events ([TS-15](TS-15-observability-logging-and-metrics.md)). Each event **MUST** include **`frontierDepth`** and **`processingCount`**; **SHOULD** include **`pagesTerminalTotal`** (or terminal counts by type). |
 
 `crawler.scoring.keywordConfig` file format (normative):
 

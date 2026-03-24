@@ -30,6 +30,7 @@
 - `page_type` lookup extension values:
   - `PROCESSING`
   - `ERROR`
+- **`ck_page_processing_lease`** on `crawldb.page`: if `page_type_code = 'PROCESSING'` then **`claim_expires_at`**, **`claimed_at`**, and **`claimed_by`** are **NOT NULL**. Apply only after a **one-time repair** `UPDATE` that moves broken `PROCESSING` rows (any null lease column) back to `FRONTIER` and clears partial lease fields (see `pa1/db/crawldb.sql`).
 
 ## Required Indexes
 
@@ -39,9 +40,20 @@
 - unique/primary key on `content_owner(content_hash)`
 - if a legacy frontier index exists without `next_attempt_at` and `id`, migration MUST drop and recreate it.
 
+## Versioned migration artifacts
+
+- incremental DDL lives under **`pa1/db/migrations/`** with ordered names, e.g. `V002__processing_lease_check_schema_v2.sql`.
+- **`pa1/db/migrations/checksums.sha256`** records **SHA-256** (GNU `shasum -a 256` format) for each file so operators or CI can verify files were not corrupted or edited accidentally; **recompute and update** that file whenever a migration script changes.
+- **New database:** continue to apply full baseline via **`pa1/db/crawldb.sql`** (includes current `schema_version`).
+- **Existing database** at an older `schema_version`: apply only the **pending** numbered migrations in order, then set `crawler.db.expectedSchemaVersion` to match.
+
+| Migration file | Purpose |
+| --- | --- |
+| `V002__processing_lease_check_schema_v2.sql` | Repair orphan `PROCESSING` rows; add `ck_page_processing_lease`; bump `schema_version` to **2**. |
+
 ## Migration Strategy
 
-- migrations MUST be idempotent;
+- migrations SHOULD be idempotent where PostgreSQL allows; document one-shot steps when not;
 - schema changes documented in this file before implementation;
 - migration order:
   1. add columns
@@ -49,7 +61,7 @@
   3. add/extend `page_type` lookup (`PROCESSING`, `ERROR`)
   4. add ownership table for content hash
   5. add `schema_version` table (`id=1` PK + `CHECK (id=1)`) and set expected version via upsert
-  6. add indexes and constraints (including frontier index replacement)
+  6. add indexes and constraints (including frontier index replacement and **`ck_page_processing_lease`** after orphan repair `UPDATE`)
   7. validate claim/retry defaults for existing rows
 
 Assignment-scope migration policy:
@@ -66,9 +78,10 @@ Assignment-scope migration policy:
 - required tables and lookup data present;
 - extension columns and indexes present;
 - smoke insert/read/delete succeeds.
-- `PROCESSING` lease fields are nullable/initialized correctly on existing data.
+- `PROCESSING` rows have **non-null** lease fields (`CHECK`); orphan repair migration applied before adding `ck_page_processing_lease` on upgrades.
 - delayed frontier rows are excluded from claim until due time.
 - content owner uniqueness enforces one canonical page per hash.
+- **`crawldb.image.data`** is **NULL** for all inserted image rows (URL-only policy; [TS-04](TS-04-parser-and-extraction-specification.md)).
 
 Practical verification commands (example):
 - `SELECT * FROM crawldb.page_type;`

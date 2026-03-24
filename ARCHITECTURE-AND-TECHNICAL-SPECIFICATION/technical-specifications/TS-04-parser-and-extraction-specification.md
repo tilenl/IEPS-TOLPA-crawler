@@ -81,6 +81,7 @@ Accepted assignment variants include both:
 - store image URL reference only; no binary download;
 - map filename/content type when inferable;
 - persist with `accessed_time`.
+- **Storage contract:** `crawldb.image.data` (**`bytea`**) MUST remain **NULL** for this project—only URL metadata (`filename`, `content_type`, `accessed_time`, `page_id`) is in scope ([04-domain-and-scope-definition.md](../04-domain-and-scope-definition.md), [TS-11](TS-11-database-schema-and-migrations.md)).
 
 Example:
 - image URL: `https://raw.githubusercontent.com/org/repo/main/docs/img.png`

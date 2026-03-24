@@ -34,6 +34,12 @@ Robots limiter contract (normative):
 - if no token is currently available, robots fetch MUST be delayed/rescheduled (never bypass limiter);
 - robots fetch and normal page fetches therefore share a single politeness budget per domain.
 
+## HTTP redirects for `/robots.txt` (normative)
+
+- Robots loader MUST follow HTTP `3xx` **hop-by-hop** when retrieving `robots.txt`, with the **same maximum redirect hop count** as page content: **`crawler.fetch.maxRedirects`** ([TS-13](TS-13-configuration-and-runtime-parameters.md)), aligned with [TS-03](TS-03-fetcher-specification.md).
+- **Each hop** MUST consume a politeness token for **that request URL’s host** (same per-domain bucket model as content). Cross-host redirects therefore use the redirected host’s bucket on subsequent hops.
+- Parsing and policy (`2xx` / `4xx` / `3xx`/`5xx` behavior below) apply to the **final** response after following redirects, unless a hop fails (timeout, loop, hop limit) — then treat per temporary-deny / failure rules.
+
 Fetcher behavior for robots responses:
 - 2xx: parse and enforce returned rules;
 - 4xx on `/robots.txt`: treat as **allow-all** for that domain;
@@ -82,6 +88,7 @@ Representative GitHub path decisions (examples):
 - robots fetch rate-limit test proving token consumption through the same domain bucket.
 - concurrent first-encounter test: N workers for same new domain produce a single robots fetch (single-flight guard).
 - fetch-path precondition test: worker loads robots before `evaluate(...)` and before content fetch.
+- robots **`robots.txt` redirect chain**: respects **`crawler.fetch.maxRedirects`**; token consumption / limiter keyed per **hop host** when redirects cross hosts.
 
 ## Implementation Location
 

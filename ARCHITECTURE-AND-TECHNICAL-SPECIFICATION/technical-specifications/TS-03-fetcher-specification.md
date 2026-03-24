@@ -23,11 +23,22 @@ Rationale:
 
 ## HTTP Redirects (normative)
 
-- Java `HttpClient` MUST **automatically follow** HTTP redirect responses (`3xx` with `Location`) up to **`crawler.fetch.maxRedirects`** ([TS-13](TS-13-configuration-and-runtime-parameters.md)).
-- **Collapsed persistence:** the **claimed / canonical URL** from the frontier remains `page.url`; the stored **`http_status_code`** and **body** come from the **final** non-redirect response after following the chain. Intermediate hop URLs do **not** create additional `page` rows ([TS-10](TS-10-storage-and-sql-contracts.md)).
-- exceeding the hop limit or detecting a redirect loop MUST yield a **fetch failure** classified per [TS-12](TS-12-error-model-and-recovery-policy.md) (typically retryable or terminal `FETCH_HTTP_CLIENT` / overload-style policy as documented in implementation notes).
-- **Robots / politeness:** pre-fetch `robotsTxtCache.evaluate` applies to the **claimed URL**; following redirects during fetch is part of retrieving that resource for **assignment scope**.
-- **`meta refresh` / HTML redirects** are **not** handled by `HttpClient`; defer or document as unsupported unless implemented elsewhere (parser-driven).
+**Policy: hop-by-hop (no transparent auto-follow as the sole mechanism).** Relying only on `HttpClient` **automatic** redirect following is **NOT** sufficient: **robots** and **per-domain rate limiting** MUST run **before each HTTP request** in the chain (each hop’s URL/host). Implementation MUST use a **manual redirect loop** (or an `HttpClient` redirect handler that invokes the same gates between hops), not a single call that follows `3xx` without policy between hops.
+
+**Per hop (repeat until final non-`3xx` or failure):**
+
+1. Resolve the **current request URL** (initially the **claimed / frontier** canonical URL).
+2. Derive **domain** for politeness/robots using the same keying as elsewhere (`TS-08`, `TS-06`).
+3. **`robotsTxtCache.ensureLoaded(domain)`** then **`evaluate(absoluteUrlForThisHop)`** — on `DISALLOWED` / `TEMPORARY_DENY`, **stop** the chain and surface the same outcomes as a normal fetch ([TS-12](TS-12-error-model-and-recovery-policy.md)) (terminal vs reschedule per category).
+4. **`rateLimiter.tryAcquire(domain)`** — same per-domain bucket as content and `/robots.txt`. **Mid-chain delay:** MAY **block** the fetcher’s calling thread (e.g. virtual-thread sleep) for the limiter wait **within remaining lease margin** per [TS-02](TS-02-worker-orchestration-and-pipeline.md) / [TS-08](TS-08-rate-limiting-and-backoff.md); if the wait would exceed safe lease margin, **abort** the chain so the **worker** can `frontier.reschedule` and restart from the **claimed URL** on the next claim.
+5. Issue **GET** (or policy-allowed method) for the current URL. On **`3xx`** with `Location`, resolve the next absolute URL, increment hop count, and loop. Enforce **`crawler.fetch.maxRedirects`** total hops across the chain ([TS-13](TS-13-configuration-and-runtime-parameters.md)).
+
+**Collapsed persistence:** **`page.url`** remains the **original claimed** canonical URL; stored **`http_status_code`** and **body** come from the **final** non-redirect response. Intermediate hop URLs do **not** create `page` rows ([TS-10](TS-10-storage-and-sql-contracts.md)).
+
+- exceeding the hop limit or detecting a redirect loop MUST yield a **fetch failure** classified per [TS-12](TS-12-error-model-and-recovery-policy.md).
+- emit structured logging per hop: `url`, `domain`, `workerId`, hop index (align with [TS-15](TS-15-observability-logging-and-metrics.md) where applicable).
+
+**Known limitation (operator-facing):** **`meta refresh` / HTML redirects** are **not** handled by the normative fetch path (`HttpClient` does not follow them; parser does not re-drive fetch unless explicitly extended). Sites that rely on meta/JS-only navigation may return **shell HTML** or **missing links** compared with a full browser. See **Crawl behavior limitations** in [migration-rollback-runbook.md](../migration-rollback-runbook.md). Parser-driven or headless follow-up is **optional future work**.
 
 ## Incomplete shell → headless escalation (observability)
 
@@ -36,7 +47,7 @@ Rationale:
 ## FetchResult Contract
 
 - `canonicalUrl` (frontier / claimed URL)
-- `httpStatusCode` (from **final** response after redirects when using `HttpClient`)
+- `httpStatusCode` (from **final** non-redirect response after the **hop-by-hop** chain)
 - `contentType`
 - `body` (optional for binary outcomes)
 - `accessedTime`
@@ -90,7 +101,9 @@ Examples:
 
 - mode selection tests by domain;
 - timeout and HTTP error mapping tests;
-- redirect follow + max-hops / loop failure tests (`crawler.fetch.maxRedirects`);
+- hop-by-hop redirect tests: second-hop host **robots** deny / **TEMPORARY_DENY**; politeness **token consumed per hop**; cross-host chain obeys both hosts’ buckets;
+- max-hops / loop failure tests (`crawler.fetch.maxRedirects`);
+- rate-limit delay **mid-chain**: wait-within-lease continues hop vs **reschedule** when lease margin insufficient;
 - binary-vs-html classification tests.
 - `FETCH_INCOMPLETE_SHELL` log emission when escalating plain HTTP → headless.
 - user-agent propagation test (`fri-wier-IEPS-TOLPA`) in both fetch modes.

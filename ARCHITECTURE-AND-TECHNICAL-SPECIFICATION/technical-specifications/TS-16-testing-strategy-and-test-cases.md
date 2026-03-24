@@ -40,6 +40,7 @@
   - attempt count and due time survive restart and enforce max-attempt transition to `ERROR`.
 - lease recovery check:
   - stale `PROCESSING` rows are recovered to `FRONTIER` exactly once.
+- `PROCESSING` lease `CHECK` ([TS-07](TS-07-frontier-and-priority-dequeue.md), [TS-11](TS-11-database-schema-and-migrations.md)): DB rejects `PROCESSING` with any null of `claimed_by` / `claimed_at` / `claim_expires_at`.
 - content dedup race check:
   - concurrent same-hash pages produce one canonical owner and deterministic duplicates.
   - repeat the same concurrency test multiple times and assert stable deterministic owner rule outcome (`min(page_id)`).
@@ -51,7 +52,8 @@
   - global cap `5000` prevents new page insertion beyond limit;
   - frontier high-watermark (`crawler.budget.maxFrontierRows`) defers low-priority ingestion deterministically.
 - observability checks:
-  - lease age, delayed queue age, DB pool saturation, and healthcheck transitions are emitted correctly.
+  - lease age, delayed queue age, DB pool saturation, and healthcheck transitions are emitted correctly;
+  - **`CRAWLER_HEARTBEAT`** includes **MUST** fields `frontierDepth` and `processingCount` ([TS-15](TS-15-observability-logging-and-metrics.md)).
 - SQL safety checks:
   - injection-shaped URL/error payloads are handled via bound parameters and do not alter query semantics.
 - schema version checks:
@@ -59,6 +61,8 @@
   - mismatched schema version fails fast with deterministic diagnostic payload.
 - URL length boundary check:
   - canonical URL length `3001` is rejected as `URL_TOO_LONG` before DB insert attempt.
+- **Hop-by-hop HTTP redirects ([TS-03](TS-03-fetcher-specification.md), [TS-02](TS-02-worker-orchestration-and-pipeline.md), [TS-08](TS-08-rate-limiting-and-backoff.md)):** second-hop host blocked by robots; politeness token consumed **per hop**; `crawler.fetch.maxRedirects` enforced; mid-chain rate limit: wait-within-lease continues chain vs **`frontier.reschedule`** when lease margin insufficient.
+- **Robots `/robots.txt` redirects ([TS-06](TS-06-robots-policy-and-site-metadata.md)):** redirect chain obeys **`crawler.fetch.maxRedirects`**; per-hop host limiter when redirects cross hosts.
 
 ## Quality Gates (Pre-Coding/Pre-Merge)
 

@@ -123,6 +123,8 @@ Stage B robots pre-fetch gate (normative):
 - if decision is `TEMPORARY_DENY`, row is rescheduled with future `next_attempt_at`;
 - seed/bootstrap URLs follow the same Stage B gate and MUST NOT bypass this contract.
 
+**Stage B content fetch and redirect chain (normative):** `fetcher.fetch(claimedUrl)` MUST implement **hop-by-hop** HTTP redirects per [TS-03](TS-03-fetcher-specification.md): **robots** + **rate limit** run **before every hop** (each hop’s URL/domain). The worker’s **first** `rateLimiter.tryAcquire(domain)` on the **claimed** row (before `fetch`) remains: if delayed, **`frontier.reschedule`** — no busy-wait ([TS-08](TS-08-rate-limiting-and-backoff.md)). **Inside** the fetcher’s redirect loop, if the limiter delays a **subsequent** hop, the implementation MAY **block** (e.g. virtual-thread sleep) **within remaining `claim_expires_at` margin** and then continue the same chain; if the delay would exceed safe lease margin, the fetch MUST surface a **rate-limit / lease** outcome so the worker **`frontier.reschedule`s** the row and the next claim **restarts from the original claimed URL** (in-memory redirect state is discarded). Document lease-margin rule in implementation notes.
+
 Concrete outcome mapping:
 - HTML response -> `page_type_code='HTML'`, `html_content` persisted;
 - binary target (`.doc/.docx/.ppt/.pptx`) -> `page_type_code='BINARY'`, `page_data` row inserted, `html_content=NULL`;
@@ -131,7 +133,7 @@ Concrete outcome mapping:
 ## Transaction Boundaries
 
 - claim transaction: short-lived; lock only long enough for atomic claim-state mutation;
-- persistence transaction: page terminal/retry outcome + link ingestion batch atomically;
+- persistence transaction: page terminal/retry outcome + link ingestion batch atomically; **`persistFetchOutcomeWithLinks`** MUST run the **entire** unit under **`SERIALIZABLE`** isolation with **`40001`** bounded retries per [TS-09](TS-09-deduplication-url-and-content.md) / [TS-10](TS-10-storage-and-sql-contracts.md);
 - discovered-link ingestion for current source page MUST run as one batch operation (`persistFetchOutcomeWithLinks(...)`), idempotent under retries;
 - retry metadata (`attempt_count`, `next_attempt_at`, error diagnostics) MUST update in same transaction as state transition.
 - crash window between terminal page persistence and discovered-link ingestion is NOT allowed; both effects must commit or roll back together.

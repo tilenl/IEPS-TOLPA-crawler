@@ -30,7 +30,7 @@ class RuntimeConfigTest {
         p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
-        p.setProperty("crawler.db.expectedSchemaVersion", "1");
+        p.setProperty("crawler.db.expectedSchemaVersion", "2");
         return p;
     }
 }

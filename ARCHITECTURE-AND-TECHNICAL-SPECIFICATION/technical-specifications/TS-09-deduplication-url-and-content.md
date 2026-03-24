@@ -40,20 +40,23 @@ Ensure crawler processes each URL once while identifying content-equivalent page
 
 ## Atomic Dedup Contract (Normative)
 
-For each fetched HTML page with hash `H`:
+For each fetched HTML page with hash `H`, **inside** the Stage B **`persistFetchOutcomeWithLinks`** transaction ([TS-10](TS-10-storage-and-sql-contracts.md), [TS-02](TS-02-worker-orchestration-and-pipeline.md)):
 
-1. In one transaction, execute deterministic ownership upsert with winner rule `min(page_id)`:
+1. Execute deterministic ownership upsert with winner rule `min(page_id)`:
    - `INSERT ... ON CONFLICT (content_hash) DO UPDATE SET owner_page_id = LEAST(existing.owner_page_id, EXCLUDED.owner_page_id) RETURNING owner_page_id`.
-2. Use returned `owner_page_id` in the same transaction.
+2. Use returned `owner_page_id` in the **same** transaction as all other `persistFetchOutcomeWithLinks` effects.
 3. If `owner_page_id == currentPageId`, mark page as canonical `HTML` and persist `content_hash`.
 4. If `owner_page_id != currentPageId`, mark page `DUPLICATE`, clear HTML payload, persist duplicate linkage.
+
+Binary / non-HTML outcomes in `persistFetchOutcomeWithLinks` still use the **same** transaction boundary; content-owner steps apply only on the HTML path.
 
 This contract MUST yield deterministic outcome under concurrent workers.
 
 Isolation (normative):
-- the **whole transaction** that performs steps 1–4 (ownership upsert + `page` updates) MUST use **`SERIALIZABLE`** isolation, or **`REPEATABLE READ`** only if explicitly justified for the statement mix under PostgreSQL;
-- on **`SQLSTATE 40001`** (`serialization_failure`), the implementation MUST **retry** the transaction with bounded backoff + jitter per [TS-10](TS-10-storage-and-sql-contracts.md) / [TS-12](TS-12-error-model-and-recovery-policy.md);
-- **do not** use a “raise isolation only if stress tests fail” posture; stronger isolation for this path is **required by spec**, not test-gated.
+- the **entire** `persistFetchOutcomeWithLinks` database transaction (content_owner upsert / `LEAST` when applicable, **`page`** terminal updates, **and** accepted discovered-link / image / related inserts in that method) MUST use PostgreSQL **`SERIALIZABLE`** isolation — **not** `REPEATABLE READ` and **not** `READ COMMITTED` for this unit of work;
+- **other** `Storage` transactions (claim, reschedule, Stage A inserts, etc.) remain **`READ COMMITTED`** unless otherwise specified ([TS-10](TS-10-storage-and-sql-contracts.md));
+- on **`SQLSTATE 40001`** (`serialization_failure`), the implementation MUST **retry** the **whole** `persistFetchOutcomeWithLinks` transaction with bounded backoff + jitter per [TS-10](TS-10-storage-and-sql-contracts.md) / [TS-12](TS-12-error-model-and-recovery-policy.md);
+- **do not** split content dedup into a separate lower-isolation transaction while still claiming atomic persist+links.
 
 ## Required Tests
 

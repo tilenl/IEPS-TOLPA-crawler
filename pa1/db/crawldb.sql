@@ -138,6 +138,25 @@ ALTER TABLE crawldb.page_data ADD CONSTRAINT fk_page_data_data_type FOREIGN KEY 
 
 ALTER TABLE crawldb.content_owner ADD CONSTRAINT fk_content_owner_page FOREIGN KEY ( owner_page_id ) REFERENCES crawldb.page( id ) ON DELETE RESTRICT;
 
+-- PROCESSING rows must carry a full lease (stale-lease recovery uses claim_expires_at < now(); NULL never matches).
+UPDATE crawldb.page
+SET page_type_code = 'FRONTIER',
+    claimed_by = NULL,
+    claimed_at = NULL,
+    claim_expires_at = NULL
+WHERE page_type_code = 'PROCESSING'
+  AND (claim_expires_at IS NULL OR claimed_at IS NULL OR claimed_by IS NULL);
+
+ALTER TABLE crawldb.page
+	ADD CONSTRAINT ck_page_processing_lease CHECK (
+		page_type_code <> 'PROCESSING'
+		OR (
+			claim_expires_at IS NOT NULL
+			AND claimed_at IS NOT NULL
+			AND claimed_by IS NOT NULL
+		)
+	);
+
 INSERT INTO crawldb.data_type VALUES 
 	('PDF'),
 	('DOC'),
@@ -153,4 +172,4 @@ INSERT INTO crawldb.page_type VALUES
 	('PROCESSING'),
 	('ERROR');
 
-INSERT INTO crawldb.schema_version (id, version) VALUES (1, 1);
+INSERT INTO crawldb.schema_version (id, version) VALUES (1, 2);

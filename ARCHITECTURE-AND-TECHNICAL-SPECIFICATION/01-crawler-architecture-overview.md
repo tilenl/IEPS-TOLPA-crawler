@@ -22,7 +22,7 @@ The system follows a **Producer-Consumer pattern** where the `Frontier` acts as 
 
 ## Drift Resolution Profile
 
-- URL deduplication authority: PostgreSQL `page.url` uniqueness and `INSERT ... ON CONFLICT DO NOTHING`.
+- URL deduplication authority: PostgreSQL `page.url` uniqueness and **`insertFrontierIfAbsent`** per [TS-10](technical-specifications/TS-10-storage-and-sql-contracts.md): sentinel `INSERT ... ON CONFLICT (url) DO UPDATE ... RETURNING id` (single round-trip `page_id` on insert and conflict paths—not `ON CONFLICT DO NOTHING` as the primary contract).
 - No probabilistic dedup pre-check layer is part of the current architecture profile.
 - Politeness is enforced per-domain with 5-second floor and robots-aware delay override.
 

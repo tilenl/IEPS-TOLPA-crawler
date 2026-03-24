@@ -64,7 +64,8 @@ Define authoritative database operations and method-to-SQL mappings.
        SET owner_page_id = LEAST(crawldb.content_owner.owner_page_id, EXCLUDED.owner_page_id)
        RETURNING owner_page_id`
 - **Persist fetch outcome with links (atomic)**
-  - `persistFetchOutcomeWithLinks(...)` MUST execute page outcome transition and discovered-link ingestion for the current source page in one transaction;
+  - `persistFetchOutcomeWithLinks(...)` MUST execute page outcome transition and discovered-link ingestion for the current source page in **one** transaction;
+  - that transaction MUST run at **`SERIALIZABLE`** isolation ([TS-09](TS-09-deduplication-url-and-content.md)); it includes content-owner upsert / `page` terminal updates / link batch in a single commit unit;
   - if any non-tolerable DB failure occurs, both outcome and associated discovered-link effects MUST roll back together;
   - expected per-URL policy rejections in a healthy transaction (for example `URL_TOO_LONG` or disallowed canonicalized URL) are recorded as rejected outcomes and do NOT require transaction rollback.
 
@@ -77,8 +78,8 @@ Atomicity clarification (normative):
 
 - claim transaction isolated and short with atomic state mutation;
 - default minimum isolation level for **most** storage transactions is `READ COMMITTED`;
-- **content dedup + page outcome path (normative):** the transaction that performs `content_owner` upsert / `LEAST` owner rule **and** the related `page` terminal updates (`HTML` / `DUPLICATE` per [TS-09](TS-09-deduplication-url-and-content.md)) MUST run at **`SERIALIZABLE`** isolation, or **`REPEATABLE READ`** only if the implementation team documents that the exact statement mix is safe under PostgreSQL rules for this project;
-- **serialization failures:** PostgreSQL **`SQLSTATE 40001`** (`serialization_failure`) on that transaction MUST map to **bounded retries** with exponential backoff + jitter (align with `crawler.recoveryPath.*` / [TS-12](TS-12-error-model-and-recovery-policy.md)); after retry exhaustion, classify as `DB_TRANSIENT` or terminal per [TS-12](TS-12-error-model-and-recovery-policy.md);
+- **`persistFetchOutcomeWithLinks` (normative):** the **entire** transaction MUST run at **`SERIALIZABLE`** isolation — including `content_owner` upsert / `LEAST` when on the HTML path, all related **`page`** terminal updates (`HTML` / `DUPLICATE` / `BINARY` / etc.), **and** accepted discovered-link (and other same-method) writes per [TS-09](TS-09-deduplication-url-and-content.md). **`REPEATABLE READ` is not** an allowed substitute for this transaction.
+- **serialization failures:** PostgreSQL **`SQLSTATE 40001`** (`serialization_failure`) on **`persistFetchOutcomeWithLinks`** MUST map to **bounded retries** of the **full** transaction with exponential backoff + jitter (align with `crawler.recoveryPath.*` / [TS-12](TS-12-error-model-and-recovery-policy.md)); after retry exhaustion, classify as `DB_TRANSIENT` or terminal per [TS-12](TS-12-error-model-and-recovery-policy.md);
 - page outcome update and related insertions MUST be atomic;
 - page outcome + discovered-link ingestion for the current fetched page MUST be atomic via `persistFetchOutcomeWithLinks(...)`;
 - ingestion insertions MUST be idempotent for retry safety;
@@ -109,7 +110,7 @@ Atomicity clarification (normative):
 - multi-worker claim contention tests with atomic claim transition;
 - reschedule and retry-attempt persistence tests;
 - expired lease recovery tests;
-- concurrent same-hash dedup ownership tests under **SERIALIZABLE** (or chosen RR) with **`40001`** retry behavior.
+- concurrent same-hash dedup ownership tests under **`SERIALIZABLE`** for **`persistFetchOutcomeWithLinks`** with **`40001`** retry behavior.
 - deterministic same-hash winner tests (`min(page_id)` ownership rule across repeated runs).
 - atomicity test ensuring discovered links and page terminal state commit/rollback together.
 - batch ingestion contract tests for mixed valid/invalid discovered URLs.

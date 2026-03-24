@@ -118,7 +118,7 @@ Important note:
 - **Output:** canonical absolute URL used by robots check, dedup checks, scoring, and frontier insertion.
 - robots evaluation must use canonical URL (not raw extracted URL).
 - DB uniqueness checks must use canonical URL only.
-- URL dedup authority is `page.url` uniqueness in PostgreSQL (`INSERT ... ON CONFLICT DO NOTHING`).
+- URL dedup authority is `page.url` uniqueness in PostgreSQL; normative insert contract is **`insertFrontierIfAbsent`** in [TS-10](TS-10-storage-and-sql-contracts.md) (sentinel `ON CONFLICT ... DO UPDATE ... RETURNING id`)—not `ON CONFLICT DO NOTHING` plus a follow-up `SELECT` as the primary path.
 
 ## Reference Implementation Sketch
 
