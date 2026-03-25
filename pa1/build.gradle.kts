@@ -3,11 +3,22 @@ plugins {
     application
 }
 
-group = "si.uni-lj.fri.wier"
+group = "si.uni_lj.fri.wier"
 version = "1.0-SNAPSHOT"
 
 repositories {
     mavenCentral()
+}
+
+sourceSets {
+    main {
+        java.setSrcDirs(listOf("crawler/src/main/java"))
+        resources.setSrcDirs(listOf("crawler/src/main/resources"))
+    }
+    test {
+        java.setSrcDirs(listOf("crawler/src/test/java"))
+        resources.setSrcDirs(listOf("crawler/src/test/resources"))
+    }
 }
 
 dependencies {
@@ -21,7 +32,7 @@ dependencies {
     
     // Performance & Logic
     implementation("com.github.ben-manes.caffeine:caffeine:3.1.8")
-    implementation("io.github.bucket4j:bucket4j-core:8.7.0")
+    implementation("com.bucket4j:bucket4j_jdk17-core:8.17.0")
     
     // Database
     implementation("org.postgresql:postgresql:42.7.2")
@@ -42,7 +53,7 @@ java {
 }
 
 application {
-    mainClass.set("si.uni-lj.fri.wier.crawler.Main")
+    mainClass.set("si.uni_lj.fri.wier.cli.Main")
 }
 
 tasks.test {

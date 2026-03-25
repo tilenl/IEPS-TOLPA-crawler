@@ -3,3 +3,7 @@ NOTEBOOKS/
 
 # Local PostgreSQL data (see pa1/db/database-setup.md)
 .docker/pgdata/
+
+# Gradle build outputs/caches
+pa1/.gradle/
+pa1/build/
