@@ -1,3 +1,5 @@
 package si.uni_lj.fri.wier.contracts;
 
-public interface Worker {}
+public interface Worker {
+    void runLoop();
+}
