@@ -10,7 +10,7 @@ This project is a preferential web crawler designed to explore the `github.com` 
    - **JDK 21**: Required for Java 21 Virtual Threads and modern language features.
    - **Docker**: Recommended for running the PostgreSQL database (see `pa1/db/database-setup.md` for the full setup flow).
    - **Chrome/Chromium**: Required for Selenium headless rendering.
-   - **Gradle Wrapper**: No global Gradle installation is needed; the project uses `./gradlew`.
+   - **Gradle Wrapper**: No global Gradle installation is needed; the project uses `pa1/gradlew`.
 
 2. **Database Setup**:
    - The project uses PostgreSQL.
@@ -18,6 +18,7 @@ This project is a preferential web crawler designed to explore the `github.com` 
    - The schema source file remains `pa1/db/crawldb.sql`.
 
 3. **Building and Running**:
+   - First, change into the `pa1/` directory: `cd pa1`
    - **Build**: `./gradlew build`
    - **Run**: `./gradlew run --args="--n-crawlers 5"` (example with 5 workers)
 
