@@ -6,13 +6,11 @@ A **preferential web crawler** targeting `github.com`, biased toward **image seg
 
 ## Prerequisites
 
-
 | Tool                  | Notes                                                                                         |
 | --------------------- | --------------------------------------------------------------------------------------------- |
 | **JDK 21**            | `export JAVA_HOME="$(/usr/libexec/java_home -v 21)"` (macOS). Newer JDKs may break the build. |
 | **Docker**            | Run `docker ps` to confirm the daemon is up. macOS: use Docker Desktop or `colima start`.     |
 | **Chrome / Chromium** | Required for Selenium headless rendering. Install a normal desktop build.                     |
-
 
 No global Gradle installation needed — use `./gradlew` (the wrapper).
 
