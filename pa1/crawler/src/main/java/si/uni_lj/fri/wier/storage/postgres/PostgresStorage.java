@@ -53,6 +53,7 @@ public final class PostgresStorage implements Storage {
 
     @Override
     public void markPageAsError(long pageId, String category, String message) {
+        // Contract name is generic; repository uses the DB term for the terminal ERROR row state.
         pageRepository.markPageTerminalError(pageId, category, message);
     }
 }

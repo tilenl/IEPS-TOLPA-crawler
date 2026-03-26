@@ -97,6 +97,7 @@ class PageRepositoryIntegrationTest {
     @BeforeEach
     void resetTables() throws Exception {
         repository = new PageRepository(dataSource, 3, Duration.ofMillis(10), 5);
+        // CASCADE clears FK-linked tables; RESTART IDENTITY keeps tests independent of prior serial values.
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =
                         c.prepareStatement(
@@ -180,6 +181,7 @@ class PageRepositoryIntegrationTest {
 
         long siteId = retryingRepo.ensureSite("example.com").orElseThrow();
         long pageId = retryingRepo.insertFrontierIfAbsent("https://example.com/retry", siteId, 0.8).pageId();
+        // Arm after setup so only the SERIALIZABLE work path sees the synthetic serialization failure once.
         failArmed.set(true);
         PersistOutcome outcome =
                 retryingRepo.persistFetchOutcomeWithLinks(
@@ -243,6 +245,7 @@ class PageRepositoryIntegrationTest {
             dropSchema.executeUpdate();
         }
         try (Connection c = ds.getConnection()) {
+            // Split on semicolons line-by-line so multi-statement crawldb.sql runs without a full SQL parser.
             for (String line : sql.split("\n")) {
                 String trimmed = line.trim();
                 if (trimmed.startsWith("--")) {
@@ -281,6 +284,7 @@ class PageRepositoryIntegrationTest {
 
         @Override
         public Connection getConnection() throws SQLException {
+            // First getConnection after armed simulates Postgres rejecting a SERIALIZABLE transaction (SQLSTATE 40001).
             if (armed.get() && flag.compareAndSet(false, true)) {
                 throw new SQLException("Synthetic serialization failure", sqlState);
             }

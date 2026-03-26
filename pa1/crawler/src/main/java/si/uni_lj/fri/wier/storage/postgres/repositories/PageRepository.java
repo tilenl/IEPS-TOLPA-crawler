@@ -56,6 +56,7 @@ public final class PageRepository {
         this.dataSource = dataSource;
         this.maxSerializableRetries = Math.max(1, maxSerializableRetries);
         this.serializableBaseBackoff = serializableBaseBackoff;
+        // Jitter spreads retries when many workers collide on the same conflict window.
         this.retryJitterMs = Math.max(0, retryJitterMs);
     }
 
@@ -63,6 +64,9 @@ public final class PageRepository {
         final String selectSql = "SELECT id FROM crawldb.site WHERE domain = ? ORDER BY id ASC LIMIT 1";
         final String insertSql = "INSERT INTO crawldb.site(domain) VALUES (?) RETURNING id";
         try (Connection connection = dataSource.getConnection()) {
+            // SELECT-first is the fast path when a site row already exists. Concurrent first-time inserts for
+            // the same domain can still race (duplicate rows or constraint errors); this path does not use ON CONFLICT.
+            // NOTE: follow-up (UNIQUE + upsert): .cursor/plans/implementation/fix_ensuresite_comment_eddfb802.plan.md
             try (PreparedStatement select = connection.prepareStatement(selectSql)) {
                 select.setString(1, domain);
                 try (ResultSet rs = select.executeQuery()) {
@@ -86,6 +90,7 @@ public final class PageRepository {
     }
 
     public Optional<FrontierRow> claimNextEligibleFrontier(String workerId, Duration leaseDuration) {
+        // Prefer higher relevance first, then fairness by scheduled time and stable tie-break (id).
         final String sql =
                 """
                 WITH candidate AS (
@@ -109,6 +114,7 @@ public final class PageRepository {
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, workerId);
+            // Zero or negative lease would expire immediately; minimum one second matches interval semantics.
             statement.setLong(2, Math.max(1L, leaseDuration.toSeconds()));
             try (ResultSet rs = statement.executeQuery()) {
                 if (!rs.next()) {
@@ -127,6 +133,7 @@ public final class PageRepository {
     }
 
     public int recoverExpiredLeases(int batchSize, String reason) {
+        // Lease expiry is infrastructure timing, not page content failure; DB_TRANSIENT signals retry later.
         final String sql =
                 """
                 UPDATE crawldb.page
@@ -150,6 +157,7 @@ public final class PageRepository {
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, reason);
+            // Batch size must be positive; LIMIT 0 would recover nothing silently.
             statement.setInt(2, Math.max(1, batchSize));
             return statement.executeUpdate();
         } catch (SQLException e) {
@@ -265,9 +273,11 @@ public final class PageRepository {
         boolean originalAutoCommit = connection.getAutoCommit();
         try {
             connection.setAutoCommit(false);
+            // SERIALIZABLE prevents torn reads between content_owner upsert and page row updates under concurrency.
             connection.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
 
             String contentType = result.contentType() == null ? "" : result.contentType().toLowerCase(Locale.ROOT);
+            // Body must be present to persist HTML; missing body is treated as non-HTML even if type says html.
             boolean html = contentType.contains("text/html") && result.body() != null;
 
             Long ownerPageId = null;
@@ -287,6 +297,7 @@ public final class PageRepository {
                 outcomeType = PageOutcomeType.BINARY;
             }
 
+            // Parser output and caller-supplied links are both ingested in one transaction for atomicity.
             List<DiscoveredUrl> merged = new ArrayList<>();
             if (parsed != null && parsed.discoveredUrls() != null) {
                 merged.addAll(parsed.discoveredUrls());
@@ -302,6 +313,7 @@ public final class PageRepository {
             connection.rollback();
             throw e;
         } finally {
+            // Restore pool defaults so the connection is safe to reuse for other isolation levels.
             connection.setAutoCommit(originalAutoCommit);
             connection.setTransactionIsolation(originalIsolation);
             connection.close();
@@ -311,6 +323,7 @@ public final class PageRepository {
     private InsertFrontierResult insertFrontierIfAbsent(
             Connection connection, String canonicalUrl, long siteId, double relevanceScore)
             throws SQLException {
+        // NOTE: DO UPDATE SET url = EXCLUDED.url is a no-op that still runs so xmax distinguishes insert vs conflict.
         final String sql =
                 """
                 INSERT INTO crawldb.page(site_id, page_type_code, url, relevance_score, next_attempt_at, attempt_count)
@@ -351,6 +364,7 @@ public final class PageRepository {
 
             InsertFrontierResult insertResult =
                     insertFrontierIfAbsent(connection, discovered.canonicalUrl(), discovered.siteId(), discovered.relevanceScore());
+            // Page id is returned for both new frontier rows and existing URL conflicts (idempotent ingest).
             accepted.add(insertResult.pageId());
             insertLink(connection, discovered.fromPageId(), insertResult.pageId());
         }
@@ -381,6 +395,7 @@ public final class PageRepository {
                 SET owner_page_id = LEAST(crawldb.content_owner.owner_page_id, EXCLUDED.owner_page_id)
                 RETURNING owner_page_id
                 """;
+        // LEAST picks a single canonical owner deterministically when the same hash appears on multiple pages.
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, contentHash);
             statement.setLong(2, pageId);
@@ -430,6 +445,7 @@ public final class PageRepository {
     private void markPageDuplicate(
             Connection connection, long pageId, int statusCode, Instant fetchedAt, String contentHash)
             throws SQLException {
+        // Keep content_hash for joins; drop html_content because the canonical owner row stores the bytes.
         final String sql =
                 """
                 UPDATE crawldb.page
@@ -489,6 +505,7 @@ public final class PageRepository {
     }
 
     private static Instant nonNullInstant(Instant instant) {
+        // Fetch timestamps can be absent in tests or bad upstream data; DB column is NOT NULL.
         return instant == null ? Instant.now() : instant;
     }
 
@@ -499,9 +516,11 @@ public final class PageRepository {
                 return work.execute();
             } catch (SQLException e) {
                 last = e;
+                // Only serialization failures are worth retrying; anything else should fail fast.
                 if (!SQLSTATE_SERIALIZATION_FAILURE.equals(e.getSQLState()) || attempt >= maxSerializableRetries) {
                     break;
                 }
+                // Exponential backoff per attempt; jitter reduces synchronized thundering herds on hot rows.
                 long base = serializableBaseBackoff.toMillis() * (1L << (attempt - 1));
                 long jitter = retryJitterMs == 0 ? 0 : ThreadLocalRandom.current().nextLong(retryJitterMs + 1L);
                 sleepQuietly(base + jitter);
@@ -514,6 +533,7 @@ public final class PageRepository {
         try {
             Thread.sleep(Math.max(0L, millis));
         } catch (InterruptedException e) {
+            // Preserve interrupt status so callers can cooperate with shutdown after retries.
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted during retry backoff", e);
         }
