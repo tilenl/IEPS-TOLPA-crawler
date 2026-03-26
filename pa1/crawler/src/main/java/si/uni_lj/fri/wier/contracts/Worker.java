@@ -1,3 +1,6 @@
 package si.uni_lj.fri.wier.contracts;
 
-public interface Worker {}
+/** Worker loop contract for one crawler worker runtime. */
+public interface Worker {
+    void runLoop();
+}

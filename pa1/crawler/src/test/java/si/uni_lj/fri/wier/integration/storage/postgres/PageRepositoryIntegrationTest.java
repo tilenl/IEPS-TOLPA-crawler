@@ -208,7 +208,6 @@ class PageRepositoryIntegrationTest {
                         List.of(
                                 new DiscoveredUrl(
                                         "https://example.com/discovered",
-                                        siteId,
                                         firstPage,
                                         "a",
                                         "ctx",

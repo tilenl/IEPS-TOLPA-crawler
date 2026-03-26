@@ -62,7 +62,10 @@ Predefine canonical files and interfaces for the first implementation pass. Help
   - `contracts/Fetcher.java`
   - `contracts/Parser.java`
   - `contracts/Canonicalizer.java`
+  - `contracts/RobotsTxtCache.java`
+  - `contracts/RateLimiterRegistry.java`
   - `contracts/RelevanceScorer.java`
+  - `contracts/ContentHasher.java`
   - `contracts/Storage.java`
 
 Canonical first-pass classes per owned submodule:
@@ -84,7 +87,7 @@ Canonical first-pass classes per owned submodule:
 
 | Technical Specification | Primary Folder(s) | Key File(s) |
 | --- | --- | --- |
-| `TS-01` Interface Contracts | `contracts/` | `Scheduler.java`, `Frontier.java`, `Worker.java`, `Fetcher.java`, `Parser.java`, `Canonicalizer.java`, `RelevanceScorer.java`, `Storage.java` |
+| `TS-01` Interface Contracts | `contracts/` | `Scheduler.java`, `Frontier.java`, `Worker.java`, `Fetcher.java`, `Parser.java`, `Canonicalizer.java`, `RobotsTxtCache.java`, `RateLimiterRegistry.java`, `RelevanceScorer.java`, `ContentHasher.java`, `Storage.java` |
 | `TS-02` Worker Orchestration And Pipeline | `app/`, `scheduler/`, `downloader/worker/` | `PreferentialCrawler.java`, `SchedulingPolicy.java`, `WorkerLoop.java` |
 | `TS-03` Fetcher Specification | `downloader/fetch/` | `HttpFetcher.java` |
 | `TS-04` Parser And Extraction | `downloader/extract/` | `HtmlParser.java` |
