@@ -6,6 +6,7 @@ Extract assignment-required artifacts from HTML document.
 
 Parser boundary is strict:
 - parser extracts artifacts and returns `ParseResult` only;
+- `ParseResult` bundles canonical outlinks (`DiscoveredUrl` list), image references (`ExtractedImage` list), and optional `ExtractedPageMetadata` (e.g. title/description when extracted); see [TS-01](TS-01-interface-contracts.md) data contracts;
 - parser MUST NOT call `Storage` directly;
 - Stage A ingestion (canonicalize -> policy checks -> dedup/upsert -> link insert) is owned by worker/storage contracts (`TS-02`, `TS-10`).
 
@@ -37,15 +38,16 @@ Elements onclickNodes = doc.select("[onclick]");
 - normalize anchor/context text for scoring input;
 - skip malformed URLs safely (log and continue).
 
-Concrete extraction example:
+Concrete extraction example (after resolving and canonicalizing the href per TS-05, and computing relevance):
 
 ```java
 for (Element link : doc.select("a[href]")) {
     String absolute = link.attr("abs:href");
     String anchorText = link.text();
-    discovered.add(
-        DiscoveredUrl.of(absolute, canonicalUrl, currentPageId, anchorText, surroundingText(link))
-    );
+    String canonical = canonicalizer.canonicalize(absolute, canonicalUrl).canonicalUrl();
+    double score = relevanceScorer.compute(canonical, anchorText, surroundingText(link));
+    discovered.add(new DiscoveredUrl(
+            canonical, targetSiteId, currentPageId, anchorText, surroundingText(link), score));
 }
 ```
 

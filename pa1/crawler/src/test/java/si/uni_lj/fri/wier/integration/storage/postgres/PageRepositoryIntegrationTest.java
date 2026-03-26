@@ -187,7 +187,7 @@ class PageRepositoryIntegrationTest {
                 retryingRepo.persistFetchOutcomeWithLinks(
                         new FetchContext(pageId, "https://example.com/retry", siteId, 0, Instant.now()),
                         new FetchResult(200, "text/html", "<html>ok</html>", Instant.now()),
-                        new ParseResult(List.of()),
+                        ParseResult.empty(),
                         List.of());
 
         assertTrue(failed.get());
@@ -204,7 +204,7 @@ class PageRepositoryIntegrationTest {
                 repository.persistFetchOutcomeWithLinks(
                         new FetchContext(firstPage, "https://example.com/one", siteId, 0, Instant.now()),
                         new FetchResult(200, "text/html", "<html>same</html>", Instant.now()),
-                        new ParseResult(List.of()),
+                        ParseResult.empty(),
                         List.of(
                                 new DiscoveredUrl(
                                         "https://example.com/discovered",
@@ -217,7 +217,7 @@ class PageRepositoryIntegrationTest {
                 repository.persistFetchOutcomeWithLinks(
                         new FetchContext(secondPage, "https://example.com/two", siteId, 0, Instant.now()),
                         new FetchResult(200, "text/html", "<html>same</html>", Instant.now()),
-                        new ParseResult(List.of()),
+                        ParseResult.empty(),
                         List.of());
 
         assertEquals(PageOutcomeType.HTML, ownerOutcome.outcomeType());

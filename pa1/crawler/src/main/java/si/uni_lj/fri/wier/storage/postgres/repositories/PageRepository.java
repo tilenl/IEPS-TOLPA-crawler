@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import javax.sql.DataSource;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
+import si.uni_lj.fri.wier.contracts.ExtractedImage;
 import si.uni_lj.fri.wier.contracts.FetchContext;
 import si.uni_lj.fri.wier.contracts.FetchResult;
 import si.uni_lj.fri.wier.contracts.FrontierRow;
@@ -297,6 +298,11 @@ public final class PageRepository {
                 outcomeType = PageOutcomeType.BINARY;
             }
 
+            // TS-04 image rows reference the HTML page row; URL-only inserts (data NULL per TS-11).
+            if (html && parsed != null) {
+                insertExtractedImages(connection, context.pageId(), parsed.extractedImages(), result.fetchedAt());
+            }
+
             // Parser output and caller-supplied links are both ingested in one transaction for atomicity.
             List<DiscoveredUrl> merged = new ArrayList<>();
             if (parsed != null && parsed.discoveredUrls() != null) {
@@ -342,6 +348,84 @@ public final class PageRepository {
                 return new InsertFrontierResult(rs.getLong("id"), rs.getBoolean("inserted"));
             }
         }
+    }
+
+    /**
+     * Persists TS-04 image references for the current HTML page (URL metadata only; {@code data} stays
+     * NULL).
+     */
+    private void insertExtractedImages(
+            Connection connection, long pageId, List<ExtractedImage> images, Instant fetchedAt)
+            throws SQLException {
+        if (images == null || images.isEmpty()) {
+            return;
+        }
+        Instant accessedAt = fetchedAt != null ? fetchedAt : Instant.now();
+        final String sql =
+                """
+                INSERT INTO crawldb.image (page_id, filename, content_type, data, accessed_time)
+                VALUES (?, ?, ?, NULL, ?)
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            int batchCount = 0;
+            for (ExtractedImage image : images) {
+                if (image == null
+                        || image.canonicalUrl() == null
+                        || image.canonicalUrl().isBlank()) {
+                    continue;
+                }
+                String filename = effectiveImageFilename(image);
+                String contentType = image.contentType();
+                if (contentType != null && contentType.length() > 50) {
+                    contentType = contentType.substring(0, 50);
+                }
+                statement.setLong(1, pageId);
+                statement.setString(2, filename);
+                if (contentType == null || contentType.isBlank()) {
+                    statement.setNull(3, Types.VARCHAR);
+                } else {
+                    statement.setString(3, contentType);
+                }
+                statement.setTimestamp(4, Timestamp.from(accessedAt));
+                statement.addBatch();
+                batchCount++;
+            }
+            if (batchCount > 0) {
+                statement.executeBatch();
+            }
+        }
+    }
+
+    /**
+     * Prefers parser-supplied filename; otherwise derives a short name from the last path segment of
+     * the canonical URL (TS-04).
+     */
+    private static String effectiveImageFilename(ExtractedImage image) {
+        if (image.filename() != null && !image.filename().isBlank()) {
+            String trimmed = image.filename().trim();
+            return trimmed.length() > 255 ? trimmed.substring(0, 255) : trimmed;
+        }
+        return filenameSegmentFromUrl(image.canonicalUrl());
+    }
+
+    private static String filenameSegmentFromUrl(String canonicalUrl) {
+        int slash = canonicalUrl.lastIndexOf('/');
+        String segment =
+                slash >= 0 && slash < canonicalUrl.length() - 1
+                        ? canonicalUrl.substring(slash + 1)
+                        : "image";
+        int q = segment.indexOf('?');
+        if (q >= 0) {
+            segment = segment.substring(0, q);
+        }
+        int h = segment.indexOf('#');
+        if (h >= 0) {
+            segment = segment.substring(0, h);
+        }
+        if (segment.isBlank()) {
+            return "image";
+        }
+        return segment.length() > 255 ? segment.substring(segment.length() - 255) : segment;
     }
 
     private IngestResult ingestDiscoveredUrls(Connection connection, Collection<DiscoveredUrl> discoveredUrls)

@@ -88,10 +88,13 @@ Ownership clarification:
 
 - `FrontierRow`: `pageId`, `url`, `siteId`, `relevanceScore`.
 - `FetchResult`: `statusCode`, `contentType`, `body`, `fetchedAt`.
-- `ParseResult`: extracted links, images, extracted metadata.
+- `ParseResult`: `discoveredUrls` (canonical outlinks), `extractedImages` (`ExtractedImage` list), optional `pageMetadata` (`ExtractedPageMetadata`). Normative extraction rules: [TS-04](TS-04-parser-and-extraction-specification.md).
+- `ExtractedImage`: `canonicalUrl`, optional `filename`, optional `contentType` (TS-04; `crawldb.image.data` remains NULL).
+- `ExtractedPageMetadata`: optional `title`, optional `metaDescription` (document-level strings when extracted).
 - `RobotDecision`: `ALLOWED`, `DISALLOWED`, or `TEMPORARY_DENY`, optional reason and optional `denyUntil`.
 - `RateLimitDecision`: `ALLOWED` or `DELAYED(waitNs)`.
-- `DiscoveredUrl`: `rawUrl`, `baseUrl`, `fromPageId`, `anchorText`, `contextText`.
+- `DiscoveredUrl`: `canonicalUrl`, `siteId`, `fromPageId`, `anchorText`, `contextText`, `relevanceScore`.
+  - Resolving relative URLs, applying base URL, and canonicalization per [TS-05](TS-05-url-canonicalization-and-normalization.md) occur **before** this record is constructed; `Storage` and frontier enqueue see only canonical form plus scoring context.
 - `FetchContext`: `pageId`, `canonicalUrl`, `siteId`, `attempt`, `claimedAt`.
 
 `RobotsTxtCache` contract detail:
@@ -134,6 +137,6 @@ Ownership clarification:
 
 - primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/contracts/`, `.../cli/`, `.../app/`
 - key file(s):
-  - `contracts/Scheduler.java`, `contracts/Frontier.java`, `contracts/Worker.java`, `contracts/Fetcher.java`, `contracts/Parser.java`, `contracts/Canonicalizer.java`, `contracts/RelevanceScorer.java`, `contracts/Storage.java`
+  - `contracts/Scheduler.java`, `contracts/Frontier.java`, `contracts/Worker.java`, `contracts/Fetcher.java`, `contracts/Parser.java`, `contracts/Canonicalizer.java`, `contracts/RelevanceScorer.java`, `contracts/Storage.java`, `contracts/ParseResult.java`, `contracts/ExtractedImage.java`, `contracts/ExtractedPageMetadata.java`, `contracts/DiscoveredUrl.java`
   - bootstrap boundary contracts documented in `cli/Main.java` and `app/PreferentialCrawler.java`
 - test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/contracts/` and `.../unit/app/`
