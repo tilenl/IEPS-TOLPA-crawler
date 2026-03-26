@@ -2,14 +2,17 @@ package si.uni_lj.fri.wier.cli;
 
 import java.io.InputStream;
 import java.util.Properties;
+import org.postgresql.ds.PGSimpleDataSource;
 import si.uni_lj.fri.wier.app.PreferentialCrawler;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
+import si.uni_lj.fri.wier.storage.postgres.SchemaVersionValidator;
 
 public final class Main {
 
     public static void main(String[] args) throws Exception {
         Properties props = loadClasspathProperties("application.properties");
         RuntimeConfig config = RuntimeConfig.fromProperties(props, Runtime.getRuntime().availableProcessors());
+        new SchemaVersionValidator(dataSource(config)).validateExpectedVersion(config.dbExpectedSchemaVersion());
         new PreferentialCrawler(config).preflightAndLogEffectiveConfig();
     }
 
@@ -22,5 +25,13 @@ public final class Main {
             p.load(in);
         }
         return p;
+    }
+
+    private static PGSimpleDataSource dataSource(RuntimeConfig config) {
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        dataSource.setURL(config.dbUrl());
+        dataSource.setUser(config.dbUser());
+        dataSource.setPassword(config.dbPassword());
+        return dataSource;
     }
 }
