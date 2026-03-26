@@ -2,3 +2,6 @@ NOTEBOOKS/
 .cursor/
 pa1/.gradle/
 pa1/build/
+
+.gradle-local/
+.docker/
