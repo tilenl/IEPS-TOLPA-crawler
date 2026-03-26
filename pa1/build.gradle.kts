@@ -58,6 +58,10 @@ application {
     mainClass.set("si.uni-lj.fri.wier.cli.Main")
 }
 
-tasks.test {
+tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        showExceptions = true
+    }
 }
