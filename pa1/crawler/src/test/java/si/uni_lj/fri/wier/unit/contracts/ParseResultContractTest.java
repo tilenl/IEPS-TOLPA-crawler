@@ -23,7 +23,7 @@ class ParseResultContractTest {
     @Test
     void constructor_makes_defensive_copies_for_collections() {
         List<DiscoveredUrl> links = new ArrayList<>();
-        links.add(new DiscoveredUrl("https://example.com/a", 2L, "a", "ctx", 0.3));
+        links.add(new DiscoveredUrl("https://example.com/a", 2L, 10L, "a", "ctx", 0.3));
         List<ExtractedImage> images = new ArrayList<>();
         images.add(new ExtractedImage("https://example.com/i.png", "i.png", "image/png"));
 
@@ -40,7 +40,7 @@ class ParseResultContractTest {
     void linksOnly_factory_populates_only_discovered_urls() {
         ParseResult result =
                 ParseResult.linksOnly(
-                        List.of(new DiscoveredUrl("https://example.com/b", 2L, "b", "ctx", 0.4)));
+                        List.of(new DiscoveredUrl("https://example.com/b", 2L, 11L, "b", "ctx", 0.4)));
 
         assertEquals(1, result.discoveredUrls().size());
         assertTrue(result.extractedImages().isEmpty());
