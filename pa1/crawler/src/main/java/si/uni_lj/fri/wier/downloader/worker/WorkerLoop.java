@@ -13,6 +13,8 @@ import si.uni_lj.fri.wier.error.ProcessingFailureHandler;
 public final class WorkerLoop implements Worker {
     @Override
     public void runLoop() {
+        // NOTE: When the pipeline is implemented, route processing failures through ProcessingFailureHandler
+        // (see class Javadoc). Do not bypass Frontier/Storage reschedule and terminal semantics (TS-12).
         throw new UnsupportedOperationException("WorkerLoop is pending TS-02 implementation");
     }
 }

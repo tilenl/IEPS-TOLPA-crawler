@@ -6,6 +6,7 @@ import org.postgresql.ds.PGSimpleDataSource;
 import si.uni_lj.fri.wier.app.PreferentialCrawler;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.queue.claim.ClaimService;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.storage.postgres.SchemaVersionValidator;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
@@ -27,7 +28,7 @@ public final class Main {
         PGSimpleDataSource dataSource = dataSource(config);
         new SchemaVersionValidator(dataSource).validateExpectedVersion(config.dbExpectedSchemaVersion());
         PageRepository pageRepository = new PageRepository(dataSource);
-        FrontierStore frontierStore = new FrontierStore(pageRepository);
+        FrontierStore frontierStore = new FrontierStore(pageRepository, new CrawlerMetrics());
         ClaimService.runStartupLeaseRecovery(
                 frontierStore,
                 config.frontierStartupLeaseRecoveryBatchSize(),

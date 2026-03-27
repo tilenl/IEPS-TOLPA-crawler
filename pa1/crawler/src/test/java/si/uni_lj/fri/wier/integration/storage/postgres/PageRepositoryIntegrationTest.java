@@ -40,6 +40,7 @@ import si.uni_lj.fri.wier.contracts.IngestResult;
 import si.uni_lj.fri.wier.contracts.PageOutcomeType;
 import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.contracts.PersistOutcome;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.queue.claim.ClaimService;
 import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
@@ -440,6 +441,96 @@ class PageRepositoryIntegrationTest {
                 assertEquals(0, rs.getInt(2));
             }
         }
+    }
+
+    @Test
+    void sampleFrontierOverdueHealth_emptyQueue_returnsZeros() {
+        PageRepository.FrontierOverdueHealth h = repository.sampleFrontierOverdueHealth();
+        assertEquals(0L, h.overdueFrontierCount());
+        assertEquals(0L, h.avgOverdueMillis());
+        assertEquals(0L, h.oldestOverdueMillis());
+    }
+
+    @Test
+    void sampleFrontierOverdueHealth_reportsAvgAndMaxForOverdueFrontierRows() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long a = repository.insertFrontierIfAbsent("https://example.com/qa", siteId, 0.5).pageId();
+        long b = repository.insertFrontierIfAbsent("https://example.com/qb", siteId, 0.4).pageId();
+        try (Connection c = dataSource.getConnection()) {
+            try (PreparedStatement ps =
+                    c.prepareStatement(
+                            "UPDATE crawldb.page SET next_attempt_at = now() - interval '1 minute' WHERE id = ?")) {
+                ps.setLong(1, a);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps =
+                    c.prepareStatement(
+                            "UPDATE crawldb.page SET next_attempt_at = now() - interval '5 minutes' WHERE id = ?")) {
+                ps.setLong(1, b);
+                ps.executeUpdate();
+            }
+        }
+        PageRepository.FrontierOverdueHealth h = repository.sampleFrontierOverdueHealth();
+        assertEquals(2L, h.overdueFrontierCount());
+        assertTrue(h.oldestOverdueMillis() >= h.avgOverdueMillis());
+        assertTrue(h.oldestOverdueMillis() > 0L);
+        assertTrue(h.avgOverdueMillis() > 0L);
+    }
+
+    @Test
+    void attemptBudget_survivesNewPageRepositoryInstance_sameDataSource() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/restart-budget", siteId, 0.95).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        assertTrue(
+                repository.reschedulePage(
+                        pageId, Instant.now().plusSeconds(30), "FETCH_TIMEOUT", "transient", false));
+        PageRepository fresh = new PageRepository(dataSource, 3, Duration.ofMillis(10), 5);
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now() WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            ps.executeUpdate();
+        }
+        Optional<FrontierRow> claimed =
+                fresh.claimNextEligibleFrontier("w2", Duration.ofSeconds(60));
+        assertTrue(claimed.isPresent());
+        assertEquals(1, claimed.get().attemptCount());
+        assertEquals(pageId, claimed.get().pageId());
+    }
+
+    @Test
+    void reschedulePage_whileNotProcessing_returnsFalse() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/double-resched", siteId, 0.8).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        assertTrue(
+                repository.reschedulePage(
+                        pageId, Instant.now().plusSeconds(10), "FETCH_TIMEOUT", "first", false));
+        assertFalse(
+                repository.reschedulePage(
+                        pageId, Instant.now().plusSeconds(20), "FETCH_TIMEOUT", "second", false));
+    }
+
+    @Test
+    void claimNextEligibleFrontier_refreshesCrawlerMetricsQueueHealth() throws Exception {
+        CrawlerMetrics metrics = new CrawlerMetrics();
+        FrontierStore store = new FrontierStore(repository, metrics);
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://example.com/metrics-high", siteId, 0.99);
+        long lowId = repository.insertFrontierIfAbsent("https://example.com/metrics-low", siteId, 0.1).pageId();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now() - interval '30 seconds' WHERE id = ?")) {
+            ps.setLong(1, lowId);
+            ps.executeUpdate();
+        }
+        assertTrue(store.claimNextEligibleFrontier("w1", Duration.ofSeconds(60), 1).isPresent());
+        assertEquals(1L, metrics.overdueFrontierRowCount());
+        assertTrue(metrics.delayedQueueAgeMillis() > 0L);
+        assertTrue(metrics.oldestOverdueRetryMillis() > 0L);
     }
 
     @Test

@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.contracts.FrontierRow;
 import si.uni_lj.fri.wier.error.CrawlerErrorCategory;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
 /**
@@ -23,9 +24,24 @@ public final class FrontierStore {
     private static final String PRE_CLAIM_RECOVERY_REASON = "stale lease recovery (pre-claim)";
 
     private final PageRepository pageRepository;
+    private final CrawlerMetrics metrics;
 
     public FrontierStore(PageRepository pageRepository) {
+        this(pageRepository, null);
+    }
+
+    public FrontierStore(PageRepository pageRepository, CrawlerMetrics metrics) {
         this.pageRepository = pageRepository;
+        this.metrics = metrics;
+    }
+
+    private void refreshFrontierQueueMetrics() {
+        if (metrics == null) {
+            return;
+        }
+        PageRepository.FrontierOverdueHealth h = pageRepository.sampleFrontierOverdueHealth();
+        metrics.recordFrontierQueueHealth(
+                h.overdueFrontierCount(), h.avgOverdueMillis(), h.oldestOverdueMillis());
     }
 
     /**
@@ -40,7 +56,9 @@ public final class FrontierStore {
         log.debug("pre-claim stale lease recovery batch workerId={}", workerId);
         pageRepository.recoverExpiredLeases(
                 Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId);
-        return pageRepository.claimNextEligibleFrontier(workerId, leaseDuration);
+        Optional<FrontierRow> claimed = pageRepository.claimNextEligibleFrontier(workerId, leaseDuration);
+        refreshFrontierQueueMetrics();
+        return claimed;
     }
 
     public int recoverExpiredLeases(int batchSize, String reason, String recovererIdentity) {
@@ -55,7 +73,12 @@ public final class FrontierStore {
             long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage) {
         boolean parserStage =
                 CrawlerErrorCategory.PARSER_FAILURE.name().equals(errorCategory);
-        return pageRepository.reschedulePage(
-                pageId, nextAttemptAt, errorCategory, diagnosticMessage, parserStage);
+        boolean ok =
+                pageRepository.reschedulePage(
+                        pageId, nextAttemptAt, errorCategory, diagnosticMessage, parserStage);
+        if (ok) {
+            refreshFrontierQueueMetrics();
+        }
+        return ok;
     }
 }

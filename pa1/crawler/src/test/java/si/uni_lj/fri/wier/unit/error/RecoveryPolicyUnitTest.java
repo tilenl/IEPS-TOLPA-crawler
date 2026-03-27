@@ -76,6 +76,18 @@ class RecoveryPolicyUnitTest {
     }
 
     @Test
+    void decide_fetchCapacityExhausted_reschedulesUntilAttemptThreshold() {
+        RuntimeConfig cfg = configWithFetchCapacityMax(3);
+        Clock clock = Clock.fixed(Instant.parse("2026-03-01T10:00:00Z"), ZoneOffset.UTC);
+        assertInstanceOf(
+                RecoveryDecision.Reschedule.class,
+                RecoveryPolicy.decide(CrawlerErrorCategory.FETCH_CAPACITY_EXHAUSTED, 2, 0, cfg, clock));
+        assertInstanceOf(
+                RecoveryDecision.Terminal.class,
+                RecoveryPolicy.decide(CrawlerErrorCategory.FETCH_CAPACITY_EXHAUSTED, 3, 0, cfg, clock));
+    }
+
+    @Test
     void computeNextAttemptAt_withZeroJitter_isDeterministic() {
         RuntimeConfig cfg = config();
         Clock clock = Clock.fixed(Instant.parse("2026-03-01T10:00:00Z"), ZoneOffset.UTC);
@@ -94,6 +106,19 @@ class RecoveryPolicyUnitTest {
         p.setProperty("crawler.db.expectedSchemaVersion", "4");
         p.setProperty("crawler.retry.jitterMs", "0");
         p.setProperty("crawler.retry.maxAttempts.fetchTimeout", "3");
+        return RuntimeConfig.fromProperties(p, 4);
+    }
+
+    private static RuntimeConfig configWithFetchCapacityMax(int max) {
+        Properties p = new Properties();
+        p.setProperty("crawler.scoring.keywordConfig", "keywords.json");
+        p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
+        p.setProperty("crawler.db.user", "u");
+        p.setProperty("crawler.db.password", "p");
+        p.setProperty("crawler.db.expectedSchemaVersion", "4");
+        p.setProperty("crawler.retry.jitterMs", "0");
+        p.setProperty("crawler.retry.maxAttempts.fetchTimeout", "3");
+        p.setProperty("crawler.retry.maxAttempts.fetchCapacity", String.valueOf(max));
         return RuntimeConfig.fromProperties(p, 4);
     }
 }

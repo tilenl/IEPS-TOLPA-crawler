@@ -51,6 +51,13 @@ import si.uni_lj.fri.wier.contracts.PersistOutcome;
  * {@link si.uni_lj.fri.wier.queue.claim.ClaimService}.
  */
 public final class PageRepository {
+
+    /**
+     * Snapshot of overdue {@code FRONTIER} rows ({@code next_attempt_at <= now()}) for TS-12 queue-health
+     * metrics ({@code delayed queue age}, {@code oldest overdue retry}).
+     */
+    public record FrontierOverdueHealth(long overdueFrontierCount, long avgOverdueMillis, long oldestOverdueMillis) {}
+
     private static final Logger log = LoggerFactory.getLogger(PageRepository.class);
 
     private static final String SQLSTATE_SERIALIZATION_FAILURE = "40001";
@@ -167,6 +174,36 @@ public final class PageRepository {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to claim next frontier row", e);
+        }
+    }
+
+    /**
+     * One round-trip snapshot of how long eligible {@code FRONTIER} URLs have been waiting past
+     * {@code next_attempt_at} (TS-12 observability: delayed queue age, oldest overdue retry).
+     */
+    public FrontierOverdueHealth sampleFrontierOverdueHealth() {
+        final String sql =
+                """
+                SELECT COUNT(*)::bigint,
+                       COALESCE(
+                           ROUND(AVG((EXTRACT(EPOCH FROM (now() - next_attempt_at)) * 1000)))::bigint,
+                           0),
+                       COALESCE(
+                           MAX((EXTRACT(EPOCH FROM (now() - next_attempt_at)) * 1000))::bigint,
+                           0)
+                FROM crawldb.page
+                WHERE page_type_code = 'FRONTIER'
+                  AND next_attempt_at <= now()
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            if (!rs.next()) {
+                return new FrontierOverdueHealth(0L, 0L, 0L);
+            }
+            return new FrontierOverdueHealth(rs.getLong(1), rs.getLong(2), rs.getLong(3));
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to sample frontier overdue health", e);
         }
     }
 
