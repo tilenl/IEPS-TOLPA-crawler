@@ -3,6 +3,7 @@ package si.uni_lj.fri.wier.unit.error;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Paths;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -186,7 +187,14 @@ class ProcessingFailureHandlerUnitTest {
 
     private static RuntimeConfig config() {
         Properties p = new Properties();
-        p.setProperty("crawler.scoring.keywordConfig", "keywords.json");
+        try {
+            p.setProperty(
+                    "crawler.scoring.keywordConfig",
+                    Paths.get(ProcessingFailureHandlerUnitTest.class.getResource("/keywords-valid.json").toURI())
+                            .toString());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");

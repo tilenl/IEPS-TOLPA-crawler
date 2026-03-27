@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Paths;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -99,7 +100,14 @@ class RecoveryPolicyUnitTest {
 
     private static RuntimeConfig config() {
         Properties p = new Properties();
-        p.setProperty("crawler.scoring.keywordConfig", "keywords.json");
+        try {
+            p.setProperty(
+                    "crawler.scoring.keywordConfig",
+                    Paths.get(RecoveryPolicyUnitTest.class.getResource("/keywords-valid.json").toURI())
+                            .toString());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
@@ -111,7 +119,14 @@ class RecoveryPolicyUnitTest {
 
     private static RuntimeConfig configWithFetchCapacityMax(int max) {
         Properties p = new Properties();
-        p.setProperty("crawler.scoring.keywordConfig", "keywords.json");
+        try {
+            p.setProperty(
+                    "crawler.scoring.keywordConfig",
+                    Paths.get(RecoveryPolicyUnitTest.class.getResource("/keywords-valid.json").toURI())
+                            .toString());
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
         p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");

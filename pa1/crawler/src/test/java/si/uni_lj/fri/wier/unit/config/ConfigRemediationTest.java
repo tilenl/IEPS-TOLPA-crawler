@@ -28,4 +28,11 @@ class ConfigRemediationTest {
         ConfigRemediation.Remediation r = ConfigRemediation.schemaVersionMismatch();
         assertEquals("crawler.db.expectedSchemaVersion", r.configKey());
     }
+
+    @Test
+    void redirectHopLimitExceeded_matchesTs13Key() {
+        ConfigRemediation.Remediation r = ConfigRemediation.redirectHopLimitExceeded();
+        assertEquals("crawler.fetch.maxRedirects", r.configKey());
+        assertTrue(r.remediationHint().contains("crawler.fetch.maxRedirects"));
+    }
 }

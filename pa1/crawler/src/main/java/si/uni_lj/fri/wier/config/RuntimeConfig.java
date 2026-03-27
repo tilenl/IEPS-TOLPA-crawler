@@ -1,5 +1,14 @@
+/*
+ * TS-13 runtime parameters: typed view of merged Properties (CLI > env > file > defaults).
+ *
+ * Callers: PreferentialCrawler, Main, RecoveryPolicy, ProcessingFailureHandler, tests.
+ *
+ * Created: 2026-03. Major revisions: TS-13 maxRedirects/heartbeat, keyword file validation, robots deny rule.
+ */
+
 package si.uni_lj.fri.wier.config;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Properties;
@@ -7,6 +16,10 @@ import java.util.Properties;
 /**
  * Runtime configuration (TS-13). Single-domain crawl: no per-domain page cap — use {@code
  * budgetMaxTotalPages} only.
+ *
+ * <p>{@link #validate()} must run before database access that depends on bounded frontier/recovery settings;
+ * it also validates {@code crawler.scoring.keywordConfig} JSON on the filesystem (relative paths use the JVM
+ * working directory).
  */
 public record RuntimeConfig(
         int nCrawlers,
@@ -20,6 +33,8 @@ public record RuntimeConfig(
         int fetchMaxHeadlessSessions,
         int fetchHeadlessAcquireTimeoutMs,
         int fetchHeadlessCircuitOpenThreshold,
+        int fetchMaxRedirects,
+        int healthHeartbeatIntervalMs,
         int rateLimitMinDelayMs,
         int rateLimitMaxBackoffMs,
         int robotsCacheTtlHours,
@@ -62,6 +77,8 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.fetch.maxHeadlessSessions", 2),
                 parseInt(p, "crawler.fetch.headlessAcquireTimeoutMs", 2000),
                 parseInt(p, "crawler.fetch.headlessCircuitOpenThreshold", 20),
+                parseInt(p, "crawler.fetch.maxRedirects", 10),
+                parseInt(p, "crawler.health.heartbeatIntervalMs", 45_000),
                 parseInt(p, "crawler.rateLimit.minDelayMs", 5000),
                 parseInt(p, "crawler.rateLimit.maxBackoffMs", 300_000),
                 parseInt(p, "crawler.robots.cacheTtlHours", 24),
@@ -97,6 +114,11 @@ public record RuntimeConfig(
         return Integer.parseInt(v.trim());
     }
 
+    /**
+     * Validates numeric ranges, relational constraints, and keyword JSON file shape (TS-13).
+     *
+     * @throws IllegalArgumentException if any check fails
+     */
     public void validate() {
         require(nCrawlers >= 1, "crawler.nCrawlers", ">= 1");
         require(frontierPollMs >= 50 && frontierPollMs <= 5000, "crawler.frontier.pollMs", "50..5000");
@@ -121,6 +143,11 @@ public record RuntimeConfig(
                 "crawler.fetch.headlessAcquireTimeoutMs",
                 "100..30000");
         require(fetchHeadlessCircuitOpenThreshold >= 1, "crawler.fetch.headlessCircuitOpenThreshold", ">= 1");
+        require(fetchMaxRedirects >= 0 && fetchMaxRedirects <= 20, "crawler.fetch.maxRedirects", "0..20");
+        require(
+                healthHeartbeatIntervalMs >= 5000 && healthHeartbeatIntervalMs <= 300_000,
+                "crawler.health.heartbeatIntervalMs",
+                "5000..300000");
         require(rateLimitMinDelayMs >= 5000, "crawler.rateLimit.minDelayMs", ">= 5000");
         require(rateLimitMaxBackoffMs >= 5000, "crawler.rateLimit.maxBackoffMs", ">= 5000");
         require(robotsCacheTtlHours >= 1, "crawler.robots.cacheTtlHours", ">= 1");
@@ -133,6 +160,11 @@ public record RuntimeConfig(
                 robotsTemporaryDenyRetryMinutes >= 1 && robotsTemporaryDenyRetryMinutes <= 60,
                 "crawler.robots.temporaryDenyRetryMinutes",
                 "1..60");
+        // Retry cadence must fit within the max deny window (TS-13 startup consistency).
+        require(
+                robotsTemporaryDenyRetryMinutes <= robotsTemporaryDenyMaxMinutes,
+                "crawler.robots.temporaryDenyRetryMinutes",
+                "must be <= crawler.robots.temporaryDenyMaxMinutes");
         require(bucketsCacheTtlHours >= 1, "crawler.buckets.cacheTtlHours", ">= 1");
         require(bucketsCacheMaxEntries >= 100, "crawler.buckets.cacheMaxEntries", ">= 100");
         require(retryJitterMs >= 0 && retryJitterMs <= 10_000, "crawler.retry.jitterMs", "0..10000");
@@ -162,6 +194,13 @@ public record RuntimeConfig(
         require(dbPoolSize >= 2, "crawler.db.poolSize", ">= 2");
         require(fetchMaxHeadlessSessions <= nCrawlers, "crawler.fetch.maxHeadlessSessions", "must be <= crawler.nCrawlers");
         require(dbPoolSize >= nCrawlers + 1, "crawler.db.poolSize", "must be >= crawler.nCrawlers + 1");
+
+        try {
+            ScoringKeywordConfigValidator.validate(scoringKeywordConfig);
+        } catch (IOException e) {
+            throw new IllegalArgumentException(
+                    "crawler.scoring.keywordConfig: cannot read " + scoringKeywordConfig.toAbsolutePath(), e);
+        }
     }
 
     private static void require(boolean ok, String key, String range) {

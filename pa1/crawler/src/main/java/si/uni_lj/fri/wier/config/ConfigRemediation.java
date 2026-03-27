@@ -142,6 +142,14 @@ public final class ConfigRemediation {
                         + " acceptable.");
     }
 
+    /** Redirect hop limit exceeded (TS-03 / TS-12 terminal path); tune max hops per TS-13. */
+    public static Remediation redirectHopLimitExceeded() {
+        return new Remediation(
+                "crawler.fetch.maxRedirects",
+                "Increase crawler.fetch.maxRedirects within 0..20 if legitimate chains are cut off;"
+                        + " investigate redirect loops if failures persist.");
+    }
+
     /** Startup validation: include {@code failedKey} and {@code message} in the log separately. */
     public static Remediation invalidConfigValue(String failedKey, String validRangeDescription) {
         return new Remediation(
