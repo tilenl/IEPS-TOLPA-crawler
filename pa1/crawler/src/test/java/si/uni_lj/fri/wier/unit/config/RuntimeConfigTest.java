@@ -104,6 +104,31 @@ class RuntimeConfigTest {
         assertEquals(99, cfg.retryJitterMs());
     }
 
+    @Test
+    void validate_rejectsDbPoolSmallerThanNCrawlersPlusOne() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.nCrawlers", "4");
+        p.setProperty("crawler.db.poolSize", "4");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 8);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
+    @Test
+    void validate_rejectsRobotsCacheMaxEntriesBelowMinimum() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.robots.cacheMaxEntries", "50");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
+    @Test
+    void validate_rejectsBucketsCacheMaxEntriesBelowMinimum() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.buckets.cacheMaxEntries", "50");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
     private static Properties baseProps() throws Exception {
         Properties p = new Properties();
         Path kw = Paths.get(RuntimeConfigTest.class.getResource("/keywords-valid.json").toURI());

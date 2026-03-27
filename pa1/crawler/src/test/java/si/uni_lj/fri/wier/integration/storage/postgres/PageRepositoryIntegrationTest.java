@@ -829,6 +829,35 @@ class PageRepositoryIntegrationTest {
         }
     }
 
+    @Test
+    void queryHeartbeatQueueSnapshot_countsFrontierProcessingAndTerminal() throws Exception {
+        long siteId = repository.ensureSite("heartbeat.example.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://heartbeat.example.com/a", siteId, 0.5);
+        repository.insertFrontierIfAbsent("https://heartbeat.example.com/b", siteId, 0.5);
+
+        PageRepository.HeartbeatQueueSnapshot s0 = repository.queryHeartbeatQueueSnapshot();
+        assertEquals(2L, s0.frontierDepth());
+        assertEquals(0L, s0.processingCount());
+        assertEquals(0L, s0.pagesTerminalTotal());
+
+        repository.claimNextEligibleFrontier("w-hb", Duration.ofSeconds(60));
+        PageRepository.HeartbeatQueueSnapshot s1 = repository.queryHeartbeatQueueSnapshot();
+        assertEquals(1L, s1.frontierDepth());
+        assertEquals(1L, s1.processingCount());
+
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET page_type_code = 'HTML' WHERE url = ?")) {
+            ps.setString(1, "https://heartbeat.example.com/b");
+            ps.executeUpdate();
+        }
+        PageRepository.HeartbeatQueueSnapshot s2 = repository.queryHeartbeatQueueSnapshot();
+        assertEquals(0L, s2.frontierDepth());
+        assertEquals(1L, s2.processingCount());
+        assertEquals(1L, s2.pagesTerminalTotal());
+    }
+
     private static void applySqlScript(DataSource ds, Path scriptPath) throws IOException, SQLException {
         String sql = Files.readString(scriptPath);
         StringBuilder statement = new StringBuilder();

@@ -10,11 +10,13 @@ package si.uni_lj.fri.wier.cli;
 
 import java.time.Duration;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
 import org.postgresql.ds.PGSimpleDataSource;
 import si.uni_lj.fri.wier.app.PreferentialCrawler;
 import si.uni_lj.fri.wier.config.ConfigurationBootstrap;
 import si.uni_lj.fri.wier.config.ConfigurationBootstrap.CliHelpRequestedException;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
+import si.uni_lj.fri.wier.observability.CrawlerHeartbeatScheduler;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.queue.claim.ClaimService;
 import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
@@ -23,7 +25,8 @@ import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
 /**
  * Bootstrap: {@link ConfigurationBootstrap} → {@link RuntimeConfig#validate()} → DB → startup lease recovery →
- * effective config log. CLI: {@code --n-crawlers N}, {@code -h} / {@code --help}.
+ * effective config log → TS-15 {@code CRAWLER_HEARTBEAT} on {@link RuntimeConfig#healthHeartbeatIntervalMs()}. The
+ * main thread blocks until JVM shutdown (SIGINT/SIGTERM). CLI: {@code --n-crawlers N}, {@code -h} / {@code --help}.
  */
 public final class Main {
 
@@ -63,6 +66,22 @@ public final class Main {
                 "startup stale lease recovery",
                 "startup");
         new PreferentialCrawler(config).preflightAndLogEffectiveConfig();
+
+        CountDownLatch shutdown = new CountDownLatch(1);
+        CrawlerHeartbeatScheduler heartbeat = new CrawlerHeartbeatScheduler(pageRepository, config, "main");
+        heartbeat.start();
+        Runtime.getRuntime()
+                .addShutdownHook(
+                        new Thread(
+                                () -> {
+                                    try {
+                                        heartbeat.close();
+                                    } finally {
+                                        shutdown.countDown();
+                                    }
+                                },
+                                "crawler-shutdown"));
+        shutdown.await();
     }
 
     private static PGSimpleDataSource dataSource(RuntimeConfig config) {

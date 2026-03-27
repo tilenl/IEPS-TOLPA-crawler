@@ -58,6 +58,12 @@ public final class PageRepository {
      */
     public record FrontierOverdueHealth(long overdueFrontierCount, long avgOverdueMillis, long oldestOverdueMillis) {}
 
+    /**
+     * TS-15 {@code CRAWLER_HEARTBEAT}: one round-trip counts for {@code FRONTIER}, {@code PROCESSING}, and terminal
+     * types ({@code HTML}, {@code BINARY}, {@code DUPLICATE}, {@code ERROR}).
+     */
+    public record HeartbeatQueueSnapshot(long frontierDepth, long processingCount, long pagesTerminalTotal) {}
+
     private static final Logger log = LoggerFactory.getLogger(PageRepository.class);
 
     private static final String SQLSTATE_SERIALIZATION_FAILURE = "40001";
@@ -204,6 +210,30 @@ public final class PageRepository {
             return new FrontierOverdueHealth(rs.getLong(1), rs.getLong(2), rs.getLong(3));
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to sample frontier overdue health", e);
+        }
+    }
+
+    /**
+     * Single-query snapshot for structured heartbeat logs (TS-15): {@code frontierDepth}, {@code processingCount},
+     * {@code pagesTerminalTotal}.
+     */
+    public HeartbeatQueueSnapshot queryHeartbeatQueueSnapshot() {
+        final String sql =
+                """
+                SELECT COUNT(*) FILTER (WHERE page_type_code = 'FRONTIER'),
+                       COUNT(*) FILTER (WHERE page_type_code = 'PROCESSING'),
+                       COUNT(*) FILTER (WHERE page_type_code IN ('HTML', 'BINARY', 'DUPLICATE', 'ERROR'))
+                FROM crawldb.page
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            if (!rs.next()) {
+                return new HeartbeatQueueSnapshot(0L, 0L, 0L);
+            }
+            return new HeartbeatQueueSnapshot(rs.getLong(1), rs.getLong(2), rs.getLong(3));
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to query heartbeat queue snapshot", e);
         }
     }
 
