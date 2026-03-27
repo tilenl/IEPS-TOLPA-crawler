@@ -6,6 +6,7 @@ pa1/build/
 .gradle-local/
 # Local PostgreSQL data (see pa1/db/database-setup.md)
 .docker/pgdata/
+.docker/pgdata-viz/
 
 pa1/db/crawldb
 
@@ -22,3 +23,5 @@ pa2/implementation-extraction/__pycache__/
 
 # sentence-transformers HuggingFace cache - locally loaded models
 pa2/implementation-extraction/.hf_cache/
+# Visualization tool (Node)
+visualization/node_modules/
