@@ -1,8 +1,8 @@
 # How to run tests
 
-Tests are run with **Gradle** from the **`pa1/`** directory (`IEPS-TOLPA-crawler/pa1`). Always use the **Gradle Wrapper** (`./gradlew`), not a system-wide `gradle` from Homebrew — other versions can break the build (for example JUnit Platform on the test classpath).
+Tests are run with **Gradle** from the `**pa1/`** directory (`IEPS-TOLPA-crawler/pa1`). Always use the **Gradle Wrapper** (`./gradlew`), not a system-wide `gradle` from Homebrew — other versions can break the build (for example JUnit Platform on the test classpath).
 
-On first run, the wrapper downloads the version pinned in [`pa1/gradle/wrapper/gradle-wrapper.properties`](pa1/gradle/wrapper/gradle-wrapper.properties) (currently **Gradle 8.10.2**).
+On first run, the wrapper downloads the version pinned in `[pa1/gradle/wrapper/gradle-wrapper.properties](pa1/gradle/wrapper/gradle-wrapper.properties)` (currently **Gradle 8.10.2**).
 
 If `./gradlew` is not executable on Unix: `chmod +x pa1/gradlew`.
 
@@ -46,7 +46,7 @@ cd pa1
 Useful variants:
 
 - **Force re-execution:** `./gradlew test --rerun-tasks`
-- **Avoid long-lived daemon** (picks up fresh `DOCKER_*` env in the same shell): add `--no-daemon`. If you use the daemon, run `./gradlew --stop` after changing Docker-related exports, or export `DOCKER_HOST` before the first daemon start.
+- **Avoid long-lived daemon** (picks up fresh `DOCKER_`* env in the same shell): add `--no-daemon`. If you use the daemon, run `./gradlew --stop` after changing Docker-related exports, or export `DOCKER_HOST` before the first daemon start.
 
 ### Unit tests only (no Docker)
 
@@ -66,18 +66,23 @@ export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE="${HOME}/.colima/default/docker.sock"
 export TESTCONTAINERS_RYUK_DISABLED=true
 cd pa1
+
+# test different integration tests
 ./gradlew test --tests '*PageRepositoryIntegrationTest' --rerun-tasks --no-daemon
+./gradlew test --tests '*UrlCanonicalizationPipelineIntegrationTest' --rerun-tasks --no-daemon
 ```
 
-| Line | Why |
-|------|-----|
-| `JAVA_HOME` … `-v 21` | Gradle must run on JDK 21; avoids launcher failures on newer JDKs. |
-| `PATH` … `$JAVA_HOME/bin` | Ensures `java` and tools match that JDK. |
-| `DOCKER_HOST` … `.colima/.../docker.sock` | Docker API on Colima listens on this Unix socket, not necessarily `/var/run/docker.sock`. |
-| `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` … same socket | Testcontainers may need a real on-disk socket path when `/var/run/docker.sock` does not exist (common on Colima-only setups). |
-| `TESTCONTAINERS_RYUK_DISABLED=true` | Ryuk (Testcontainers’ cleanup sidecar) often fails on Colima; failure **skips** all integration tests while Gradle still reports success. Disabling Ryuk fixes that for local runs; the Postgres container still starts. |
-| `cd pa1` | Wrapper and build file live here. |
-| `./gradlew test --tests '...PageRepositoryIntegrationTest' ...` | Runs only that class; `--rerun-tasks` forces the test task; `--no-daemon` avoids a daemon started without your exports. |
+
+| Line                                                            | Why                                                                                                                                                                                                                      |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `JAVA_HOME` … `-v 21`                                           | Gradle must run on JDK 21; avoids launcher failures on newer JDKs.                                                                                                                                                       |
+| `PATH` … `$JAVA_HOME/bin`                                       | Ensures `java` and tools match that JDK.                                                                                                                                                                                 |
+| `DOCKER_HOST` … `.colima/.../docker.sock`                       | Docker API on Colima listens on this Unix socket, not necessarily `/var/run/docker.sock`.                                                                                                                                |
+| `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` … same socket           | Testcontainers may need a real on-disk socket path when `/var/run/docker.sock` does not exist (common on Colima-only setups).                                                                                            |
+| `TESTCONTAINERS_RYUK_DISABLED=true`                             | Ryuk (Testcontainers’ cleanup sidecar) often fails on Colima; failure **skips** all integration tests while Gradle still reports success. Disabling Ryuk fixes that for local runs; the Postgres container still starts. |
+| `cd pa1`                                                        | Wrapper and build file live here.                                                                                                                                                                                        |
+| `./gradlew test --tests '...PageRepositoryIntegrationTest' ...` | Runs only that class; `--rerun-tasks` forces the test task; `--no-daemon` avoids a daemon started without your exports.                                                                                                  |
+
 
 **Docker Desktop** (default socket, JDK 21 already on `PATH`):
 
@@ -94,20 +99,15 @@ If Testcontainers cannot find Docker, set `DOCKER_HOST` from your context (see *
 
 - **Colima running:** `colima status` → `Running` (`colima start` if needed).
 - **Sockets:**
-
   ```bash
   test -S "${HOME}/.colima/default/docker.sock" && echo "Colima socket OK" || echo "Colima socket missing"
   test -S /var/run/docker.sock && echo "/var/run/docker.sock exists" || echo "/var/run/docker.sock missing (normal on Colima-only)"
   ```
-
   If you **do not** have `/var/run/docker.sock`, do **not** set `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` to that path. Use the Colima socket path (as in the block above), or create a symlink:
-
   ```bash
   sudo ln -sf "${HOME}/.colima/default/docker.sock" /var/run/docker.sock
   ```
-
 - **Do not** default to `TESTCONTAINERS_HOST_OVERRIDE=localhost` on Colima — it often breaks Ryuk and Docker-Java routing. Use a host override only if tests **run** but fail to reach published ports; prefer the address from `colima list` / `colima ls -j` or `docker context inspect`.
-
 - **Debug Testcontainers:** `export TESTCONTAINERS_DEBUG=true` then run `./gradlew test` to see socket strategy and errors.
 
 ---
@@ -124,10 +124,13 @@ If Testcontainers cannot find Docker, set `DOCKER_HOST` from your context (see *
 
 ## Troubleshooting
 
-| Problem | What to try |
-|--------|----------------|
+
+| Problem                                              | What to try                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Integration tests skipped** (`skipped="5"` in XML) | Same terminal: `docker ps` must work. Use the Colima block above; fix socket override if it points at a missing `/var/run/docker.sock`; set `TESTCONTAINERS_RYUK_DISABLED=true`; avoid `TESTCONTAINERS_HOST_OVERRIDE=localhost` unless needed. `TESTCONTAINERS_DEBUG=true` for details. |
-| **Testcontainers cannot find Docker** | `docker context show` and `docker context inspect "$(docker context show)"` — align `DOCKER_HOST` with `Endpoints.docker.Host` if required. |
-| **Configure fails with `25.0.2`** | Launcher JVM must be JDK 21 — set `JAVA_HOME` and `PATH` as in **Requirements**, then `./gradlew -version`. |
-| **Build fails before tests** | Often wrong JDK or network; separate from Docker. |
-| **Clean rebuild** | `pa1/build/` is gitignored: `rm -rf pa1/build` if you need a clean run. |
+| **Testcontainers cannot find Docker**                | `docker context show` and `docker context inspect "$(docker context show)"` — align `DOCKER_HOST` with `Endpoints.docker.Host` if required.                                                                                                                                             |
+| **Configure fails with `25.0.2`**                    | Launcher JVM must be JDK 21 — set `JAVA_HOME` and `PATH` as in **Requirements**, then `./gradlew -version`.                                                                                                                                                                             |
+| **Build fails before tests**                         | Often wrong JDK or network; separate from Docker.                                                                                                                                                                                                                                       |
+| **Clean rebuild**                                    | `pa1/build/` is gitignored: `rm -rf pa1/build` if you need a clean run.                                                                                                                                                                                                                 |
+
+

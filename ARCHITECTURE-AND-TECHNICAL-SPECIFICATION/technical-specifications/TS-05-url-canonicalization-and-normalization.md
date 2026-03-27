@@ -8,14 +8,14 @@ Canonicalization is a **Stage A ingestion concern**: it happens before robots ch
 
 ## Library Constraint
 
-- MUST use `iipc/urlcanon` WHATWG canonicalization.
+- MUST use WHATWG URL canonicalization via **urlcanon** (Java package `org.netpreserve.urlcanon`; Maven coordinate `org.netpreserve:urlcanon`). This artifact is the maintained fork of the **iipc** urlcanon / Internet Archive lineage and provides the required WHATWG behavior.
 - MUST NOT use `crawler4j` URL canonicalizer.
 - MUST preserve browser-compatible parsing semantics (WHATWG behavior), not ad-hoc regex-only URL rewriting.
 
 ## Normalization Pipeline
 
 1. resolve relative URL against page base URL;
-2. canonicalize via WHATWG (`iipc/urlcanon`);
+2. canonicalize via WHATWG (`org.netpreserve:urlcanon`);
 3. strip fragment (`#...`);
 4. apply GitHub query parameter allowlist;
 5. emit canonical URL string used by DB dedup and frontier insertion.
@@ -35,7 +35,7 @@ Examples:
 - extracted: `../torvalds/linux` -> absolute: `https://github.com/torvalds/linux`
 - extracted: `//github.com/explore` -> absolute: `https://github.com/explore`
 
-### 2) WHATWG Canonicalize (`iipc/urlcanon`)
+### 2) WHATWG Canonicalize (`org.netpreserve:urlcanon`)
 
 Run WHATWG canonicalization to normalize equivalent URLs using browser rules.
 
@@ -97,7 +97,7 @@ Output a deterministic canonical URL string for DB dedup and frontier operations
 - deterministic ordering of preserved params is mandatory.
 
 Important note:
-- `iipc/urlcanon` WHATWG canonicalizer does not remove query params by itself; this filtering is a separate, required step.
+- the urlcanon WHATWG canonicalizer (`org.netpreserve:urlcanon`) does not remove query params by itself; this filtering is a separate, required step.
 
 ## Error Policy
 
