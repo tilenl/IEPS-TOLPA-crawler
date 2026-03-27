@@ -8,21 +8,45 @@ import java.util.Properties;
 import org.junit.jupiter.api.Test;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.downloader.fetch.HttpFetcher;
+import si.uni_lj.fri.wier.downloader.politeness.PolitenessGate;
 
 class HttpFetcherTest {
 
     @Test
-    void defaultMaxRedirects_matchesTs13Default() {
-        assertEquals(10, new HttpFetcher().maxRedirects());
+    void defaultMaxRedirects_matchesTs13Default() throws Exception {
+        RuntimeConfig cfg = baseConfig();
+        HttpFetcher f = new HttpFetcher(cfg, new AllowAllPolitenessStub(), new AllowAllPolitenessStub());
+        assertEquals(10, f.maxRedirects());
     }
 
     @Test
-    void maxRedirects_storesFromConstructor() {
-        assertEquals(7, new HttpFetcher(7).maxRedirects());
+    void maxRedirects_fromProperties() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.fetch.maxRedirects", "7");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        HttpFetcher f = new HttpFetcher(cfg, new AllowAllPolitenessStub(), new AllowAllPolitenessStub());
+        assertEquals(7, f.maxRedirects());
     }
 
     @Test
     void from_usesRuntimeConfigFetchMaxRedirects() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.fetch.maxRedirects", "3");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        PolitenessGate gate = new PolitenessGate(cfg);
+        assertEquals(3, HttpFetcher.from(cfg, gate).maxRedirects());
+    }
+
+    private static RuntimeConfig baseConfig() throws Exception {
+        Properties p = baseProps();
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        return cfg;
+    }
+
+    private static Properties baseProps() throws Exception {
         Properties p = new Properties();
         Path kw = Paths.get(HttpFetcherTest.class.getResource("/keywords-valid.json").toURI());
         p.setProperty("crawler.scoring.keywordConfig", kw.toString());
@@ -30,9 +54,6 @@ class HttpFetcherTest {
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
         p.setProperty("crawler.db.expectedSchemaVersion", "4");
-        p.setProperty("crawler.fetch.maxRedirects", "3");
-        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
-        cfg.validate();
-        assertEquals(3, HttpFetcher.from(cfg).maxRedirects());
+        return p;
     }
 }

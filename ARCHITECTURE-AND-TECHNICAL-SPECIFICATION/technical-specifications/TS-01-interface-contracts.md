@@ -35,7 +35,7 @@ public interface Worker {
 }
 
 public interface Fetcher {
-    FetchResult fetch(String canonicalUrl) throws FetchException;
+    FetchResult fetch(FetchRequest request) throws FetchException;
 }
 
 public interface Parser {
@@ -54,6 +54,7 @@ public interface RobotsTxtCache {
 
 public interface RateLimiterRegistry {
     RateLimitDecision tryAcquire(String domain);
+    default void recordHttpResponse(String domain, int statusCode) { /* TS-08; optional */ }
 }
 
 public interface RelevanceScorer {
@@ -88,7 +89,8 @@ Ownership clarification:
 ## Data Contracts
 
 - `FrontierRow`: `pageId`, `url`, `siteId`, `relevanceScore`, `attemptCount`, `parserRetryCount`, `nextAttemptAt` (from claim `RETURNING`, TS-07 / TS-12). `parserRetryCount` maps to `crawldb.page.parser_retry_count` and is independent of fetch-stage `attemptCount` for parser retry budgeting.
-- `FetchResult`: `statusCode`, `contentType`, `body`, `fetchedAt`.
+- `FetchRequest`: `canonicalUrl`, `workerId`, `claimExpiresAt`, `firstHopRateLimitSatisfied` (TS-03 / TS-08; outer worker gate may already have consumed the first-hop politeness token).
+- `FetchResult`: `statusCode`, `contentType`, `body`, `fetchedAt`, `fetchMode` (`PLAIN_HTTP` | `HEADLESS`), optional `finalUrlAfterRedirects` (after hop-by-hop redirects; claimed URL remains the storage key).
 - `ParseResult`: `discoveredUrls` (canonical outlinks), `extractedImages` (`ExtractedImage` list), optional `pageMetadata` (`ExtractedPageMetadata`). Normative extraction rules: [TS-04](TS-04-parser-and-extraction-specification.md).
 - `ExtractedImage`: `canonicalUrl`, optional `filename`, optional `contentType` (TS-04; `crawldb.image.data` remains NULL).
 - `ExtractedPageMetadata`: optional `title`, optional `metaDescription` (document-level strings when extracted).
@@ -138,6 +140,6 @@ Ownership clarification:
 
 - primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/contracts/`, `.../cli/`, `.../app/`
 - key file(s):
-  - `contracts/Scheduler.java`, `contracts/Frontier.java`, `contracts/Worker.java`, `contracts/Fetcher.java`, `contracts/Parser.java`, `contracts/Canonicalizer.java`, `contracts/RelevanceScorer.java`, `contracts/Storage.java`, `contracts/ParseResult.java`, `contracts/ExtractedImage.java`, `contracts/ExtractedPageMetadata.java`, `contracts/DiscoveredUrl.java`
+  - `contracts/Scheduler.java`, `contracts/Frontier.java`, `contracts/Worker.java`, `contracts/Fetcher.java`, `contracts/FetchRequest.java`, `contracts/FetchMode.java`, `contracts/Parser.java`, `contracts/Canonicalizer.java`, `contracts/RelevanceScorer.java`, `contracts/Storage.java`, `contracts/ParseResult.java`, `contracts/ExtractedImage.java`, `contracts/ExtractedPageMetadata.java`, `contracts/DiscoveredUrl.java`
   - bootstrap boundary contracts documented in `cli/Main.java` and `app/PreferentialCrawler.java`
 - test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/contracts/` and `.../unit/app/`
