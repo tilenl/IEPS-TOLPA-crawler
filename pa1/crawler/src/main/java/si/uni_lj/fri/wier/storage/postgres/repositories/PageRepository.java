@@ -33,12 +33,16 @@ import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.contracts.PersistOutcome;
 
 /**
- * PostgreSQL repository for TS-10 SQL contracts.
+ * PostgreSQL repository for TS-10 SQL contracts and TS-07 frontier claim / lease recovery.
  *
  * <p>All statements are executed as prepared statements, and Stage B persistence runs in one
  * SERIALIZABLE transaction with bounded retry on SQLSTATE 40001. TS-04 page metadata is upserted into
  * {@code crawldb.page_data} during {@code persistFetchOutcomeWithLinks} for HTML outcomes. Reschedule and
  * terminal-error updates require {@code page_type_code = 'PROCESSING'} so SQL matches TS-10 transitions.
+ *
+ * <p>Frontier claim and stale-lease recovery SQL follow TS-07 normative shapes; orchestration (pre-claim
+ * recovery batch, startup drain) lives in {@link si.uni_lj.fri.wier.storage.frontier.FrontierStore} and
+ * {@link si.uni_lj.fri.wier.queue.claim.ClaimService}.
  */
 public final class PageRepository {
     private static final String SQLSTATE_SERIALIZATION_FAILURE = "40001";
@@ -102,8 +106,16 @@ public final class PageRepository {
         }
     }
 
+    /**
+     * Atomic frontier claim (TS-07): one statement selects the candidate and transitions it to
+     * {@code PROCESSING} with lease columns set. Ordering matches {@code idx_page_frontier_priority}.
+     *
+     * @param workerId stable worker identity for {@code claimed_by}
+     * @param leaseDuration lease length; sub-second values are rounded up to one second for the SQL interval
+     */
     public Optional<FrontierRow> claimNextEligibleFrontier(String workerId, Duration leaseDuration) {
-        // Prefer higher relevance first, then fairness by scheduled time and stable tie-break (id).
+        // Tie order matches TS-07 / TS-11: score, due time, age (accessed_time), then stable id.
+        // Plain accessed_time ASC aligns with the btree index (no NULLS FIRST).
         final String sql =
                 """
                 WITH candidate AS (
@@ -111,7 +123,7 @@ public final class PageRepository {
                   FROM crawldb.page
                   WHERE page_type_code = 'FRONTIER'
                     AND next_attempt_at <= now()
-                  ORDER BY relevance_score DESC, next_attempt_at ASC, accessed_time ASC NULLS FIRST, id ASC
+                  ORDER BY relevance_score DESC, next_attempt_at ASC, accessed_time ASC, id ASC
                   FOR UPDATE SKIP LOCKED
                   LIMIT 1
                 )
@@ -122,7 +134,7 @@ public final class PageRepository {
                     claim_expires_at = now() + (? * interval '1 second')
                 FROM candidate c
                 WHERE p.id = c.id
-                RETURNING p.id, p.url, p.site_id, p.relevance_score
+                RETURNING p.id, p.url, p.site_id, p.relevance_score, p.attempt_count, p.next_attempt_at
                 """;
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -133,23 +145,38 @@ public final class PageRepository {
                 if (!rs.next()) {
                     return Optional.empty();
                 }
+                Timestamp nextAttemptTs = rs.getTimestamp("next_attempt_at");
                 return Optional.of(
                         new FrontierRow(
                                 rs.getLong("id"),
                                 rs.getString("url"),
                                 rs.getLong("site_id"),
-                                rs.getDouble("relevance_score")));
+                                rs.getDouble("relevance_score"),
+                                rs.getInt("attempt_count"),
+                                nextAttemptTs != null ? nextAttemptTs.toInstant() : Instant.now()));
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to claim next frontier row", e);
         }
     }
 
+    /**
+     * Stale-lease recovery (TS-07): {@code FOR UPDATE SKIP LOCKED} on the candidate set so concurrent
+     * recoverers do not block each other on disjoint rows. Diagnostic columns follow TS-10 storage notes.
+     */
     public int recoverExpiredLeases(int batchSize, String reason) {
-        // Lease expiry is infrastructure timing, not page content failure; DB_TRANSIENT signals retry later.
         final String sql =
                 """
-                UPDATE crawldb.page
+                WITH stale AS (
+                  SELECT id
+                  FROM crawldb.page
+                  WHERE page_type_code = 'PROCESSING'
+                    AND claim_expires_at < now()
+                  ORDER BY claim_expires_at ASC, id ASC
+                  LIMIT ?
+                  FOR UPDATE SKIP LOCKED
+                )
+                UPDATE crawldb.page p
                 SET page_type_code = 'FRONTIER',
                     claimed_by = NULL,
                     claimed_at = NULL,
@@ -158,20 +185,14 @@ public final class PageRepository {
                     last_error_category = 'DB_TRANSIENT',
                     last_error_message = ?,
                     last_error_at = now()
-                WHERE id IN (
-                  SELECT id
-                  FROM crawldb.page
-                  WHERE page_type_code = 'PROCESSING'
-                    AND claim_expires_at < now()
-                  ORDER BY claim_expires_at ASC
-                  LIMIT ?
-                )
+                FROM stale s
+                WHERE p.id = s.id
                 """;
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, reason);
-            // Batch size must be positive; LIMIT 0 would recover nothing silently.
-            statement.setInt(2, Math.max(1, batchSize));
+            // LIMIT must bind before the message parameter to match placeholder order in the CTE.
+            statement.setInt(1, Math.max(1, batchSize));
+            statement.setString(2, reason);
             return statement.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to recover expired leases", e);

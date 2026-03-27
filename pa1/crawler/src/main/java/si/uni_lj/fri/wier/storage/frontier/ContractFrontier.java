@@ -24,12 +24,17 @@ public final class ContractFrontier implements Frontier {
     private final String workerId;
     private final Duration leaseDuration;
 
-    public ContractFrontier(FrontierStore frontierStore, String workerId, Duration leaseDuration) {
+    /**
+     * @param leaseRecoveryBatchSize bound for pre-claim stale-lease recovery ({@code crawler.frontier.leaseRecoveryBatchSize})
+     */
+    public ContractFrontier(
+            FrontierStore frontierStore, String workerId, Duration leaseDuration, int leaseRecoveryBatchSize) {
         this(
                 new Delegate() {
                     @Override
                     public Optional<FrontierRow> claim(String workerId, Duration leaseDuration) {
-                        return frontierStore.claimNextEligibleFrontier(workerId, leaseDuration);
+                        return frontierStore.claimNextEligibleFrontier(
+                                workerId, leaseDuration, leaseRecoveryBatchSize);
                     }
 
                     @Override

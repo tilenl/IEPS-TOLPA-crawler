@@ -86,7 +86,7 @@ Ownership clarification:
 
 ## Data Contracts
 
-- `FrontierRow`: `pageId`, `url`, `siteId`, `relevanceScore`.
+- `FrontierRow`: `pageId`, `url`, `siteId`, `relevanceScore`, `attemptCount`, `nextAttemptAt` (from claim `RETURNING`, TS-07).
 - `FetchResult`: `statusCode`, `contentType`, `body`, `fetchedAt`.
 - `ParseResult`: `discoveredUrls` (canonical outlinks), `extractedImages` (`ExtractedImage` list), optional `pageMetadata` (`ExtractedPageMetadata`). Normative extraction rules: [TS-04](TS-04-parser-and-extraction-specification.md).
 - `ExtractedImage`: `canonicalUrl`, optional `filename`, optional `contentType` (TS-04; `crawldb.image.data` remains NULL).

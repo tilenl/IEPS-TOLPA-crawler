@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -15,6 +16,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -37,6 +39,8 @@ import si.uni_lj.fri.wier.contracts.IngestResult;
 import si.uni_lj.fri.wier.contracts.PageOutcomeType;
 import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.contracts.PersistOutcome;
+import si.uni_lj.fri.wier.queue.claim.ClaimService;
+import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
 @Testcontainers(disabledWithoutDocker = true)
@@ -414,6 +418,138 @@ class PageRepositoryIntegrationTest {
         assertTrue(r1.get().isPresent());
         assertTrue(r2.get().isPresent());
         assertNotEquals(r1.get().orElseThrow().pageId(), r2.get().orElseThrow().pageId());
+    }
+
+    @Test
+    void claimNextEligibleFrontier_prefersHigherRelevanceScore() {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://example.com/low", siteId, 0.3);
+        repository.insertFrontierIfAbsent("https://example.com/high", siteId, 0.9);
+        repository.insertFrontierIfAbsent("https://example.com/mid", siteId, 0.5);
+
+        Optional<FrontierRow> claimed = repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+
+        assertTrue(claimed.isPresent());
+        assertEquals("https://example.com/high", claimed.get().url());
+    }
+
+    @Test
+    void claimNextEligibleFrontier_skipsNotYetDueRow() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long delayedId = repository.insertFrontierIfAbsent("https://example.com/delayed", siteId, 0.99).pageId();
+        long readyId = repository.insertFrontierIfAbsent("https://example.com/ready", siteId, 0.1).pageId();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now() + interval '2 hours' WHERE id = ?")) {
+            ps.setLong(1, delayedId);
+            ps.executeUpdate();
+        }
+
+        Optional<FrontierRow> claimed = repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+
+        assertTrue(claimed.isPresent());
+        assertEquals(readyId, claimed.get().pageId());
+    }
+
+    @Test
+    void frontierStore_preClaimRecovery_reclaimsStaleLeaseBeforeClaim() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long staleId = repository.insertFrontierIfAbsent("https://example.com/stalepc", siteId, 0.8).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(1));
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET claim_expires_at = now() - interval '1 minute' WHERE id = ?")) {
+            ps.setLong(1, staleId);
+            ps.executeUpdate();
+        }
+        repository.insertFrontierIfAbsent("https://example.com/freshpc", siteId, 0.1);
+
+        FrontierStore store = new FrontierStore(repository);
+        Optional<FrontierRow> claimed = store.claimNextEligibleFrontier("w2", Duration.ofSeconds(60), 10);
+
+        assertTrue(claimed.isPresent());
+        // After recovery the former stale row returns as FRONTIER with higher score than "freshpc".
+        assertEquals(staleId, claimed.get().pageId());
+    }
+
+    @Test
+    void frontierStore_preClaimRecovery_respectsBatchCap() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        for (int i = 0; i < 3; i++) {
+            long pid = repository.insertFrontierIfAbsent("https://example.com/cap" + i, siteId, 0.5).pageId();
+            repository.claimNextEligibleFrontier("w", Duration.ofSeconds(1));
+            try (Connection c = dataSource.getConnection();
+                    PreparedStatement ps =
+                            c.prepareStatement(
+                                    "UPDATE crawldb.page SET claim_expires_at = now() - interval '1 minute' WHERE id = ?")) {
+                ps.setLong(1, pid);
+                ps.executeUpdate();
+            }
+        }
+
+        FrontierStore store = new FrontierStore(repository);
+        store.claimNextEligibleFrontier("w2", Duration.ofSeconds(60), 1);
+
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'PROCESSING' AND"
+                                        + " claim_expires_at < now()")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(2, rs.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void ck_page_processing_lease_rejectsIncompleteLease() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/ck", siteId, 0.5).pageId();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET page_type_code = 'PROCESSING', claimed_by = 'x',"
+                                        + " claimed_at = now(), claim_expires_at = NULL WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            SQLException ex = assertThrows(SQLException.class, ps::executeUpdate);
+            assertTrue(
+                    ex.getMessage().contains("ck_page_processing_lease")
+                            || ex.getMessage().toLowerCase(Locale.ROOT).contains("check constraint"),
+                    ex.getMessage());
+        }
+    }
+
+    @Test
+    void claimService_runStartupLeaseRecovery_drainsStaleLeases() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        for (int i = 0; i < 5; i++) {
+            long pid = repository.insertFrontierIfAbsent("https://example.com/su" + i, siteId, 0.5).pageId();
+            repository.claimNextEligibleFrontier("w", Duration.ofSeconds(1));
+            try (Connection c = dataSource.getConnection();
+                    PreparedStatement ps =
+                            c.prepareStatement(
+                                    "UPDATE crawldb.page SET claim_expires_at = now() - interval '1 minute' WHERE id = ?")) {
+                ps.setLong(1, pid);
+                ps.executeUpdate();
+            }
+        }
+
+        FrontierStore store = new FrontierStore(repository);
+        ClaimService.runStartupLeaseRecovery(store, 2, "test startup recovery");
+
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'PROCESSING' AND"
+                                        + " claim_expires_at < now()")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(0, rs.getInt(1));
+            }
+        }
     }
 
     private static void applySqlScript(DataSource ds, Path scriptPath) throws IOException, SQLException {

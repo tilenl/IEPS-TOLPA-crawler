@@ -16,7 +16,8 @@ class ContractFrontierTest {
 
     @Test
     void claimNextFrontier_delegates_with_worker_and_lease() {
-        FrontierRow row = new FrontierRow(10L, "https://example.com/a", 2L, 0.8);
+        FrontierRow row =
+                new FrontierRow(10L, "https://example.com/a", 2L, 0.8, 0, Instant.parse("2025-01-01T00:00:00Z"));
         class StubDelegate implements ContractFrontier.Delegate {
             String workerSeen;
             Duration leaseSeen;
