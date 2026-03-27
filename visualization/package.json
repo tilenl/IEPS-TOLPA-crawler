@@ -1,0 +1,15 @@
+{
+  "name": "ieps-visualization",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "node seed/seed.js",
+    "dev": "node server/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "pg": "^8.16.3"
+  }
+}
+

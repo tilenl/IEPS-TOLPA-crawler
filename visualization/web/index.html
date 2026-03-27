@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IEPS Visualization</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        height: 100%;
+      }
+      .sidebar {
+        border-right: 1px solid #e5e7eb;
+        padding: 14px;
+        overflow: auto;
+      }
+      .main {
+        position: relative;
+      }
+      #network {
+        position: absolute;
+        inset: 0;
+      }
+      .row {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      label {
+        font-size: 12px;
+        color: #374151;
+      }
+      input,
+      select,
+      button {
+        font-size: 14px;
+        padding: 8px 10px;
+      }
+      button {
+        cursor: pointer;
+      }
+      .hint {
+        font-size: 12px;
+        color: #6b7280;
+        line-height: 1.35;
+      }
+      .legend {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .legendRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #111827;
+      }
+      .swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(17, 24, 39, 0.25);
+        flex: 0 0 12px;
+      }
+      .status {
+        font-size: 12px;
+        color: #111827;
+        white-space: pre-wrap;
+      }
+    </style>
+    <script
+      src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"
+      defer
+    ></script>
+  </head>
+  <body>
+    <div class="layout">
+      <div class="sidebar">
+        <h3 style="margin: 0 0 10px 0">Graph</h3>
+
+        <div class="row">
+          <label for="apiBase">API base</label>
+          <input id="apiBase" value="http://localhost:3001" />
+          <div class="hint">Naslov API strežnika, iz katerega UI bere podatke.</div>
+        </div>
+
+        <div class="row">
+          <label for="profile">data profile</label>
+          <select id="profile">
+            <option value="mock">mock</option>
+            <option value="real">real</option>
+          </select>
+          <div class="hint">Preklopi med mock in real bazo (API query param `profile`).</div>
+        </div>
+
+        <div class="row">
+          <label for="maxNodes">maxNodes</label>
+          <input id="maxNodes" type="number" min="1" max="5000" value="500" />
+          <div class="hint">Omeji število vozlišč (manj = hitreje in bolj pregledno).</div>
+        </div>
+
+        <div class="row">
+          <label for="domains">domains (comma-separated)</label>
+          <input id="domains" placeholder="example.com,foo.si" />
+          <div class="hint">Filtrira grafe na izbrane domene (mora obstajati v bazi).</div>
+        </div>
+
+        <div class="row">
+          <label for="onlyTypes">onlyTypes</label>
+          <input id="onlyTypes" value="HTML,DUPLICATE" />
+          <div class="hint">Filtrira tipe strani (CSV, npr. `HTML,DUPLICATE`; prazno = vse).</div>
+        </div>
+
+        <div class="row">
+          <label for="groupByDomain">mode</label>
+          <select id="groupByDomain">
+            <option value="false">Pages</option>
+            <option value="true">Domains (high-level)</option>
+          </select>
+          <div class="hint">Pages = vozlišče je stran; Domains = vozlišče je domena (agregirano).</div>
+        </div>
+
+        <div class="row">
+          <button id="loadBtn">Load</button>
+          <button id="fitBtn" type="button">Fit</button>
+          <div class="hint">Load naloži graf iz baze; Fit centrira in približa graf v pogled.</div>
+        </div>
+
+        <div class="row">
+          <label>Legenda (barve)</label>
+          <div class="hint">Barve veljajo v načinu Pages; v načinu Domains so vsi node-i “DOMAIN”.</div>
+          <div class="legend">
+            <div class="legendRow"><span class="swatch" style="background:#2563eb"></span>HTML</div>
+            <div class="legendRow"><span class="swatch" style="background:#f59e0b"></span>DUPLICATE</div>
+            <div class="legendRow"><span class="swatch" style="background:#6b7280"></span>FRONTIER</div>
+            <div class="legendRow"><span class="swatch" style="background:#10b981"></span>PROCESSING</div>
+            <div class="legendRow"><span class="swatch" style="background:#ef4444"></span>ERROR</div>
+            <div class="legendRow"><span class="swatch" style="background:#7c3aed"></span>BINARY</div>
+            <div class="legendRow"><span class="swatch" style="background:#111827"></span>DOMAIN (high-level)</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="status" id="status"></div>
+        </div>
+      </div>
+
+      <div class="main">
+        <div id="network"></div>
+      </div>
+    </div>
+
+    <script type="module">
+      function qs(id) {
+        return document.getElementById(id);
+      }
+      const statusEl = qs("status");
+      function setStatus(s) {
+        statusEl.textContent = s;
+      }
+
+      let network = null;
+
+      function buildUrl() {
+        const base = qs("apiBase").value.trim().replace(/\/$/, "");
+        const maxNodes = qs("maxNodes").value.trim();
+        const domains = qs("domains").value
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const onlyTypes = qs("onlyTypes").value.trim();
+        const groupByDomain = qs("groupByDomain").value;
+        const profile = qs("profile").value;
+
+        const u = new URL(base + "/graph");
+        if (maxNodes) u.searchParams.set("maxNodes", maxNodes);
+        if (onlyTypes) u.searchParams.set("onlyTypes", onlyTypes);
+        if (groupByDomain) u.searchParams.set("groupByDomain", groupByDomain);
+        if (profile) u.searchParams.set("profile", profile);
+        for (const d of domains) u.searchParams.append("domain", d);
+        return u;
+      }
+
+      function buildOptions(mode) {
+        const groups =
+          mode === "domain"
+            ? {
+                DOMAIN: { color: { background: "#111827", border: "#111827" }, font: { color: "#fff" } }
+              }
+            : {
+                HTML: { color: { background: "#2563eb", border: "#1d4ed8" } },
+                DUPLICATE: { color: { background: "#f59e0b", border: "#d97706" } },
+                FRONTIER: { color: { background: "#6b7280", border: "#4b5563" } },
+                PROCESSING: { color: { background: "#10b981", border: "#059669" } },
+                ERROR: { color: { background: "#ef4444", border: "#dc2626" } },
+                BINARY: { color: { background: "#7c3aed", border: "#6d28d9" } }
+              };
+
+        return {
+          autoResize: true,
+          interaction: { hover: true },
+          nodes: {
+            shape: "dot",
+            size: mode === "domain" ? 18 : 10
+          },
+          edges: {
+            arrows: { to: { enabled: true, scaleFactor: 0.7 } },
+            smooth: { type: "dynamic" }
+          },
+          physics: { stabilization: { iterations: 200 } },
+          groups
+        };
+      }
+
+      async function load() {
+        const url = buildUrl();
+        setStatus("Loading...\n" + url.toString());
+
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+
+        const nodes = new vis.DataSet(data.nodes ?? []);
+        const edges = new vis.DataSet(data.edges ?? []);
+
+        const container = qs("network");
+        const options = buildOptions(data.mode);
+        network = new vis.Network(container, { nodes, edges }, options);
+
+        setStatus(
+          `Profile: ${data.profile ?? "mock"}\nMode: ${data.mode}\nNodes: ${nodes.length}\nEdges: ${edges.length}\n` +
+            url.toString()
+        );
+      }
+
+      qs("loadBtn").addEventListener("click", async () => {
+        try {
+          await load();
+        } catch (e) {
+          setStatus("Error: " + (e?.message ?? String(e)));
+        }
+      });
+
+      qs("fitBtn").addEventListener("click", () => {
+        if (network) network.fit({ animation: { duration: 400 } });
+      });
+
+      // auto-load once vis is ready
+      window.addEventListener("load", () => {
+        setTimeout(() => qs("loadBtn").click(), 0);
+      });
+    </script>
+  </body>
+</html>
+
