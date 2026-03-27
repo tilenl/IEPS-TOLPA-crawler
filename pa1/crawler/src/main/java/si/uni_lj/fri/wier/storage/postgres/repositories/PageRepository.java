@@ -15,9 +15,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
 import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
 import si.uni_lj.fri.wier.contracts.ExtractedImage;
@@ -45,6 +48,8 @@ import si.uni_lj.fri.wier.contracts.PersistOutcome;
  * {@link si.uni_lj.fri.wier.queue.claim.ClaimService}.
  */
 public final class PageRepository {
+    private static final Logger log = LoggerFactory.getLogger(PageRepository.class);
+
     private static final String SQLSTATE_SERIALIZATION_FAILURE = "40001";
 
     /** {@code crawldb.data_type.code} for document title bytes in {@code crawldb.page_data.data}. */
@@ -153,7 +158,8 @@ public final class PageRepository {
                                 rs.getLong("site_id"),
                                 rs.getDouble("relevance_score"),
                                 rs.getInt("attempt_count"),
-                                nextAttemptTs != null ? nextAttemptTs.toInstant() : Instant.now()));
+                                Objects.requireNonNull(nextAttemptTs, "next_attempt_at must not be null for claimed row")
+                                        .toInstant()));
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to claim next frontier row", e);
@@ -163,8 +169,10 @@ public final class PageRepository {
     /**
      * Stale-lease recovery (TS-07): {@code FOR UPDATE SKIP LOCKED} on the candidate set so concurrent
      * recoverers do not block each other on disjoint rows. Diagnostic columns follow TS-10 storage notes.
+     *
+     * @param recovererIdentity who is performing recovery (for application logs; TS-07 worker identity)
      */
-    public int recoverExpiredLeases(int batchSize, String reason) {
+    public int recoverExpiredLeases(int batchSize, String reason, String recovererIdentity) {
         final String sql =
                 """
                 WITH stale AS (
@@ -192,8 +200,24 @@ public final class PageRepository {
                 PreparedStatement statement = connection.prepareStatement(sql)) {
             // LIMIT must bind before the message parameter to match placeholder order in the CTE.
             statement.setInt(1, Math.max(1, batchSize));
+            // NOTE: last_error_message currently stores a short reason only. A future improvement could
+            // persist the prior claimed_by (before clearing) in this message or alongside it, so operators
+            // can see which crawler had lost the page when the lease went stale.
             statement.setString(2, reason);
-            return statement.executeUpdate();
+            int updated = statement.executeUpdate();
+            if (updated > 0) {
+                log.info(
+                        "recovered {} stale lease row(s) reason={} recoverer={}",
+                        updated,
+                        reason,
+                        recovererIdentity);
+            } else if (log.isDebugEnabled()) {
+                log.debug(
+                        "stale lease recovery batch reason={} recoverer={} (no rows)",
+                        reason,
+                        recovererIdentity);
+            }
+            return updated;
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to recover expired leases", e);
         }

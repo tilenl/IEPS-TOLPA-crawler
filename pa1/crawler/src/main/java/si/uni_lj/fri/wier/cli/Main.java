@@ -14,13 +14,25 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         Properties props = loadClasspathProperties("application.properties");
-        RuntimeConfig config = RuntimeConfig.fromProperties(props, Runtime.getRuntime().availableProcessors());
+        runFromClasspathProperties(props, Runtime.getRuntime().availableProcessors());
+    }
+
+    /**
+     * Ordered bootstrap: validate config before any DB access that depends on frontier settings (TS-13), then
+     * schema check, startup lease recovery (TS-07), then preflight logging.
+     */
+    private static void runFromClasspathProperties(Properties props, int availableCpuCores) throws Exception {
+        RuntimeConfig config = RuntimeConfig.fromProperties(props, availableCpuCores);
+        config.validate();
         PGSimpleDataSource dataSource = dataSource(config);
         new SchemaVersionValidator(dataSource).validateExpectedVersion(config.dbExpectedSchemaVersion());
         PageRepository pageRepository = new PageRepository(dataSource);
         FrontierStore frontierStore = new FrontierStore(pageRepository);
         ClaimService.runStartupLeaseRecovery(
-                frontierStore, config.frontierStartupLeaseRecoveryBatchSize(), "startup stale lease recovery");
+                frontierStore,
+                config.frontierStartupLeaseRecoveryBatchSize(),
+                "startup stale lease recovery",
+                "startup");
         new PreferentialCrawler(config).preflightAndLogEffectiveConfig();
     }
 

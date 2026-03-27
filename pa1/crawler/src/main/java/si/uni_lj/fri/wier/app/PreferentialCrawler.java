@@ -14,9 +14,12 @@ public final class PreferentialCrawler {
         this.config = config;
     }
 
-    /** Startup preflight validation and effective config logging without secrets (TS-13). */
+    /**
+     * Logs effective config without secrets (TS-13). Callers must invoke {@link RuntimeConfig#validate()}
+     * before any database access that depends on validated bounds; {@link si.uni_lj.fri.wier.cli.Main} does so
+     * before constructing the datasource and startup lease recovery.
+     */
     public void preflightAndLogEffectiveConfig() {
-        config.validate();
         log.info(
                 "effectiveConfig nCrawlers={} frontierPollMs={} budgetMaxTotalPages={} budgetMaxFrontierRows={}"
                         + " dbPoolSize={} fetchMaxHeadlessSessions={} expectedSchemaVersion={}",

@@ -14,6 +14,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
@@ -164,7 +165,7 @@ class PageRepositoryIntegrationTest {
             ps.executeUpdate();
         }
 
-        int recovered = repository.recoverExpiredLeases(10, "lease expired");
+        int recovered = repository.recoverExpiredLeases(10, "lease expired", "integration-test");
         assertEquals(1, recovered);
 
         try (Connection c = dataSource.getConnection();
@@ -453,6 +454,89 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void claimNextEligibleFrontier_tieBreaksOnNextAttemptAtWhenScoresEqual() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long earlierDueId =
+                repository.insertFrontierIfAbsent("https://example.com/due-soon", siteId, 0.5).pageId();
+        long laterDueId =
+                repository.insertFrontierIfAbsent("https://example.com/due-later", siteId, 0.5).pageId();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now() + interval '3 hours' WHERE id = ?")) {
+            ps.setLong(1, laterDueId);
+            ps.executeUpdate();
+        }
+
+        Optional<FrontierRow> claimed = repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+
+        assertTrue(claimed.isPresent());
+        assertEquals(earlierDueId, claimed.get().pageId());
+    }
+
+    @Test
+    void claimNextEligibleFrontier_tieBreaksOnAccessedTimeWhenScoreAndDueEqual() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long olderAccessId =
+                repository.insertFrontierIfAbsent("https://example.com/older-access", siteId, 0.5).pageId();
+        long newerAccessId =
+                repository.insertFrontierIfAbsent("https://example.com/newer-access", siteId, 0.5).pageId();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now(), accessed_time = ? WHERE id = ?")) {
+            ps.setTimestamp(1, Timestamp.from(Instant.parse("2020-01-01T00:00:00Z")));
+            ps.setLong(2, olderAccessId);
+            ps.executeUpdate();
+        }
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now(), accessed_time = ? WHERE id = ?")) {
+            ps.setTimestamp(1, Timestamp.from(Instant.parse("2024-01-01T00:00:00Z")));
+            ps.setLong(2, newerAccessId);
+            ps.executeUpdate();
+        }
+
+        Optional<FrontierRow> claimed = repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+
+        assertTrue(claimed.isPresent());
+        assertEquals(olderAccessId, claimed.get().pageId());
+    }
+
+    @Test
+    void claimNextEligibleFrontier_tieBreaksOnIdWhenScoreDueAndAccessedEqual() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long firstId = repository.insertFrontierIfAbsent("https://example.com/tie-a", siteId, 0.5).pageId();
+        long secondId = repository.insertFrontierIfAbsent("https://example.com/tie-b", siteId, 0.5).pageId();
+        Instant sameDue = Instant.parse("2020-06-01T12:00:00Z");
+        Instant sameAccess = Instant.parse("2019-01-01T00:00:00Z");
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = ?, accessed_time = ? WHERE id = ?")) {
+            ps.setTimestamp(1, Timestamp.from(sameDue));
+            ps.setTimestamp(2, Timestamp.from(sameAccess));
+            ps.setLong(3, firstId);
+            ps.executeUpdate();
+        }
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = ?, accessed_time = ? WHERE id = ?")) {
+            ps.setTimestamp(1, Timestamp.from(sameDue));
+            ps.setTimestamp(2, Timestamp.from(sameAccess));
+            ps.setLong(3, secondId);
+            ps.executeUpdate();
+        }
+
+        assertTrue(firstId < secondId);
+        Optional<FrontierRow> claimed = repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        assertTrue(claimed.isPresent());
+        assertEquals(firstId, claimed.get().pageId());
+    }
+
+    @Test
     void frontierStore_preClaimRecovery_reclaimsStaleLeaseBeforeClaim() throws Exception {
         long siteId = repository.ensureSite("example.com").orElseThrow();
         long staleId = repository.insertFrontierIfAbsent("https://example.com/stalepc", siteId, 0.8).pageId();
@@ -538,7 +622,7 @@ class PageRepositoryIntegrationTest {
         }
 
         FrontierStore store = new FrontierStore(repository);
-        ClaimService.runStartupLeaseRecovery(store, 2, "test startup recovery");
+        ClaimService.runStartupLeaseRecovery(store, 2, "test startup recovery", "integration-test");
 
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =

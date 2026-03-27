@@ -3,6 +3,8 @@ package si.uni_lj.fri.wier.storage.frontier;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.contracts.FrontierRow;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
@@ -14,6 +16,8 @@ import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
  * stale-lease recovery batch before selecting the next candidate.
  */
 public final class FrontierStore {
+    private static final Logger log = LoggerFactory.getLogger(FrontierStore.class);
+
     /** Log/diagnostic text for rows reclaimed immediately before a claim attempt. */
     private static final String PRE_CLAIM_RECOVERY_REASON = "stale lease recovery (pre-claim)";
 
@@ -32,12 +36,14 @@ public final class FrontierStore {
     public Optional<FrontierRow> claimNextEligibleFrontier(
             String workerId, Duration leaseDuration, int leaseRecoveryBatchSize) {
         // Recover before candidate selection so expired leases cannot starve the frontier queue.
-        pageRepository.recoverExpiredLeases(Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON);
+        log.debug("pre-claim stale lease recovery batch workerId={}", workerId);
+        pageRepository.recoverExpiredLeases(
+                Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId);
         return pageRepository.claimNextEligibleFrontier(workerId, leaseDuration);
     }
 
-    public int recoverExpiredLeases(int batchSize, String reason) {
-        return pageRepository.recoverExpiredLeases(batchSize, reason);
+    public int recoverExpiredLeases(int batchSize, String reason, String recovererIdentity) {
+        return pageRepository.recoverExpiredLeases(batchSize, reason, recovererIdentity);
     }
 
     public boolean reschedulePage(long pageId, Instant nextAttemptAt, String reason) {
