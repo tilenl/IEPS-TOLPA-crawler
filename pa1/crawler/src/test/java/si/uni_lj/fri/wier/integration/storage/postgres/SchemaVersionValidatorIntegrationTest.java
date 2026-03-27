@@ -88,7 +88,7 @@ class SchemaVersionValidatorIntegrationTest {
                         c.prepareStatement(
                                 """
                                 INSERT INTO crawldb.schema_version (id, version)
-                                VALUES (1, 2)
+                                VALUES (1, 3)
                                 ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version
                                 """)) {
             ps.executeUpdate();
@@ -97,7 +97,7 @@ class SchemaVersionValidatorIntegrationTest {
 
     @Test
     void validateExpectedVersion_acceptsMatchingVersion() {
-        assertDoesNotThrow(() -> validator.validateExpectedVersion("2"));
+        assertDoesNotThrow(() -> validator.validateExpectedVersion("3"));
     }
 
     @Test
@@ -106,8 +106,8 @@ class SchemaVersionValidatorIntegrationTest {
                 PreparedStatement ps = c.prepareStatement("UPDATE crawldb.schema_version SET version = 7 WHERE id = 1")) {
             ps.executeUpdate();
         }
-        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> validator.validateExpectedVersion("2"));
-        assertTrue(ex.getMessage().contains("expectedVersion=2"));
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> validator.validateExpectedVersion("3"));
+        assertTrue(ex.getMessage().contains("expectedVersion=3"));
         assertTrue(ex.getMessage().contains("dbVersion=7"));
         assertTrue(ex.getMessage().contains("remediationHint="));
     }
@@ -118,9 +118,9 @@ class SchemaVersionValidatorIntegrationTest {
                 PreparedStatement ps = c.prepareStatement("DELETE FROM crawldb.schema_version WHERE id = 1")) {
             ps.executeUpdate();
         }
-        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> validator.validateExpectedVersion("2"));
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> validator.validateExpectedVersion("3"));
         assertTrue(ex.getMessage().contains("dbVersion=<missing>"));
-        assertTrue(ex.getMessage().contains("expectedVersion=2"));
+        assertTrue(ex.getMessage().contains("expectedVersion=3"));
     }
 
     private static void applySqlScript(DataSource ds, Path scriptPath) throws IOException, SQLException {

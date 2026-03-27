@@ -93,6 +93,8 @@ CREATE INDEX "idx_page_data_page_id" ON crawldb.page_data ( page_id );
 
 CREATE INDEX "idx_page_data_data_type_code" ON crawldb.page_data ( data_type_code );
 
+CREATE UNIQUE INDEX unq_page_data_page_id_data_type ON crawldb.page_data ( page_id, data_type_code );
+
 CREATE TABLE crawldb.image ( 
 	id                   serial  NOT NULL,
 	page_id              integer  ,
@@ -162,7 +164,9 @@ INSERT INTO crawldb.data_type VALUES
 	('DOC'),
 	('DOCX'),
 	('PPT'),
-	('PPTX');
+	('PPTX'),
+	('TITLE'),
+	('META_DESCRIPTION');
 
 INSERT INTO crawldb.page_type VALUES 
 	('HTML'),
@@ -172,4 +176,4 @@ INSERT INTO crawldb.page_type VALUES
 	('PROCESSING'),
 	('ERROR');
 
-INSERT INTO crawldb.schema_version (id, version) VALUES (1, 2);
+INSERT INTO crawldb.schema_version (id, version) VALUES (1, 3);

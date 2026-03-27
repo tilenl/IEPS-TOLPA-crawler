@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import javax.sql.DataSource;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
+import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
 import si.uni_lj.fri.wier.contracts.ExtractedImage;
 import si.uni_lj.fri.wier.contracts.FetchContext;
 import si.uni_lj.fri.wier.contracts.FetchResult;
@@ -35,10 +36,21 @@ import si.uni_lj.fri.wier.contracts.PersistOutcome;
  * PostgreSQL repository for TS-10 SQL contracts.
  *
  * <p>All statements are executed as prepared statements, and Stage B persistence runs in one
- * SERIALIZABLE transaction with bounded retry on SQLSTATE 40001.
+ * SERIALIZABLE transaction with bounded retry on SQLSTATE 40001. TS-04 page metadata is upserted into
+ * {@code crawldb.page_data} during {@code persistFetchOutcomeWithLinks} for HTML outcomes. Reschedule and
+ * terminal-error updates require {@code page_type_code = 'PROCESSING'} so SQL matches TS-10 transitions.
  */
 public final class PageRepository {
     private static final String SQLSTATE_SERIALIZATION_FAILURE = "40001";
+
+    /** {@code crawldb.data_type.code} for document title bytes in {@code crawldb.page_data.data}. */
+    private static final String PAGE_DATA_TYPE_TITLE = "TITLE";
+
+    /** {@code crawldb.data_type.code} for meta description bytes in {@code crawldb.page_data.data}. */
+    private static final String PAGE_DATA_TYPE_META_DESCRIPTION = "META_DESCRIPTION";
+
+    /** Caps stored UTF-8 text so a single metadata field cannot dominate the transaction log. */
+    private static final int MAX_PAGE_METADATA_CHARS = 32_000;
 
     private final DataSource dataSource;
     private final int maxSerializableRetries;
@@ -180,6 +192,7 @@ public final class PageRepository {
                     last_error_message = ?,
                     last_error_at = now()
                 WHERE id = ?
+                  AND page_type_code = 'PROCESSING'
                 """;
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -208,6 +221,7 @@ public final class PageRepository {
                     last_error_message = ?,
                     last_error_at = ?
                 WHERE id = ?
+                  AND page_type_code = 'PROCESSING'
                 """;
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -298,9 +312,10 @@ public final class PageRepository {
                 outcomeType = PageOutcomeType.BINARY;
             }
 
-            // TS-04 image rows reference the HTML page row; URL-only inserts (data NULL per TS-11).
+            // TS-04 image rows and page_data metadata reference the HTML page row (data NULL on image rows per TS-11).
             if (html && parsed != null) {
                 insertExtractedImages(connection, context.pageId(), parsed.extractedImages(), result.fetchedAt());
+                insertPageData(connection, context.pageId(), parsed.pageMetadata());
             }
 
             // Parser output and caller-supplied links are both ingested in one transaction for atomicity.
@@ -394,6 +409,54 @@ public final class PageRepository {
                 statement.executeBatch();
             }
         }
+    }
+
+    /**
+     * TS-10 {@code insertPageData}: upserts optional title and meta description into {@code crawldb.page_data}
+     * as UTF-8 {@code bytea} values, idempotent per (page_id, data_type_code).
+     */
+    private void insertPageData(Connection connection, long pageId, Optional<ExtractedPageMetadata> metadataOpt)
+            throws SQLException {
+        if (metadataOpt.isEmpty()) {
+            return;
+        }
+        ExtractedPageMetadata meta = metadataOpt.get();
+        if (meta.title() != null) {
+            String trimmed = meta.title().trim();
+            if (!trimmed.isEmpty()) {
+                upsertPageDataRow(connection, pageId, PAGE_DATA_TYPE_TITLE, truncateForStorage(trimmed));
+            }
+        }
+        if (meta.metaDescription() != null) {
+            String trimmed = meta.metaDescription().trim();
+            if (!trimmed.isEmpty()) {
+                upsertPageDataRow(
+                        connection, pageId, PAGE_DATA_TYPE_META_DESCRIPTION, truncateForStorage(trimmed));
+            }
+        }
+    }
+
+    private static void upsertPageDataRow(Connection connection, long pageId, String dataTypeCode, String text)
+            throws SQLException {
+        final String sql =
+                """
+                INSERT INTO crawldb.page_data (page_id, data_type_code, data)
+                VALUES (?, ?, ?)
+                ON CONFLICT (page_id, data_type_code) DO UPDATE SET data = EXCLUDED.data
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, pageId);
+            statement.setString(2, dataTypeCode);
+            statement.setBytes(3, text.getBytes(StandardCharsets.UTF_8));
+            statement.executeUpdate();
+        }
+    }
+
+    private static String truncateForStorage(String s) {
+        if (s.length() <= MAX_PAGE_METADATA_CHARS) {
+            return s;
+        }
+        return s.substring(0, MAX_PAGE_METADATA_CHARS);
     }
 
     /**

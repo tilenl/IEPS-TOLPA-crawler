@@ -2,6 +2,7 @@ package si.uni_lj.fri.wier.integration.storage.postgres;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,7 +17,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,9 +28,12 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
+import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
 import si.uni_lj.fri.wier.contracts.FetchContext;
 import si.uni_lj.fri.wier.contracts.FetchResult;
+import si.uni_lj.fri.wier.contracts.FrontierRow;
 import si.uni_lj.fri.wier.contracts.InsertFrontierResult;
+import si.uni_lj.fri.wier.contracts.IngestResult;
 import si.uni_lj.fri.wier.contracts.PageOutcomeType;
 import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.contracts.PersistOutcome;
@@ -235,6 +241,179 @@ class PageRepositoryIntegrationTest {
                 assertEquals(firstPage, rs.getLong(1));
             }
         }
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_persistsPageMetadataToPageData() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/meta", siteId, 0.9).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        ParseResult parsed =
+                new ParseResult(
+                        List.of(),
+                        List.of(),
+                        Optional.of(new ExtractedPageMetadata("Doc title", "Meta desc here")));
+        repository.persistFetchOutcomeWithLinks(
+                new FetchContext(pageId, "https://example.com/meta", siteId, 0, Instant.now()),
+                new FetchResult(200, "text/html", "<html><title>x</title></html>", Instant.now()),
+                parsed,
+                List.of());
+
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "SELECT data_type_code, convert_from(data, 'UTF8') AS txt "
+                                        + "FROM crawldb.page_data WHERE page_id = ? ORDER BY data_type_code")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals("META_DESCRIPTION", rs.getString(1));
+                assertEquals("Meta desc here", rs.getString(2));
+                assertTrue(rs.next());
+                assertEquals("TITLE", rs.getString(1));
+                assertEquals("Doc title", rs.getString(2));
+                assertFalse(rs.next());
+            }
+        }
+    }
+
+    @Test
+    void reschedulePage_updatesOnlyProcessingRows() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/resched", siteId, 0.8).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        Instant next = Instant.now().plusSeconds(120);
+        assertTrue(repository.reschedulePage(pageId, next, "retry policy"));
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "SELECT page_type_code, attempt_count, next_attempt_at::text FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals("FRONTIER", rs.getString(1));
+                assertEquals(1, rs.getInt(2));
+            }
+        }
+    }
+
+    @Test
+    void reschedulePage_returnsFalseWhenNotProcessing() {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/notclaimed", siteId, 0.7).pageId();
+        assertFalse(repository.reschedulePage(pageId, Instant.now().plusSeconds(10), "should not apply"));
+    }
+
+    @Test
+    void markPageTerminalError_updatesOnlyProcessingRows() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long claimed =
+                repository.insertFrontierIfAbsent("https://example.com/errproc", siteId, 0.6).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        repository.markPageTerminalError(claimed, "FETCH", "failed");
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT page_type_code FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, claimed);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals("ERROR", rs.getString(1));
+            }
+        }
+
+        long frontierOnly =
+                repository.insertFrontierIfAbsent("https://example.com/errskip", siteId, 0.5).pageId();
+        repository.markPageTerminalError(frontierOnly, "FETCH", "should not apply");
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT page_type_code FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, frontierOnly);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals("FRONTIER", rs.getString(1));
+            }
+        }
+    }
+
+    @Test
+    void ingestDiscoveredUrls_recordsRejectionsAndAcceptsValid() {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long fromPage = repository.insertFrontierIfAbsent("https://example.com/from", siteId, 0.5).pageId();
+        String longUrl = "https://example.com/" + "x".repeat(3000);
+        IngestResult r =
+                repository.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl("https://example.com/good", siteId, fromPage, "", "", 0.1),
+                                new DiscoveredUrl(null, siteId, fromPage, "", "", 0.1),
+                                new DiscoveredUrl(longUrl, siteId, fromPage, "", "", 0.1)));
+        assertEquals(1, r.acceptedPageIds().size());
+        assertEquals(2, r.rejections().size());
+        assertEquals("INVALID_URL", r.rejections().get(0).reasonCode());
+        assertEquals("URL_TOO_LONG", r.rejections().get(1).reasonCode());
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_mixedIngestAcceptsAndRejects() {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/mix", siteId, 0.9).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        String longUrl = "https://example.com/" + "y".repeat(3000);
+        ParseResult parsed =
+                ParseResult.linksOnly(
+                        List.of(
+                                new DiscoveredUrl("https://example.com/accepted", siteId, pageId, "", "", 0.2),
+                                new DiscoveredUrl(null, siteId, pageId, "", "", 0.0),
+                                new DiscoveredUrl(longUrl, siteId, pageId, "", "", 0.0)));
+        PersistOutcome outcome =
+                repository.persistFetchOutcomeWithLinks(
+                        new FetchContext(pageId, "https://example.com/mix", siteId, 0, Instant.now()),
+                        new FetchResult(200, "text/html", "<html>x</html>", Instant.now()),
+                        parsed,
+                        List.of());
+        assertEquals(PageOutcomeType.HTML, outcome.outcomeType());
+        assertEquals(1, outcome.ingestResult().acceptedPageIds().size());
+        assertEquals(2, outcome.ingestResult().rejections().size());
+    }
+
+    @Test
+    void claimNextEligibleFrontier_concurrentWorkersClaimDifferentRows() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://example.com/ca", siteId, 0.7);
+        repository.insertFrontierIfAbsent("https://example.com/cb", siteId, 0.6);
+        repository.insertFrontierIfAbsent("https://example.com/cc", siteId, 0.5);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicReference<Optional<FrontierRow>> r1 = new AtomicReference<>(Optional.empty());
+        AtomicReference<Optional<FrontierRow>> r2 = new AtomicReference<>(Optional.empty());
+        Thread t1 =
+                new Thread(
+                        () -> {
+                            try {
+                                start.await();
+                                r1.set(repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60)));
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException(e);
+                            }
+                        });
+        Thread t2 =
+                new Thread(
+                        () -> {
+                            try {
+                                start.await();
+                                r2.set(repository.claimNextEligibleFrontier("w2", Duration.ofSeconds(60)));
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException(e);
+                            }
+                        });
+        t1.start();
+        t2.start();
+        start.countDown();
+        t1.join();
+        t2.join();
+        assertTrue(r1.get().isPresent());
+        assertTrue(r2.get().isPresent());
+        assertNotEquals(r1.get().orElseThrow().pageId(), r2.get().orElseThrow().pageId());
     }
 
     private static void applySqlScript(DataSource ds, Path scriptPath) throws IOException, SQLException {
