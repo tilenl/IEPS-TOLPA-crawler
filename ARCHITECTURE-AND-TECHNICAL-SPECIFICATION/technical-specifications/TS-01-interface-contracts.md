@@ -27,7 +27,7 @@ public interface Scheduler {
 
 public interface Frontier {
     Optional<FrontierRow> claimNextFrontier();
-    void reschedule(long pageId, Instant nextAttemptAt, String reason);
+    void reschedule(long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage);
 }
 
 public interface Worker {
@@ -75,6 +75,7 @@ public interface Storage {
     LinkInsertResult insertLink(long fromPageId, long toPageId);
     IngestResult ingestDiscoveredUrls(Collection<DiscoveredUrl> discoveredUrls);
     InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore);
+    /** @throws IllegalStateException when the row is not in {@code PROCESSING} (TS-12 strict terminal). */
     void markPageAsError(long pageId, String category, String message);
 }
 ```
@@ -86,7 +87,7 @@ Ownership clarification:
 
 ## Data Contracts
 
-- `FrontierRow`: `pageId`, `url`, `siteId`, `relevanceScore`, `attemptCount`, `nextAttemptAt` (from claim `RETURNING`, TS-07).
+- `FrontierRow`: `pageId`, `url`, `siteId`, `relevanceScore`, `attemptCount`, `parserRetryCount`, `nextAttemptAt` (from claim `RETURNING`, TS-07 / TS-12). `parserRetryCount` maps to `crawldb.page.parser_retry_count` and is independent of fetch-stage `attemptCount` for parser retry budgeting.
 - `FetchResult`: `statusCode`, `contentType`, `body`, `fetchedAt`.
 - `ParseResult`: `discoveredUrls` (canonical outlinks), `extractedImages` (`ExtractedImage` list), optional `pageMetadata` (`ExtractedPageMetadata`). Normative extraction rules: [TS-04](TS-04-parser-and-extraction-specification.md).
 - `ExtractedImage`: `canonicalUrl`, optional `filename`, optional `contentType` (TS-04; `crawldb.image.data` remains NULL).

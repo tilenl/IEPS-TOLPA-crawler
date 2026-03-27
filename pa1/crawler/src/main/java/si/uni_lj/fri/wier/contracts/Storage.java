@@ -23,5 +23,10 @@ public interface Storage {
 
     InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore);
 
+    /**
+     * Terminal {@code PROCESSING → ERROR} with diagnostics (TS-10 / TS-12).
+     *
+     * @throws IllegalStateException when no row was in {@code PROCESSING} (strict single transition)
+     */
     void markPageAsError(long pageId, String category, String message);
 }

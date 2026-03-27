@@ -37,9 +37,11 @@ Define authoritative database operations and method-to-SQL mappings.
 - **Recover expired leases**
   - rows stuck in `PROCESSING` where `claim_expires_at < now()` are reset to `FRONTIER` with diagnostic update.
 - **Reschedule claimed row**
-  - transition `PROCESSING -> FRONTIER` with updated `next_attempt_at`, incremented `attempt_count`, and cleared lease fields.
+  - transition `PROCESSING -> FRONTIER` with updated `next_attempt_at`, cleared lease fields, bound `last_error_category` / `last_error_message` / `last_error_at`, and counter updates in one statement:
+    - fetch-stage failures: `attempt_count = attempt_count + 1`, `parser_retry_count` unchanged;
+    - `PARSER_FAILURE` (TS-12): `parser_retry_count = parser_retry_count + 1`, `attempt_count` unchanged.
 - **Mark terminal error**
-  - transition `PROCESSING -> ERROR` with category/message and terminal timestamp.
+  - transition `PROCESSING -> ERROR` with category/message and terminal timestamp; implementation MUST throw if zero rows matched (no duplicate terminal updates; TS-12).
 - **Insert frontier if absent**
   - normative pattern (single round-trip, **Option 2** sentinel upsert):
     - `INSERT INTO crawldb.page (...) VALUES (...) ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url RETURNING id`

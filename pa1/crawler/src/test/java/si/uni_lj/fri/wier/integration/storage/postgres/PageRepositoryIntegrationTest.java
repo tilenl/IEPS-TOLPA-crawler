@@ -288,16 +288,21 @@ class PageRepositoryIntegrationTest {
         long pageId = repository.insertFrontierIfAbsent("https://example.com/resched", siteId, 0.8).pageId();
         repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
         Instant next = Instant.now().plusSeconds(120);
-        assertTrue(repository.reschedulePage(pageId, next, "retry policy"));
+        assertTrue(
+                repository.reschedulePage(
+                        pageId, next, "FETCH_TIMEOUT", "retry policy", false));
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =
                         c.prepareStatement(
-                                "SELECT page_type_code, attempt_count, next_attempt_at::text FROM crawldb.page WHERE id = ?")) {
+                                "SELECT page_type_code, attempt_count, parser_retry_count, last_error_category, last_error_message FROM crawldb.page WHERE id = ?")) {
             ps.setLong(1, pageId);
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 assertEquals("FRONTIER", rs.getString(1));
                 assertEquals(1, rs.getInt(2));
+                assertEquals(0, rs.getInt(3));
+                assertEquals("FETCH_TIMEOUT", rs.getString(4));
+                assertEquals("retry policy", rs.getString(5));
             }
         }
     }
@@ -306,7 +311,13 @@ class PageRepositoryIntegrationTest {
     void reschedulePage_returnsFalseWhenNotProcessing() {
         long siteId = repository.ensureSite("example.com").orElseThrow();
         long pageId = repository.insertFrontierIfAbsent("https://example.com/notclaimed", siteId, 0.7).pageId();
-        assertFalse(repository.reschedulePage(pageId, Instant.now().plusSeconds(10), "should not apply"));
+        assertFalse(
+                repository.reschedulePage(
+                        pageId,
+                        Instant.now().plusSeconds(10),
+                        "FETCH_TIMEOUT",
+                        "should not apply",
+                        false));
     }
 
     @Test
@@ -328,14 +339,105 @@ class PageRepositoryIntegrationTest {
 
         long frontierOnly =
                 repository.insertFrontierIfAbsent("https://example.com/errskip", siteId, 0.5).pageId();
-        repository.markPageTerminalError(frontierOnly, "FETCH", "should not apply");
+        assertThrows(
+                IllegalStateException.class,
+                () -> repository.markPageTerminalError(frontierOnly, "FETCH", "should not apply"));
+    }
+
+    @Test
+    void markPageTerminalError_throwsWhenRowAlreadyTerminal() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/errtwice", siteId, 0.6).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        repository.markPageTerminalError(pageId, "FETCH_TIMEOUT", "once");
+        assertThrows(
+                IllegalStateException.class, () -> repository.markPageTerminalError(pageId, "FETCH_TIMEOUT", "twice"));
+    }
+
+    @Test
+    void reschedulePage_afterFetchRetries_parserRescheduleLeavesAttemptCount() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/mixed-retry", siteId, 0.95).pageId();
+        for (int i = 0; i < 2; i++) {
+            repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+            assertTrue(
+                    repository.reschedulePage(
+                            pageId, Instant.now().plusSeconds(10), "FETCH_TIMEOUT", "fetch fail", false));
+            try (Connection c = dataSource.getConnection();
+                    PreparedStatement ps =
+                            c.prepareStatement(
+                                    "UPDATE crawldb.page SET next_attempt_at = now() WHERE id = ?")) {
+                ps.setLong(1, pageId);
+                ps.executeUpdate();
+            }
+        }
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        assertTrue(
+                repository.reschedulePage(
+                        pageId, Instant.now().plusSeconds(10), "PARSER_FAILURE", "parse fail", true));
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =
-                        c.prepareStatement("SELECT page_type_code FROM crawldb.page WHERE id = ?")) {
-            ps.setLong(1, frontierOnly);
+                        c.prepareStatement(
+                                "SELECT attempt_count, parser_retry_count FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
-                assertEquals("FRONTIER", rs.getString(1));
+                assertEquals(2, rs.getInt(1));
+                assertEquals(1, rs.getInt(2));
+            }
+        }
+    }
+
+    @Test
+    void reschedulePage_parserStageIncrementsParserRetryOnly() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/parse-retry", siteId, 0.9).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        Instant next = Instant.now().plusSeconds(60);
+        assertTrue(repository.reschedulePage(pageId, next, "PARSER_FAILURE", "bad html", true));
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "SELECT attempt_count, parser_retry_count, last_error_category FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(0, rs.getInt(1));
+                assertEquals(1, rs.getInt(2));
+                assertEquals("PARSER_FAILURE", rs.getString(3));
+            }
+        }
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_resetsParserRetryCountOnHtml() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/parse-ok", siteId, 0.9).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        assertTrue(
+                repository.reschedulePage(
+                        pageId, Instant.now().plusSeconds(5), "PARSER_FAILURE", "first fail", true));
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET page_type_code = 'FRONTIER', next_attempt_at = now(), claimed_by = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            ps.executeUpdate();
+        }
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        repository.persistFetchOutcomeWithLinks(
+                new FetchContext(pageId, "https://example.com/parse-ok", siteId, 0, Instant.now()),
+                new FetchResult(200, "text/html", "<html>x</html>", Instant.now()),
+                ParseResult.empty(),
+                List.of());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT page_type_code, parser_retry_count FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals("HTML", rs.getString(1));
+                assertEquals(0, rs.getInt(2));
             }
         }
     }

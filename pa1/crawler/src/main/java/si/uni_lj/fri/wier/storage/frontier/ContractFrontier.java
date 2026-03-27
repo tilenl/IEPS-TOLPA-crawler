@@ -17,7 +17,8 @@ public final class ContractFrontier implements Frontier {
     public interface Delegate {
         Optional<FrontierRow> claim(String workerId, Duration leaseDuration);
 
-        boolean reschedule(long pageId, Instant nextAttemptAt, String reason);
+        boolean reschedule(
+                long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage);
     }
 
     private final Delegate delegate;
@@ -38,8 +39,10 @@ public final class ContractFrontier implements Frontier {
                     }
 
                     @Override
-                    public boolean reschedule(long pageId, Instant nextAttemptAt, String reason) {
-                        return frontierStore.reschedulePage(pageId, nextAttemptAt, reason);
+                    public boolean reschedule(
+                            long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage) {
+                        return frontierStore.reschedulePage(
+                                pageId, nextAttemptAt, errorCategory, diagnosticMessage);
                     }
                 },
                 workerId,
@@ -58,8 +61,9 @@ public final class ContractFrontier implements Frontier {
     }
 
     @Override
-    public void reschedule(long pageId, Instant nextAttemptAt, String reason) {
-        boolean updated = delegate.reschedule(pageId, nextAttemptAt, reason);
+    public void reschedule(
+            long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage) {
+        boolean updated = delegate.reschedule(pageId, nextAttemptAt, errorCategory, diagnosticMessage);
         if (!updated) {
             throw new IllegalStateException("Failed to reschedule missing pageId=" + pageId);
         }

@@ -71,6 +71,9 @@ ALTER TABLE crawldb.page
 ALTER TABLE crawldb.page
 	ADD COLUMN last_error_at timestamp;
 
+ALTER TABLE crawldb.page
+	ADD COLUMN parser_retry_count integer NOT NULL DEFAULT 0;
+
 DROP INDEX IF EXISTS crawldb.idx_page_frontier_priority;
 CREATE INDEX "idx_page_frontier_priority"
 	ON crawldb.page ( page_type_code, relevance_score DESC, next_attempt_at ASC, accessed_time ASC, id ASC );
@@ -176,4 +179,4 @@ INSERT INTO crawldb.page_type VALUES
 	('PROCESSING'),
 	('ERROR');
 
-INSERT INTO crawldb.schema_version (id, version) VALUES (1, 3);
+INSERT INTO crawldb.schema_version (id, version) VALUES (1, 4);

@@ -6,6 +6,7 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.contracts.FrontierRow;
+import si.uni_lj.fri.wier.error.CrawlerErrorCategory;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
 /**
@@ -46,7 +47,15 @@ public final class FrontierStore {
         return pageRepository.recoverExpiredLeases(batchSize, reason, recovererIdentity);
     }
 
-    public boolean reschedulePage(long pageId, Instant nextAttemptAt, String reason) {
-        return pageRepository.reschedulePage(pageId, nextAttemptAt, reason);
+    /**
+     * TS-12 reschedule: increments {@code attempt_count} for fetch-stage failures, or {@code
+     * parser_retry_count} only for {@link CrawlerErrorCategory#PARSER_FAILURE}.
+     */
+    public boolean reschedulePage(
+            long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage) {
+        boolean parserStage =
+                CrawlerErrorCategory.PARSER_FAILURE.name().equals(errorCategory);
+        return pageRepository.reschedulePage(
+                pageId, nextAttemptAt, errorCategory, diagnosticMessage, parserStage);
     }
 }

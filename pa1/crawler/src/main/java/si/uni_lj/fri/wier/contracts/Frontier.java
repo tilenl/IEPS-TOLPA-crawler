@@ -12,5 +12,13 @@ import java.util.Optional;
 public interface Frontier {
     Optional<FrontierRow> claimNextFrontier();
 
-    void reschedule(long pageId, Instant nextAttemptAt, String reason);
+    /**
+     * Durable retry transition {@code PROCESSING → FRONTIER} with diagnostics (TS-10 / TS-12).
+     *
+     * @param pageId claimed page id
+     * @param nextAttemptAt earliest eligibility for the next claim
+     * @param errorCategory {@link si.uni_lj.fri.wier.error.CrawlerErrorCategory#name()} or compatible stable code
+     * @param diagnosticMessage human-readable reason stored in {@code last_error_message}
+     */
+    void reschedule(long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage);
 }

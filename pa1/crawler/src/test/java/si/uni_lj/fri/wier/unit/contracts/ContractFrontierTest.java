@@ -17,7 +17,14 @@ class ContractFrontierTest {
     @Test
     void claimNextFrontier_delegates_with_worker_and_lease() {
         FrontierRow row =
-                new FrontierRow(10L, "https://example.com/a", 2L, 0.8, 0, Instant.parse("2025-01-01T00:00:00Z"));
+                new FrontierRow(
+                        10L,
+                        "https://example.com/a",
+                        2L,
+                        0.8,
+                        0,
+                        0,
+                        Instant.parse("2025-01-01T00:00:00Z"));
         class StubDelegate implements ContractFrontier.Delegate {
             String workerSeen;
             Duration leaseSeen;
@@ -30,7 +37,8 @@ class ContractFrontierTest {
             }
 
             @Override
-            public boolean reschedule(long pageId, Instant nextAttemptAt, String reason) {
+            public boolean reschedule(
+                    long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage) {
                 return true;
             }
         }
@@ -56,7 +64,8 @@ class ContractFrontierTest {
                             }
 
                             @Override
-                            public boolean reschedule(long pageId, Instant nextAttemptAt, String reason) {
+                            public boolean reschedule(
+                                    long pageId, Instant nextAttemptAt, String errorCategory, String diagnosticMessage) {
                                 return false;
                             }
                         },
@@ -65,6 +74,6 @@ class ContractFrontierTest {
 
         assertThrows(
                 IllegalStateException.class,
-                () -> frontier.reschedule(99L, Instant.now().plusSeconds(10), "test"));
+                () -> frontier.reschedule(99L, Instant.now().plusSeconds(10), "FETCH_TIMEOUT", "test"));
     }
 }

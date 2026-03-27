@@ -40,9 +40,11 @@ Max attempt counts for categories below marked with `TS-13` keys are **governed*
 - retries MUST not duplicate link/page inserts;
 - worker loop MUST continue after handled errors;
 - queue transitions MUST be durable and transactional:
-  - retryable: `PROCESSING -> FRONTIER` with `attempt_count=attempt_count+1`, `next_attempt_at`, and error diagnostics;
+  - retryable (fetch-stage): `PROCESSING -> FRONTIER` with `attempt_count=attempt_count+1`, `next_attempt_at`, and bound error diagnostics (`last_error_*`);
+  - retryable (`PARSER_FAILURE`): same transition but `parser_retry_count=parser_retry_count+1` and **no** increment to `attempt_count` (see normative subsection below);
   - terminal: `PROCESSING -> ERROR` with final diagnostics and cleared lease fields.
-- terminal-state helper contract: `markPageAsError(pageId, category, message)` with last-attempt timestamp.
+- terminal-state helper contract: `markPageAsError(pageId, category, message)` with last-attempt timestamp; MUST fail fast if the row is not `PROCESSING` (strict single terminal write).
+- persistence: `crawldb.page.parser_retry_count` (schema v4+) holds parser-stage reschedule consumption; reset to `0` on successful HTML/DUPLICATE/BINARY completion paths.
 
 Retry budget rule:
 - `attempt_count` is authoritative and persisted on `page`;
@@ -81,7 +83,7 @@ Eligibility rule:
 
 ## Implementation Location
 
-- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/error/`, `.../app/`, `.../downloader/worker/`
-- key file(s): `error/CrawlerErrorCategory.java`, `error/RecoveryPolicy.java`, `downloader/worker/WorkerLoop.java`
-- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/error/` and `.../integration/pipeline/`
+- primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/error/`, `.../app/`, `.../downloader/worker/`, `.../observability/`, `.../storage/postgres/repositories/`
+- key file(s): `error/CrawlerErrorCategory.java`, `error/RecoveryPolicy.java`, `error/RecoveryDecision.java`, `error/FailureContext.java`, `error/ProcessingFailureHandler.java`, `observability/CrawlerMetrics.java`, `downloader/worker/WorkerLoop.java` (integration point), `PageRepository.java` (reschedule / terminal / `parser_retry_count`), migration `pa1/db/migrations/V004__parser_retry_count_schema_v4.sql`
+- test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/error/` and `.../integration/storage/postgres/`
 

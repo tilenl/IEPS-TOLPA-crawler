@@ -28,7 +28,11 @@ while (true) {
         String domain = domainOf(row.get().url());
         RateLimitDecision decision = rateLimiter.tryAcquire(domain);
         if (decision.isDelayed()) {
-            frontier.reschedule(row.get().pageId(), Instant.now().plusNanos(decision.waitNs()), "rate_limited");
+            frontier.reschedule(
+                row.get().pageId(),
+                Instant.now().plusNanos(decision.waitNs()),
+                "FETCH_HTTP_OVERLOAD",
+                "rate_limited");
             continue;
         }
 
@@ -46,8 +50,8 @@ while (true) {
             frontier.reschedule(
                 row.get().pageId(),
                 robotDecision.denyUntilOrDefault(),
-                "ROBOTS_TRANSIENT"
-            );
+                "ROBOTS_TRANSIENT",
+                "temporary robots deny");
             continue;
         }
 
@@ -67,7 +71,8 @@ while (true) {
             frontier.reschedule(
                 row.get().pageId(),
                 e.nextAttemptAt(),
-                e.category().name()
+                e.category().name(),
+                e.getMessage()
             );
         } else {
             storage.markPageAsError(
@@ -150,7 +155,7 @@ Minimal recovery path example:
 ```java
 catch (CrawlerException e) {
     if (e.isRetryable()) {
-        frontier.reschedule(row.get().pageId(), e.nextAttemptAt(), e.category().name());
+        frontier.reschedule(row.get().pageId(), e.nextAttemptAt(), e.category().name(), e.getMessage());
     } else {
         storage.markPageAsError(row.get().pageId(), e.category().name(), e.getMessage());
     }

@@ -36,12 +36,15 @@ import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.contracts.PersistOutcome;
 
 /**
- * PostgreSQL repository for TS-10 SQL contracts and TS-07 frontier claim / lease recovery.
+ * PostgreSQL repository for TS-10 SQL contracts, TS-07 frontier claim / lease recovery, and TS-12 retry
+ * diagnostics.
  *
  * <p>All statements are executed as prepared statements, and Stage B persistence runs in one
  * SERIALIZABLE transaction with bounded retry on SQLSTATE 40001. TS-04 page metadata is upserted into
  * {@code crawldb.page_data} during {@code persistFetchOutcomeWithLinks} for HTML outcomes. Reschedule and
  * terminal-error updates require {@code page_type_code = 'PROCESSING'} so SQL matches TS-10 transitions.
+ * Parser-stage reschedules increment {@code parser_retry_count} only; fetch-stage reschedules increment
+ * {@code attempt_count} only (TS-12).
  *
  * <p>Frontier claim and stale-lease recovery SQL follow TS-07 normative shapes; orchestration (pre-claim
  * recovery batch, startup drain) lives in {@link si.uni_lj.fri.wier.storage.frontier.FrontierStore} and
@@ -139,7 +142,7 @@ public final class PageRepository {
                     claim_expires_at = now() + (? * interval '1 second')
                 FROM candidate c
                 WHERE p.id = c.id
-                RETURNING p.id, p.url, p.site_id, p.relevance_score, p.attempt_count, p.next_attempt_at
+                RETURNING p.id, p.url, p.site_id, p.relevance_score, p.attempt_count, p.parser_retry_count, p.next_attempt_at
                 """;
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -158,6 +161,7 @@ public final class PageRepository {
                                 rs.getLong("site_id"),
                                 rs.getDouble("relevance_score"),
                                 rs.getInt("attempt_count"),
+                                rs.getInt("parser_retry_count"),
                                 Objects.requireNonNull(nextAttemptTs, "next_attempt_at must not be null for claimed row")
                                         .toInstant()));
             }
@@ -223,17 +227,32 @@ public final class PageRepository {
         }
     }
 
-    public boolean reschedulePage(long pageId, Instant nextAttemptAt, String reason) {
+    /**
+     * TS-10 / TS-12: atomic {@code PROCESSING → FRONTIER} with counters and durable diagnostics.
+     *
+     * @param parserStageReschedule when {@code true}, only {@code parser_retry_count} increments (TS-12
+     *     {@code PARSER_FAILURE}); otherwise only {@code attempt_count} increments.
+     */
+    public boolean reschedulePage(
+            long pageId,
+            Instant nextAttemptAt,
+            String lastErrorCategory,
+            String lastErrorMessage,
+            boolean parserStageReschedule) {
+        // Single UPDATE with bound deltas keeps queue transition and counters atomic (TS-10).
+        final int attemptDelta = parserStageReschedule ? 0 : 1;
+        final int parserRetryDelta = parserStageReschedule ? 1 : 0;
         final String sql =
                 """
                 UPDATE crawldb.page
                 SET page_type_code = 'FRONTIER',
                     next_attempt_at = ?,
-                    attempt_count = attempt_count + 1,
+                    attempt_count = attempt_count + ?,
+                    parser_retry_count = parser_retry_count + ?,
                     claimed_by = NULL,
                     claimed_at = NULL,
                     claim_expires_at = NULL,
-                    last_error_category = 'DB_TRANSIENT',
+                    last_error_category = ?,
                     last_error_message = ?,
                     last_error_at = now()
                 WHERE id = ?
@@ -242,8 +261,11 @@ public final class PageRepository {
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setTimestamp(1, Timestamp.from(nextAttemptAt));
-            statement.setString(2, reason);
-            statement.setLong(3, pageId);
+            statement.setInt(2, attemptDelta);
+            statement.setInt(3, parserRetryDelta);
+            statement.setString(4, lastErrorCategory);
+            statement.setString(5, lastErrorMessage);
+            statement.setLong(6, pageId);
             return statement.executeUpdate() == 1;
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to reschedule pageId=" + pageId, e);
@@ -274,7 +296,14 @@ public final class PageRepository {
             statement.setString(2, message);
             statement.setTimestamp(3, Timestamp.from(errorAt));
             statement.setLong(4, pageId);
-            statement.executeUpdate();
+            int updated = statement.executeUpdate();
+            if (updated != 1) {
+                throw new IllegalStateException(
+                        "markPageTerminalError expected exactly one PROCESSING row for pageId="
+                                + pageId
+                                + " but updated="
+                                + updated);
+            }
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to mark terminal error for pageId=" + pageId, e);
         }
@@ -619,6 +648,7 @@ public final class PageRepository {
                     claimed_by = NULL,
                     claimed_at = NULL,
                     claim_expires_at = NULL,
+                    parser_retry_count = 0,
                     last_error_category = NULL,
                     last_error_message = NULL,
                     last_error_at = NULL
@@ -648,7 +678,8 @@ public final class PageRepository {
                     accessed_time = ?,
                     claimed_by = NULL,
                     claimed_at = NULL,
-                    claim_expires_at = NULL
+                    claim_expires_at = NULL,
+                    parser_retry_count = 0
                 WHERE id = ?
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -671,7 +702,8 @@ public final class PageRepository {
                     accessed_time = ?,
                     claimed_by = NULL,
                     claimed_at = NULL,
-                    claim_expires_at = NULL
+                    claim_expires_at = NULL,
+                    parser_retry_count = 0
                 WHERE id = ?
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
