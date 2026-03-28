@@ -750,12 +750,7 @@ public final class PageRepository {
                 continue;
             }
 
-            RobotDecision robotDecision = discoveredIngestRobots.evaluate(discovered.canonicalUrl());
-            if (robotDecision.type() == RobotDecisionType.DISALLOWED) {
-                rejected.add(new IngestRejection(discovered, "ROBOTS_DISALLOWED"));
-                continue;
-            }
-
+            // TS-02 backpressure order: (1) global page budget, (2) frontier high-watermark deferral, (3) robots + ingest.
             long totalPages = countAllPages(connection);
             if (totalPages >= cfg.budgetMaxTotalPages()) {
                 discoveredIngestLog.logBudgetDropped(
@@ -772,6 +767,12 @@ public final class PageRepository {
                 nextAttempt = now.plusMillis(delayMs);
                 discoveredIngestLog.logFrontierDeferred(
                         discovered.canonicalUrl(), hostForBudgetLog(discovered.canonicalUrl()));
+            }
+
+            RobotDecision robotDecision = discoveredIngestRobots.evaluate(discovered.canonicalUrl());
+            if (robotDecision.type() == RobotDecisionType.DISALLOWED) {
+                rejected.add(new IngestRejection(discovered, "ROBOTS_DISALLOWED"));
+                continue;
             }
             if (robotDecision.type() == RobotDecisionType.TEMPORARY_DENY) {
                 Instant denyUntil = robotDecision.denyUntilOrDefault();

@@ -9,16 +9,21 @@
 
 package si.uni_lj.fri.wier.error;
 
+import java.sql.SQLException;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
 import org.slf4j.Logger;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 
 /**
- * Retries transient {@code RuntimeException} outcomes from recovery-path JDBC calls with exponential backoff
- * and jitter; logs lease context on exhaustion (TS-07 stale-lease fallback remains authoritative).
+ * Retries only <strong>transient JDBC failures</strong> on the recovery path (TS-02: retries apply only to
+ * transient DB failures; non-transient failures propagate immediately). Uses exponential backoff + jitter from
+ * {@link RuntimeConfig}; logs lease context on exhaustion (TS-07 stale-lease fallback remains authoritative).
  */
 public final class RecoveryPathExecutor {
+
+    /** PostgreSQL / SQL standard serialization failure (matches {@code PageRepository} SERIALIZABLE retries). */
+    private static final String SQLSTATE_SERIALIZATION_FAILURE = "40001";
 
     private final RuntimeConfig config;
     private final Logger log;
@@ -29,7 +34,8 @@ public final class RecoveryPathExecutor {
     }
 
     /**
-     * Runs {@code action} once or retries on failure up to {@link RuntimeConfig#recoveryPathMaxAttempts()}.
+     * Runs {@code action} once or retries on <strong>transient</strong> {@link SQLException} (in the cause
+     * chain) up to {@link RuntimeConfig#recoveryPathMaxAttempts()}.
      *
      * @param workerId lease owner for logs
      * @param pageId claimed page id
@@ -50,6 +56,9 @@ public final class RecoveryPathExecutor {
                 action.run();
                 return;
             } catch (RuntimeException e) {
+                if (!isTransientDatabaseFailure(e)) {
+                    throw e;
+                }
                 if (attempt == max - 1) {
                     log.error(
                             "recoveryPathExhausted workerId={} pageId={} category={} claimExpiresAt={} attempts={} msg={}",
@@ -65,6 +74,28 @@ public final class RecoveryPathExecutor {
                 sleepBackoff(attempt, baseMs);
             }
         }
+    }
+
+    /**
+     * {@code true} when any {@link SQLException} in the causal chain has a retryable SQLState: serialization
+     * {@code 40001} (TS-09 / TS-10) or JDBC connection class {@code 08…} (broken connection / communication).
+     */
+    static boolean isTransientDatabaseFailure(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof SQLException sql) {
+                String state = sql.getSQLState();
+                if (state == null) {
+                    continue;
+                }
+                if (SQLSTATE_SERIALIZATION_FAILURE.equals(state)) {
+                    return true;
+                }
+                if (state.startsWith("08")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void sleepBackoff(int attemptIndex, long baseMs) {
