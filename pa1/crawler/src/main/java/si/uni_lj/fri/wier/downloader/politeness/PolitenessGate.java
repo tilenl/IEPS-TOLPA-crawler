@@ -7,6 +7,7 @@
  * token as content fetches for that hop host. Parsed rules live in a Caffeine cache with TTL/max entries from
  * TS-13; eviction drops cached policy so the next load starts fresh (deny counters do not survive eviction).
  * HTTP 4xx on robots.txt is allow-all by design (TS-06); 3xx/5xx and hop failures use bounded TEMPORARY_DENY.
+ * {@link #evaluate(String)} without a cached policy for the URL host returns {@code TEMPORARY_DENY} (TS-06 contract).
  *
  * Created: 2026-03. Major revisions: TS-06 Caffeine rules cache, temporary deny, SiteMetadataSink; TS-08 buckets.
  */
@@ -445,8 +446,8 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
         Instant now = clock.instant();
         RobotsDomainPolicy policy = robotsPolicyCache.getIfPresent(domainKey);
         if (policy == null) {
-            // Callers should invoke ensureLoaded first; allow-all avoids hard failure if ordering regresses.
-            return evaluatePathAllowance(ALLOW_ALL_RULES, canonicalUrl);
+            // TS-06: evaluate without prior ensureLoaded(domain) is a contract violation — surface explicitly.
+            return RobotDecision.temporaryDeny(now, "ROBOTS_NOT_LOADED");
         }
         if (policy.kind() == RobotsDomainPolicy.Kind.TRANSIENT_FAILURE && policy.blockingDenyActive(now)) {
             return RobotDecision.temporaryDeny(policy.denyUntil(), "ROBOTS_TRANSIENT_HTTP");
