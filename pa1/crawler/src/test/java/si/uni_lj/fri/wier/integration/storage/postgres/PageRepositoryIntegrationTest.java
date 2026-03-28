@@ -334,7 +334,7 @@ class PageRepositoryIntegrationTest {
     /**
      * TS-09: overlapping {@code SERIALIZABLE} persists for the same HTML body must still yield one {@code HTML} row,
      * {@code n-1} {@code DUPLICATE} rows, {@code content_owner} keyed by LEAST({@code page_id}), and duplicate→owner
-     * {@code link} edges.
+     * {@code link} edges. Postconditions: {@link Ts09DedupAssertions#assertSameHashBatchPostconditions}.
      */
     @Test
     void persistFetchOutcomeWithLinks_parallelSameHash_overlappingSerializable() throws Exception {
@@ -405,7 +405,8 @@ class PageRepositoryIntegrationTest {
             }
         }
 
-        assertTs09SameHashBatchPostconditions(dataSource, claimedIds, expectedOwner, hasher.sha256(htmlBody), n);
+        Ts09DedupAssertions.assertSameHashBatchPostconditions(
+                dataSource, claimedIds, expectedOwner, hasher.sha256(htmlBody), n);
     }
 
     /**
@@ -454,78 +455,8 @@ class PageRepositoryIntegrationTest {
                     List.of());
         }
 
-        assertTs09SameHashBatchPostconditions(dataSource, claimedIds, expectedOwner, hasher.sha256(htmlBody), n);
-    }
-
-    private static void assertTs09SameHashBatchPostconditions(
-            DataSource dataSource, List<Long> claimedIds, long expectedOwner, String expectedHash, int n)
-            throws SQLException {
-        long minClaimed = claimedIds.stream().mapToLong(Long::longValue).min().orElseThrow();
-        long ownerFromDb;
-        try (Connection c = dataSource.getConnection();
-                PreparedStatement ps =
-                        c.prepareStatement("SELECT owner_page_id FROM crawldb.content_owner WHERE content_hash = ?")) {
-            ps.setString(1, expectedHash);
-            try (ResultSet rs = ps.executeQuery()) {
-                assertTrue(rs.next(), "content_owner row must exist for batch hash");
-                ownerFromDb = rs.getLong(1);
-            }
-        }
-        assertEquals(
-                minClaimed,
-                ownerFromDb,
-                "TS-09 LEAST owner must equal min(page_id) among batch participants");
-        assertEquals(expectedOwner, ownerFromDb);
-
-        int htmlCount = 0;
-        int dupCount = 0;
-        for (long pid : claimedIds) {
-            try (Connection c = dataSource.getConnection();
-                    PreparedStatement ps =
-                            c.prepareStatement("SELECT page_type_code, content_hash FROM crawldb.page WHERE id = ?")) {
-                ps.setLong(1, pid);
-                try (ResultSet rs = ps.executeQuery()) {
-                    assertTrue(rs.next());
-                    String type = rs.getString(1);
-                    assertEquals(expectedHash, rs.getString(2));
-                    if (pid == expectedOwner) {
-                        assertEquals("HTML", type);
-                        htmlCount++;
-                    } else {
-                        assertEquals("DUPLICATE", type);
-                        dupCount++;
-                    }
-                }
-            }
-        }
-        assertEquals(1, htmlCount);
-        assertEquals(n - 1, dupCount);
-
-        try (Connection c = dataSource.getConnection();
-                PreparedStatement ps =
-                        c.prepareStatement("SELECT owner_page_id FROM crawldb.content_owner WHERE content_hash = ?")) {
-            ps.setString(1, expectedHash);
-            try (ResultSet rs = ps.executeQuery()) {
-                assertTrue(rs.next());
-                assertEquals(expectedOwner, rs.getLong(1));
-            }
-        }
-
-        for (long pid : claimedIds) {
-            if (pid == expectedOwner) {
-                continue;
-            }
-            try (Connection c = dataSource.getConnection();
-                    PreparedStatement ps =
-                            c.prepareStatement(
-                                    "SELECT 1 FROM crawldb.link WHERE from_page = ? AND to_page = ? LIMIT 1")) {
-                ps.setLong(1, pid);
-                ps.setLong(2, expectedOwner);
-                try (ResultSet rs = ps.executeQuery()) {
-                    assertTrue(rs.next(), "duplicate page must link to owner");
-                }
-            }
-        }
+        Ts09DedupAssertions.assertSameHashBatchPostconditions(
+                dataSource, claimedIds, expectedOwner, hasher.sha256(htmlBody), n);
     }
 
     @Test
@@ -1064,11 +995,36 @@ class PageRepositoryIntegrationTest {
     void ck_page_processing_lease_rejectsIncompleteLease() throws Exception {
         long siteId = repository.ensureSite("example.com").orElseThrow();
         long pageId = repository.insertFrontierIfAbsent("https://example.com/ck", siteId, 0.5).pageId();
+        assertProcessingLeaseCheckRejected(
+                pageId,
+                "UPDATE crawldb.page SET page_type_code = 'PROCESSING', claimed_by = 'x',"
+                        + " claimed_at = now(), claim_expires_at = NULL WHERE id = ?");
+    }
+
+    @Test
+    void ck_page_processing_lease_rejectsNullClaimedBy() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/ck-nb", siteId, 0.5).pageId();
+        // TS-16 / TS-11: PROCESSING requires a full lease triple; NULL claimed_by must violate ck_page_processing_lease.
+        assertProcessingLeaseCheckRejected(
+                pageId,
+                "UPDATE crawldb.page SET page_type_code = 'PROCESSING', claimed_by = NULL,"
+                        + " claimed_at = now(), claim_expires_at = now() + interval '1 hour' WHERE id = ?");
+    }
+
+    @Test
+    void ck_page_processing_lease_rejectsNullClaimedAt() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/ck-na", siteId, 0.5).pageId();
+        assertProcessingLeaseCheckRejected(
+                pageId,
+                "UPDATE crawldb.page SET page_type_code = 'PROCESSING', claimed_by = 'worker',"
+                        + " claimed_at = NULL, claim_expires_at = now() + interval '1 hour' WHERE id = ?");
+    }
+
+    private void assertProcessingLeaseCheckRejected(long pageId, String updateSql) throws Exception {
         try (Connection c = dataSource.getConnection();
-                PreparedStatement ps =
-                        c.prepareStatement(
-                                "UPDATE crawldb.page SET page_type_code = 'PROCESSING', claimed_by = 'x',"
-                                        + " claimed_at = now(), claim_expires_at = NULL WHERE id = ?")) {
+                PreparedStatement ps = c.prepareStatement(updateSql)) {
             ps.setLong(1, pageId);
             SQLException ex = assertThrows(SQLException.class, ps::executeUpdate);
             assertTrue(
