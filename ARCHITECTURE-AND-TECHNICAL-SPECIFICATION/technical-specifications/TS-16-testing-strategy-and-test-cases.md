@@ -44,6 +44,7 @@
 - content dedup race check:
   - concurrent same-hash pages produce one canonical owner and deterministic duplicates.
   - repeat the same concurrency test multiple times and assert stable deterministic owner rule outcome (`min(page_id)`).
+  - repeated-iteration test design (isolated hash per rep vs one fixed hash with cleanup between reps) is specified in [TS-09](TS-09-deduplication-url-and-content.md) Required Tests / test design note.
 - headless saturation check:
   - max headless session cap enforced and fallback path is deterministic.
 - robots temporary-deny TTL check:

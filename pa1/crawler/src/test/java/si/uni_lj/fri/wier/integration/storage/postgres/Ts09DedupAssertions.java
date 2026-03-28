@@ -10,6 +10,7 @@
 package si.uni_lj.fri.wier.integration.storage.postgres;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.sql.Connection;
@@ -26,7 +27,8 @@ public final class Ts09DedupAssertions {
 
     /**
      * Asserts one {@code HTML} owner (min {@code page_id} among {@code claimedIds}), {@code n-1} {@code DUPLICATE}
-     * rows, a single {@code content_owner} row for {@code expectedHash}, and duplicate→owner links.
+     * rows with {@code html_content} cleared, a single {@code content_owner} row for {@code expectedHash}, and
+     * duplicate→owner links.
      *
      * @param dataSource live crawldb connection
      * @param claimedIds page ids that participated in the batch (all must exist)
@@ -59,7 +61,8 @@ public final class Ts09DedupAssertions {
         for (long pid : claimedIds) {
             try (Connection c = dataSource.getConnection();
                     PreparedStatement ps =
-                            c.prepareStatement("SELECT page_type_code, content_hash FROM crawldb.page WHERE id = ?")) {
+                            c.prepareStatement(
+                                    "SELECT page_type_code, content_hash, html_content FROM crawldb.page WHERE id = ?")) {
                 ps.setLong(1, pid);
                 try (ResultSet rs = ps.executeQuery()) {
                     assertTrue(rs.next());
@@ -67,9 +70,13 @@ public final class Ts09DedupAssertions {
                     assertEquals(expectedHash, rs.getString(2));
                     if (pid == expectedOwner) {
                         assertEquals("HTML", type);
+                        assertNotNull(rs.getString(3), "canonical HTML row must retain html_content (TS-09)");
                         htmlCount++;
                     } else {
                         assertEquals("DUPLICATE", type);
+                        assertTrue(
+                                rs.getString(3) == null && rs.wasNull(),
+                                "DUPLICATE row must clear html_content (TS-09)");
                         dupCount++;
                     }
                 }

@@ -37,7 +37,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -311,38 +310,49 @@ class Ts16ConcurrencyRestartGateIT {
         }
 
         CyclicBarrier barrier = new CyclicBarrier(2);
-        AtomicInteger sumRecovered = new AtomicInteger();
-        Thread t1 =
-                new Thread(
-                        () -> {
-                            try {
-                                barrier.await();
-                                sumRecovered.addAndGet(
-                                        repository.recoverExpiredLeases(50, "concurrent-a", "thread-a"));
-                            } catch (Exception e) {
-                                throw new RuntimeException(e);
-                            }
-                        });
-        Thread t2 =
-                new Thread(
-                        () -> {
-                            try {
-                                barrier.await();
-                                sumRecovered.addAndGet(
-                                        repository.recoverExpiredLeases(50, "concurrent-b", "thread-b"));
-                            } catch (Exception e) {
-                                throw new RuntimeException(e);
-                            }
-                        });
-        t1.start();
-        t2.start();
-        t1.join();
-        t2.join();
-
-        assertEquals(
-                1,
-                sumRecovered.get(),
-                "FOR UPDATE SKIP LOCKED: exactly one recoverer transitions the single stale row");
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> f1 =
+                    executor.submit(
+                            () -> {
+                                try {
+                                    barrier.await(60, TimeUnit.SECONDS);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new IllegalStateException("interrupted at barrier", e);
+                                } catch (TimeoutException e) {
+                                    throw new IllegalStateException("barrier wait timed out", e);
+                                } catch (BrokenBarrierException e) {
+                                    throw new IllegalStateException("barrier broken", e);
+                                }
+                                return repository.recoverExpiredLeases(50, "concurrent-a", "thread-a");
+                            });
+            Future<Integer> f2 =
+                    executor.submit(
+                            () -> {
+                                try {
+                                    barrier.await(60, TimeUnit.SECONDS);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new IllegalStateException("interrupted at barrier", e);
+                                } catch (TimeoutException e) {
+                                    throw new IllegalStateException("barrier wait timed out", e);
+                                } catch (BrokenBarrierException e) {
+                                    throw new IllegalStateException("barrier broken", e);
+                                }
+                                return repository.recoverExpiredLeases(50, "concurrent-b", "thread-b");
+                            });
+            int sumRecovered = f1.get(120, TimeUnit.SECONDS) + f2.get(120, TimeUnit.SECONDS);
+            assertEquals(
+                    1,
+                    sumRecovered,
+                    "FOR UPDATE SKIP LOCKED: exactly one recoverer transitions the single stale row");
+        } finally {
+            executor.shutdown();
+            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        }
 
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =

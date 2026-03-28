@@ -65,7 +65,8 @@ Isolation (normative):
 - distinct URLs with same content are correctly detected;
 - non-duplicate content remains `HTML`.
 - concurrent same-hash workers produce one canonical owner and deterministic duplicates.
-- repeated reruns of same-hash concurrency tests must produce identical owner selection outcome.
+- repeated reruns of same-hash concurrency tests must produce identical owner selection outcome **for each fixed content hash `H`** (same batch shape, same `min(page_id)` winner rule on every rerun of that hash).
+- **Test design note (traceability):** when one test method applies a **single** DB reset for the whole method (for example one `@BeforeEach` truncation per method), repeated stress iterations may use **isolated same-hash batches** — a **distinct** `H` per iteration — so `content_owner` and related rows from iteration *k* do not collide with iteration *k+1* while still exercising concurrent same-hash persistence each time. Another valid pattern is **one fixed `H`** with truncation or deletion of `content_owner` (and dependent rows) between iterations. Integration tests in `Ts16ConcurrencyRestartGateIT` follow the isolated-batch pattern; `Ts09DedupAssertions` centralizes postconditions per batch.
 
 ## Implementation Location
 
