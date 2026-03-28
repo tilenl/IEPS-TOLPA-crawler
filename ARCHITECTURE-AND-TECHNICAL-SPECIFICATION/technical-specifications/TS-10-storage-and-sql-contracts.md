@@ -57,6 +57,7 @@ Define authoritative database operations and method-to-SQL mappings.
   - `UPDATE crawldb.page SET page_type_code='HTML', html_content=?, http_status_code=?, accessed_time=? WHERE id=?`
 - **Mark duplicate**
   - `UPDATE crawldb.page SET page_type_code='DUPLICATE', html_content=NULL, content_hash=?, accessed_time=? WHERE id=?`
+  - when the fetched page is a **non-owner** for its `content_hash` (see **Register content ownership**), the same `persistFetchOutcomeWithLinks` transaction MUST also insert **`link(from_page=current page id, to_page=owner_page_id)`** using the idempotent **Insert link edge** pattern ([TS-09](TS-09-deduplication-url-and-content.md)) so reports/graphs retain a duplicate→canonical edge.
 - **Register content ownership (atomic dedup)**
   - deterministic winner rule for same-hash concurrency: smallest `owner_page_id` wins;
   - canonical pattern:
@@ -67,7 +68,7 @@ Define authoritative database operations and method-to-SQL mappings.
        RETURNING owner_page_id`
 - **Persist fetch outcome with links (atomic)**
   - `persistFetchOutcomeWithLinks(...)` MUST execute page outcome transition and discovered-link ingestion for the current source page in **one** transaction;
-  - that transaction MUST run at **`SERIALIZABLE`** isolation ([TS-09](TS-09-deduplication-url-and-content.md)); it includes content-owner upsert / `page` terminal updates / link batch in a single commit unit;
+  - that transaction MUST run at **`SERIALIZABLE`** isolation ([TS-09](TS-09-deduplication-url-and-content.md)); it includes content-owner upsert / `page` terminal updates / discovered-link batch / **duplicate→owner link** (when applicable) in a single commit unit;
   - if any non-tolerable DB failure occurs, both outcome and associated discovered-link effects MUST roll back together;
   - expected per-URL policy rejections in a healthy transaction (for example `URL_TOO_LONG` or disallowed canonicalized URL) are recorded as rejected outcomes and do NOT require transaction rollback.
 

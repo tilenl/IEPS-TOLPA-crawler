@@ -2,8 +2,6 @@ package si.uni_lj.fri.wier.storage.postgres.repositories;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -22,6 +20,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import si.uni_lj.fri.wier.contracts.ContentHasher;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
 import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
 import si.uni_lj.fri.wier.contracts.ExtractedImage;
@@ -39,11 +38,12 @@ import si.uni_lj.fri.wier.contracts.PersistOutcome;
 import si.uni_lj.fri.wier.contracts.RobotDecision;
 import si.uni_lj.fri.wier.contracts.RobotDecisionType;
 import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
+import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 
 /**
- * PostgreSQL repository for TS-10 SQL contracts, TS-07 frontier claim / lease recovery, and TS-12 retry
- * diagnostics.
+ * PostgreSQL repository for TS-10 SQL contracts, TS-07 frontier claim / lease recovery, TS-09 content
+ * deduplication (atomic {@code content_owner} + duplicate→owner {@code link}), and TS-12 retry diagnostics.
  *
  * <p>All statements are executed as prepared statements, and Stage B persistence runs in one
  * SERIALIZABLE transaction with bounded retry on SQLSTATE 40001. TS-04 page metadata is upserted into
@@ -87,6 +87,12 @@ public final class PageRepository {
 
     /** Caps stored UTF-8 text so a single metadata field cannot dominate the transaction log. */
     private static final int MAX_PAGE_METADATA_CHARS = 32_000;
+
+    /**
+     * HTML body hashing for TS-09; shared with {@link si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl} so
+     * storage and worker paths cannot drift.
+     */
+    private final ContentHasher contentHasher = new ContentHasherImpl();
 
     private final DataSource dataSource;
     private final int maxSerializableRetries;
@@ -533,13 +539,15 @@ public final class PageRepository {
             Long ownerPageId = null;
             PageOutcomeType outcomeType;
             if (html) {
-                String contentHash = sha256Hex(result.body());
+                String contentHash = contentHasher.sha256(result.body());
                 ownerPageId = registerContentOwnership(connection, contentHash, context.pageId());
                 if (ownerPageId == context.pageId()) {
                     markPageHtml(connection, context.pageId(), result.statusCode(), result.fetchedAt(), result.body(), contentHash);
                     outcomeType = PageOutcomeType.HTML;
                 } else {
                     markPageDuplicate(connection, context.pageId(), result.statusCode(), result.fetchedAt(), contentHash);
+                    // TS-09: same graph convention as URL dedup — edge from the current page to the canonical target.
+                    insertLink(connection, context.pageId(), ownerPageId);
                     outcomeType = PageOutcomeType.DUPLICATE;
                 }
             } else {
@@ -983,20 +991,6 @@ public final class PageRepository {
             statement.setTimestamp(2, Timestamp.from(nonNullInstant(fetchedAt)));
             statement.setLong(3, pageId);
             statement.executeUpdate();
-        }
-    }
-
-    private static String sha256Hex(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(hash.length * 2);
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 is not available", e);
         }
     }
 

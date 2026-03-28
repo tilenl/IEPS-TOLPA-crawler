@@ -10,7 +10,7 @@ Current status: partially covered by existing contract tests under `pa1/crawler/
 ## Covered
 
 - null/empty handling in `ParseResult` (`ParseResultContractTest`)
-- deterministic hashing behavior in `ContentHasherImpl` (`ContentHasherContractTest`)
+- deterministic hashing behavior in `ContentHasherImpl` (`ContentHasherImplUnitTest` under `unit/downloader/dedup/`)
 - frontier ownership path through `Frontier` facade (`ContractFrontierTest`)
 
 ## Deferred coverage (open items)
