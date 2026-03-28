@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.contracts.CanonicalizationResult;
 import si.uni_lj.fri.wier.contracts.Frontier;
+import si.uni_lj.fri.wier.contracts.InsertFrontierResult;
 import si.uni_lj.fri.wier.contracts.RelevanceScorer;
 import si.uni_lj.fri.wier.contracts.Storage;
 import si.uni_lj.fri.wier.downloader.extract.HtmlParser;
@@ -30,6 +31,7 @@ import si.uni_lj.fri.wier.downloader.worker.WorkerLoop;
 import si.uni_lj.fri.wier.error.ProcessingFailureHandler;
 import si.uni_lj.fri.wier.error.RecoveryPathExecutor;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
+import si.uni_lj.fri.wier.observability.SeedBootstrapStats;
 import si.uni_lj.fri.wier.scheduler.VirtualThreadCrawlerScheduler;
 import si.uni_lj.fri.wier.scheduler.WorkerLoopFactory;
 import si.uni_lj.fri.wier.storage.frontier.ContractFrontier;
@@ -135,22 +137,31 @@ public final class PreferentialCrawler {
 
     /**
      * Inserts configured seed URLs as {@code FRONTIER} rows when {@code crawldb.page} is empty (TS-02); otherwise
-     * no-op. Each seed is canonicalized (TS-05) and scored for frontier priority.
+     * returns a skip snapshot. Each seed is canonicalized (TS-05) and scored for frontier priority.
      */
-    public void bootstrapSeedsIfEmpty(PageRepository pageRepository, Storage storage) throws IOException {
+    public SeedBootstrapStats bootstrapSeedsIfEmpty(PageRepository pageRepository, Storage storage) throws IOException {
+        int configuredNonEmpty = 0;
+        for (String raw : config.seedUrls()) {
+            if (raw != null && !raw.trim().isEmpty()) {
+                configuredNonEmpty++;
+            }
+        }
         if (pageRepository.countPagesTotal() > 0) {
             log.info("seedBootstrap skipped: crawldb.page already has rows");
-            return;
+            return new SeedBootstrapStats(configuredNonEmpty, 0, 0, true);
         }
         UrlCanonicalizer canonicalizer = new UrlCanonicalizer();
         RelevanceScorer scorer = new KeywordRelevanceScorer(config.scoringKeywordConfig());
+        int inserted = 0;
+        int rejected = 0;
         for (String raw : config.seedUrls()) {
-            String trimmed = raw.trim();
+            String trimmed = raw == null ? "" : raw.trim();
             if (trimmed.isEmpty()) {
                 continue;
             }
             CanonicalizationResult cr = canonicalizer.canonicalize(trimmed, null);
             if (!cr.accepted()) {
+                rejected++;
                 log.warn("seedBootstrap rejected seed={} reason={}", trimmed, cr.reasonCode());
                 continue;
             }
@@ -161,9 +172,15 @@ public final class PreferentialCrawler {
                             .orElseThrow(
                                     () -> new IllegalStateException("ensureSite returned empty for seed domain=" + domain));
             double score = scorer.compute(canonical, "", "");
-            storage.insertFrontierIfAbsent(canonical, siteId, score);
-            log.info("seedBootstrap inserted FRONTIER url={} siteId={} score={}", canonical, siteId, score);
+            InsertFrontierResult ins = storage.insertFrontierIfAbsent(canonical, siteId, score);
+            if (ins.inserted()) {
+                inserted++;
+                log.info("seedBootstrap inserted FRONTIER url={} siteId={} score={}", canonical, siteId, score);
+            } else {
+                log.info("seedBootstrap seed already present url={} siteId={} pageId={}", canonical, siteId, ins.pageId());
+            }
         }
+        return new SeedBootstrapStats(configuredNonEmpty, inserted, rejected, false);
     }
 
     /**
@@ -173,17 +190,24 @@ public final class PreferentialCrawler {
      * @param shutdown shared with the JVM shutdown hook; when set, workers and supervisor stop cooperatively
      * @param schedulerRef set to the live {@link VirtualThreadCrawlerScheduler} before {@code await} so shutdown
      *     hooks can call {@link VirtualThreadCrawlerScheduler#stopGracefully(Duration)}
+     * @param heartbeatWorkerIdSink first worker id for TS-15 heartbeat alignment (may be {@code null})
+     * @param seedStatsSink when non-null, receives bootstrap stats immediately for shutdown-hook summaries
      */
-    public void runCrawlToCompletion(
+    public SeedBootstrapStats runCrawlToCompletion(
             PageRepository pageRepository,
             PolitenessGate politenessGate,
             PostgresStorage storage,
             FrontierStore frontierStore,
             CrawlerMetrics metrics,
             AtomicBoolean shutdown,
-            AtomicReference<VirtualThreadCrawlerScheduler> schedulerRef)
+            AtomicReference<VirtualThreadCrawlerScheduler> schedulerRef,
+            AtomicReference<String> heartbeatWorkerIdSink,
+            AtomicReference<SeedBootstrapStats> seedStatsSink)
             throws IOException, InterruptedException {
-        bootstrapSeedsIfEmpty(pageRepository, storage);
+        SeedBootstrapStats seeds = bootstrapSeedsIfEmpty(pageRepository, storage);
+        if (seedStatsSink != null) {
+            seedStatsSink.set(seeds);
+        }
         UrlCanonicalizer canonicalizer = new UrlCanonicalizer();
         RelevanceScorer scorer = new KeywordRelevanceScorer(config.scoringKeywordConfig());
         HtmlParser parser =
@@ -196,7 +220,7 @@ public final class PreferentialCrawler {
                                                 () ->
                                                         new IllegalStateException(
                                                                 "ensureSite missing for domain=" + domain)));
-        HttpFetcher fetcher = HttpFetcher.from(config, politenessGate);
+        HttpFetcher fetcher = HttpFetcher.from(config, politenessGate, metrics);
         Clock clock = Clock.systemUTC();
 
         WorkerLoopFactory factory =
@@ -228,13 +252,16 @@ public final class PreferentialCrawler {
                             recoveryPath,
                             config,
                             clock,
-                            shut);
+                            shut,
+                            metrics);
                 };
 
         VirtualThreadCrawlerScheduler scheduler =
-                new VirtualThreadCrawlerScheduler(config, pageRepository, factory, shutdown);
+                new VirtualThreadCrawlerScheduler(
+                        config, pageRepository, factory, shutdown, heartbeatWorkerIdSink);
         schedulerRef.set(scheduler);
         scheduler.start(config.nCrawlers());
         scheduler.awaitRunCompletion(Duration.ofDays(7));
+        return seeds;
     }
 }

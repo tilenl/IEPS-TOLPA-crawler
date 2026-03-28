@@ -16,11 +16,12 @@ class CrawlerHeartbeatSchedulerTest {
                 new CrawlerHeartbeatScheduler(
                         () -> {
                             loads.incrementAndGet();
-                            return new PageRepository.HeartbeatQueueSnapshot(1, 2, 3);
+                            return new PageRepository.HeartbeatQueueSnapshot(1L, 2L, 3L, 0L);
                         },
                         20L,
-                        "test-worker",
-                        4);
+                        () -> "test-worker",
+                        4,
+                        null);
         scheduler.start();
         Thread.sleep(120);
         scheduler.close();

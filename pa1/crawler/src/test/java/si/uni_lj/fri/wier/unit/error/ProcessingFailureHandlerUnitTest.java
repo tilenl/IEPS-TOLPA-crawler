@@ -99,6 +99,7 @@ class ProcessingFailureHandlerUnitTest {
         handler.handleProcessingFailure(
                 new FailureContext(
                         42L,
+                        "worker-test",
                         "https://ex.test/p",
                         "ex.test",
                         0,
@@ -186,6 +187,7 @@ class ProcessingFailureHandlerUnitTest {
         handler.handleProcessingFailure(
                 new FailureContext(
                         7L,
+                        "worker-test",
                         "https://ex.test/x",
                         "ex.test",
                         0,

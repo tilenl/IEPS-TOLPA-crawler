@@ -25,6 +25,7 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.TimeUnit;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
@@ -47,6 +48,7 @@ import si.uni_lj.fri.wier.contracts.RobotDecisionType;
 import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.politeness.PolitenessGate;
 import si.uni_lj.fri.wier.error.CrawlerErrorCategory;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 
 /**
  * Hop-by-hop HTTP(S) fetch with politeness and optional headless escalation (TS-03).
@@ -61,6 +63,7 @@ public final class HttpFetcher implements Fetcher {
     private final HttpClient httpClient;
     private final HeadlessSessionPool headlessPool;
     private final Clock clock;
+    private final CrawlerMetrics crawlMetrics;
 
     /**
      * Production wiring: typically pass the same {@link PolitenessGate} for both robots and rate limits.
@@ -72,12 +75,25 @@ public final class HttpFetcher implements Fetcher {
                 rateLimiter,
                 Clock.systemUTC(),
                 buildHttpClient(config),
-                new HeadlessSessionPool(config, Clock.systemUTC()));
+                new HeadlessSessionPool(config, Clock.systemUTC()),
+                null);
     }
 
     /** Convenience: one {@link PolitenessGate} implements both contracts. */
     public HttpFetcher(RuntimeConfig config, PolitenessGate politeness) {
-        this(config, politeness, politeness);
+        this(config, politeness, (CrawlerMetrics) null);
+    }
+
+    /** Production: politeness + TS-15 metrics (fetch latency, rate-limit waits, headless saturation). */
+    public HttpFetcher(RuntimeConfig config, PolitenessGate politeness, CrawlerMetrics crawlMetrics) {
+        this(
+                config,
+                politeness,
+                politeness,
+                Clock.systemUTC(),
+                buildHttpClient(config),
+                new HeadlessSessionPool(config, Clock.systemUTC(), crawlMetrics),
+                crawlMetrics);
     }
 
     /** Test hook: fixed clock and injected HTTP client / pool. */
@@ -88,12 +104,24 @@ public final class HttpFetcher implements Fetcher {
             Clock clock,
             HttpClient httpClient,
             HeadlessSessionPool headlessPool) {
+        this(config, robotsTxtCache, rateLimiter, clock, httpClient, headlessPool, null);
+    }
+
+    HttpFetcher(
+            RuntimeConfig config,
+            RobotsTxtCache robotsTxtCache,
+            RateLimiterRegistry rateLimiter,
+            Clock clock,
+            HttpClient httpClient,
+            HeadlessSessionPool headlessPool,
+            CrawlerMetrics crawlMetrics) {
         this.config = Objects.requireNonNull(config, "config");
         this.robotsTxtCache = Objects.requireNonNull(robotsTxtCache, "robotsTxtCache");
         this.rateLimiter = Objects.requireNonNull(rateLimiter, "rateLimiter");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.headlessPool = Objects.requireNonNull(headlessPool, "headlessPool");
+        this.crawlMetrics = crawlMetrics;
     }
 
     private static HttpClient buildHttpClient(RuntimeConfig config) {
@@ -109,7 +137,11 @@ public final class HttpFetcher implements Fetcher {
     }
 
     public static HttpFetcher from(RuntimeConfig config, PolitenessGate politeness) {
-        return new HttpFetcher(config, politeness, politeness);
+        return new HttpFetcher(config, politeness, (CrawlerMetrics) null);
+    }
+
+    public static HttpFetcher from(RuntimeConfig config, PolitenessGate politeness, CrawlerMetrics crawlMetrics) {
+        return new HttpFetcher(config, politeness, crawlMetrics);
     }
 
     @Override
@@ -162,7 +194,12 @@ public final class HttpFetcher implements Fetcher {
 
             final HttpResponse<byte[]> resp;
             try {
+                Instant hopStart = clock.instant();
                 resp = sendPlainGet(currentUrl);
+                if (crawlMetrics != null) {
+                    long ms = ChronoUnit.MILLIS.between(hopStart, clock.instant());
+                    crawlMetrics.recordFetchLatencyMillis(domain, Math.max(0L, ms));
+                }
             } catch (IOException e) {
                 throw new FetchException(CrawlerErrorCategory.FETCH_TIMEOUT.name(), "io: " + e.getMessage(), e);
             } catch (InterruptedException e) {
@@ -228,7 +265,7 @@ public final class HttpFetcher implements Fetcher {
 
             if (shouldEscalateHeadless(domain, plain) && !headlessPool.isCircuitOpen()) {
                 log.info(
-                        "FETCH_INCOMPLETE_SHELL url={} domain={} workerId={} hop={}",
+                        "event=FETCH_INCOMPLETE_SHELL result=ESCALATE_HEADLESS url={} domain={} workerId={} hop={}",
                         canonicalUrl,
                         domain,
                         workerId,
@@ -319,6 +356,9 @@ public final class HttpFetcher implements Fetcher {
                                 + " workerId="
                                 + workerId);
             }
+            if (crawlMetrics != null) {
+                crawlMetrics.recordRateLimitWait(waitMs);
+            }
             try {
                 Thread.sleep(Math.min(waitMs, 60_000L));
             } catch (InterruptedException e) {
@@ -346,6 +386,7 @@ public final class HttpFetcher implements Fetcher {
             throws FetchException {
         boolean acquired = false;
         WebDriver driver = null;
+        Instant headlessStart = clock.instant();
         try {
             try {
                 if (!headlessPool.tryAcquireSlot()) {
@@ -372,6 +413,10 @@ public final class HttpFetcher implements Fetcher {
             new WebDriverWait(driver, Duration.ofSeconds(5))
                     .until(ExpectedConditions.presenceOfElementLocated(By.tagName("body")));
             String html = driver.getPageSource();
+            if (crawlMetrics != null) {
+                long ms = ChronoUnit.MILLIS.between(headlessStart, clock.instant());
+                crawlMetrics.recordFetchLatencyMillis(domain, Math.max(0L, ms));
+            }
             return new FetchResult(
                     200,
                     "text/html",

@@ -39,6 +39,7 @@ import si.uni_lj.fri.wier.contracts.RobotDecision;
 import si.uni_lj.fri.wier.contracts.RobotDecisionType;
 import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 
 /**
@@ -73,7 +74,12 @@ public final class PageRepository {
      * TS-15 {@code CRAWLER_HEARTBEAT}: one round-trip counts for {@code FRONTIER}, {@code PROCESSING}, and terminal
      * types ({@code HTML}, {@code BINARY}, {@code DUPLICATE}, {@code ERROR}).
      */
-    public record HeartbeatQueueSnapshot(long frontierDepth, long processingCount, long pagesTerminalTotal) {}
+    /**
+     * Heartbeat snapshot (TS-15): queue depths, terminal throughput coarse count, and optional oldest active lease
+     * age in milliseconds (MAY field).
+     */
+    public record HeartbeatQueueSnapshot(
+            long frontierDepth, long processingCount, long pagesTerminalTotal, long oldestLeaseAgeMs) {}
 
     private static final Logger log = LoggerFactory.getLogger(PageRepository.class);
 
@@ -101,17 +107,19 @@ public final class PageRepository {
     private final RobotsTxtCache discoveredIngestRobots;
     private final RuntimeConfig discoveredIngestConfig;
     private final EnqueueService discoveredIngestLog;
+    private final CrawlerMetrics crawlMetrics;
 
     public PageRepository(DataSource dataSource) {
-        this(dataSource, 3, Duration.ofMillis(100), 250, null, null, null);
+        this(dataSource, 3, Duration.ofMillis(100), 250, null, null, null, null);
     }
+
 
     public PageRepository(
             DataSource dataSource,
             int maxSerializableRetries,
             Duration serializableBaseBackoff,
             int retryJitterMs) {
-        this(dataSource, maxSerializableRetries, serializableBaseBackoff, retryJitterMs, null, null, null);
+        this(dataSource, maxSerializableRetries, serializableBaseBackoff, retryJitterMs, null, null, null, null);
     }
 
     /**
@@ -126,6 +134,29 @@ public final class PageRepository {
             RobotsTxtCache discoveredIngestRobots,
             RuntimeConfig discoveredIngestConfig,
             EnqueueService discoveredIngestLog) {
+        this(
+                dataSource,
+                maxSerializableRetries,
+                serializableBaseBackoff,
+                retryJitterMs,
+                discoveredIngestRobots,
+                discoveredIngestConfig,
+                discoveredIngestLog,
+                null);
+    }
+
+    /**
+     * @param crawlMetrics optional TS-15 hooks (URL dedup, persist outcomes, lease recovery, SQL timeout signals)
+     */
+    public PageRepository(
+            DataSource dataSource,
+            int maxSerializableRetries,
+            Duration serializableBaseBackoff,
+            int retryJitterMs,
+            RobotsTxtCache discoveredIngestRobots,
+            RuntimeConfig discoveredIngestConfig,
+            EnqueueService discoveredIngestLog,
+            CrawlerMetrics crawlMetrics) {
         this.dataSource = dataSource;
         this.maxSerializableRetries = Math.max(1, maxSerializableRetries);
         this.serializableBaseBackoff = serializableBaseBackoff;
@@ -134,6 +165,7 @@ public final class PageRepository {
         this.discoveredIngestRobots = discoveredIngestRobots;
         this.discoveredIngestConfig = discoveredIngestConfig;
         this.discoveredIngestLog = discoveredIngestLog;
+        this.crawlMetrics = crawlMetrics;
     }
 
     private boolean isDiscoveredIngestPolicyEnabled() {
@@ -273,18 +305,127 @@ public final class PageRepository {
                 """
                 SELECT COUNT(*) FILTER (WHERE page_type_code = 'FRONTIER'),
                        COUNT(*) FILTER (WHERE page_type_code = 'PROCESSING'),
-                       COUNT(*) FILTER (WHERE page_type_code IN ('HTML', 'BINARY', 'DUPLICATE', 'ERROR'))
+                       COUNT(*) FILTER (WHERE page_type_code IN ('HTML', 'BINARY', 'DUPLICATE', 'ERROR')),
+                       COALESCE(
+                           (SELECT MAX(
+                                   (EXTRACT(EPOCH FROM (now() - p2.claimed_at)) * 1000)::bigint)
+                            FROM crawldb.page p2
+                            WHERE p2.page_type_code = 'PROCESSING'
+                              AND p2.claimed_at IS NOT NULL),
+                           0)
                 FROM crawldb.page
                 """;
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql);
                 ResultSet rs = statement.executeQuery()) {
             if (!rs.next()) {
-                return new HeartbeatQueueSnapshot(0L, 0L, 0L);
+                return new HeartbeatQueueSnapshot(0L, 0L, 0L, 0L);
             }
-            return new HeartbeatQueueSnapshot(rs.getLong(1), rs.getLong(2), rs.getLong(3));
+            long frontier = rs.getLong(1);
+            long processing = rs.getLong(2);
+            long terminal = rs.getLong(3);
+            long oldestLease = rs.getLong(4);
+            if (crawlMetrics != null) {
+                crawlMetrics.setFrontierDepthMirror(frontier);
+                crawlMetrics.recordOldestActiveLeaseAgeSample(oldestLease);
+            }
+            return new HeartbeatQueueSnapshot(frontier, processing, terminal, oldestLease);
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to query heartbeat queue snapshot", e);
+        }
+    }
+
+    /** TS-15 run summary: one row with counts per {@code page_type_code}. */
+    public record RunSummaryPageTypeSnapshot(
+            long totalUrls,
+            long frontierCount,
+            long processingCount,
+            long htmlCount,
+            long binaryCount,
+            long duplicateCount,
+            long errorCount) {}
+
+    public record ErrorCategoryCountRow(String category, long count) {}
+
+    public record TopDomainRow(String domain, long terminalPageCount) {}
+
+    public RunSummaryPageTypeSnapshot queryRunSummaryPageTypeSnapshot() {
+        final String sql =
+                """
+                SELECT COUNT(*)::bigint,
+                       COUNT(*) FILTER (WHERE page_type_code = 'FRONTIER')::bigint,
+                       COUNT(*) FILTER (WHERE page_type_code = 'PROCESSING')::bigint,
+                       COUNT(*) FILTER (WHERE page_type_code = 'HTML')::bigint,
+                       COUNT(*) FILTER (WHERE page_type_code = 'BINARY')::bigint,
+                       COUNT(*) FILTER (WHERE page_type_code = 'DUPLICATE')::bigint,
+                       COUNT(*) FILTER (WHERE page_type_code = 'ERROR')::bigint
+                FROM crawldb.page
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            if (!rs.next()) {
+                return new RunSummaryPageTypeSnapshot(0L, 0L, 0L, 0L, 0L, 0L, 0L);
+            }
+            return new RunSummaryPageTypeSnapshot(
+                    rs.getLong(1),
+                    rs.getLong(2),
+                    rs.getLong(3),
+                    rs.getLong(4),
+                    rs.getLong(5),
+                    rs.getLong(6),
+                    rs.getLong(7));
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to query run summary page type snapshot", e);
+        }
+    }
+
+    public List<ErrorCategoryCountRow> queryErrorCountsByCategory() {
+        final String sql =
+                """
+                SELECT COALESCE(NULLIF(TRIM(last_error_category), ''), 'UNKNOWN'), COUNT(*)::bigint
+                FROM crawldb.page
+                WHERE page_type_code = 'ERROR'
+                GROUP BY 1
+                ORDER BY COUNT(*) DESC
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            List<ErrorCategoryCountRow> rows = new ArrayList<>();
+            while (rs.next()) {
+                rows.add(new ErrorCategoryCountRow(rs.getString(1), rs.getLong(2)));
+            }
+            return rows;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to query error counts by category", e);
+        }
+    }
+
+    public List<TopDomainRow> queryTopDomainsByTerminalPageCount(int limit) {
+        int lim = Math.max(1, Math.min(limit, 100));
+        final String sql =
+                """
+                SELECT s.domain, COUNT(*)::bigint AS c
+                FROM crawldb.page p
+                JOIN crawldb.site s ON s.id = p.site_id
+                WHERE p.page_type_code IN ('HTML', 'BINARY', 'DUPLICATE', 'ERROR')
+                GROUP BY s.domain
+                ORDER BY c DESC
+                LIMIT ?
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, lim);
+            try (ResultSet rs = statement.executeQuery()) {
+                List<TopDomainRow> rows = new ArrayList<>();
+                while (rs.next()) {
+                    rows.add(new TopDomainRow(rs.getString(1), rs.getLong(2)));
+                }
+                return rows;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to query top domains by terminal page count", e);
         }
     }
 
@@ -366,6 +507,9 @@ public final class PageRepository {
             // can see which crawler had lost the page when the lease went stale.
             statement.setString(2, reason);
             int updated = statement.executeUpdate();
+            if (crawlMetrics != null && updated > 0) {
+                crawlMetrics.recordLeaseRecoveryBatch(updated);
+            }
             if (updated > 0) {
                 log.info(
                         "recovered {} stale lease row(s) reason={} recoverer={}",
@@ -575,6 +719,14 @@ public final class PageRepository {
             }
             IngestResult ingestResult = ingestDiscoveredUrls(connection, merged);
 
+            if (crawlMetrics != null) {
+                switch (outcomeType) {
+                    case HTML -> crawlMetrics.recordTerminalHtmlPersisted();
+                    case BINARY -> crawlMetrics.recordTerminalBinaryPersisted();
+                    case DUPLICATE -> crawlMetrics.recordContentDedupHit();
+                }
+            }
+
             connection.commit();
             return new PersistOutcome(context.pageId(), outcomeType, ownerPageId, ingestResult);
         } catch (SQLException e) {
@@ -608,7 +760,12 @@ public final class PageRepository {
                 if (!rs.next()) {
                     throw new SQLException("insertFrontierIfAbsent returned no rows");
                 }
-                return new InsertFrontierResult(rs.getLong("id"), rs.getBoolean("inserted"));
+                long id = rs.getLong("id");
+                boolean inserted = rs.getBoolean("inserted");
+                if (crawlMetrics != null && !inserted) {
+                    crawlMetrics.recordUrlDedupHit();
+                }
+                return new InsertFrontierResult(id, inserted);
             }
         }
     }
@@ -1065,6 +1222,17 @@ public final class PageRepository {
         return false;
     }
 
+    /** Heuristic for TS-15 DB wait/timeout metrics (driver messages vary). */
+    private static boolean isTimeoutLikeSQLException(SQLException e) {
+        for (SQLException cur = e; cur != null; cur = cur.getNextException()) {
+            String msg = cur.getMessage();
+            if (msg != null && msg.toLowerCase(Locale.ROOT).contains("timeout")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private <T> T withSerializableRetry(SqlWork<T> work) {
         SQLException last = null;
         for (int attempt = 1; attempt <= maxSerializableRetries; attempt++) {
@@ -1072,6 +1240,9 @@ public final class PageRepository {
                 return work.execute();
             } catch (SQLException e) {
                 last = e;
+                if (crawlMetrics != null && isTimeoutLikeSQLException(e)) {
+                    crawlMetrics.recordDbTimeoutLikeFailure();
+                }
                 // Only serialization failures are worth retrying; anything else should fail fast.
                 if (!isSerializationFailureSqlState(e) || attempt >= maxSerializableRetries) {
                     break;

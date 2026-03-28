@@ -37,6 +37,8 @@ class EnqueueServiceLoggingTest {
         assertTrue(msg.contains("configKey=crawler.budget.maxTotalPages"));
         assertTrue(msg.contains("remediationHint="));
         assertTrue(msg.contains("crawler.budget.maxTotalPages"));
+        assertTrue(msg.contains("workerId=ingestion"));
+        assertTrue(msg.contains("pageId=0"));
     }
 
     @Test
@@ -44,5 +46,6 @@ class EnqueueServiceLoggingTest {
         new EnqueueService().logFrontierDeferred("https://github.com/y", "github.com");
         String msg = appender.list.getFirst().getFormattedMessage();
         assertTrue(msg.contains("configKey=crawler.budget.maxFrontierRows"));
+        assertTrue(msg.contains("workerId=ingestion"));
     }
 }

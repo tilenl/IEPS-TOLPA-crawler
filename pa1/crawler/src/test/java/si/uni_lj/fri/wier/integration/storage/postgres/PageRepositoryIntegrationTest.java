@@ -32,9 +32,13 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -49,6 +53,8 @@ import si.uni_lj.fri.wier.contracts.PageOutcomeType;
 import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.contracts.PersistOutcome;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
+import si.uni_lj.fri.wier.observability.RunSummaryReporter;
+import si.uni_lj.fri.wier.observability.SeedBootstrapStats;
 import si.uni_lj.fri.wier.queue.claim.ClaimService;
 import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
@@ -1117,6 +1123,7 @@ class PageRepositoryIntegrationTest {
         PageRepository.HeartbeatQueueSnapshot s1 = repository.queryHeartbeatQueueSnapshot();
         assertEquals(1L, s1.frontierDepth());
         assertEquals(1L, s1.processingCount());
+        assertTrue(s1.oldestLeaseAgeMs() >= 0L);
 
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =
@@ -1129,6 +1136,42 @@ class PageRepositoryIntegrationTest {
         assertEquals(0L, s2.frontierDepth());
         assertEquals(1L, s2.processingCount());
         assertEquals(1L, s2.pagesTerminalTotal());
+    }
+
+    @Test
+    void queryRunSummaryPageTypeSnapshot_reflectsFrontierRows() throws Exception {
+        long siteId = repository.ensureSite("runsummary.example.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://runsummary.example.com/a", siteId, 0.5);
+        PageRepository.RunSummaryPageTypeSnapshot snap = repository.queryRunSummaryPageTypeSnapshot();
+        assertTrue(snap.totalUrls() >= 1L);
+        assertTrue(snap.frontierCount() >= 1L);
+        assertNotNull(repository.queryErrorCountsByCategory());
+        assertNotNull(repository.queryTopDomainsByTerminalPageCount(3));
+    }
+
+    @Test
+    void runSummaryReporter_logsCrawlerRunSummaryEvent() throws Exception {
+        long siteId = repository.ensureSite("rsevent.example.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://rsevent.example.com/p", siteId, 0.5);
+        Logger lg = (Logger) LoggerFactory.getLogger(RunSummaryReporter.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        lg.addAppender(appender);
+        try {
+            CrawlerMetrics metrics = new CrawlerMetrics();
+            metrics.recordBudgetDropped();
+            SeedBootstrapStats seeds = new SeedBootstrapStats(2, 1, 0, false);
+            RunSummaryReporter.emitRunSummary(repository, metrics, seeds);
+            assertTrue(
+                    appender.list.stream()
+                            .anyMatch(
+                                    e ->
+                                            e.getFormattedMessage() != null
+                                                    && e.getFormattedMessage().contains("CRAWLER_RUN_SUMMARY")));
+        } finally {
+            lg.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     private static void applySqlScript(DataSource ds, Path scriptPath) throws IOException, SQLException {

@@ -52,6 +52,7 @@ import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.fetch.CrawlerUserAgents;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
 import si.uni_lj.fri.wier.downloader.fetch.ManualHttpRedirects;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 
 /**
  * Robots policy gate with per-domain politeness (TS-06, TS-08, TS-03).
@@ -91,13 +92,16 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
 
     private final ConcurrentHashMap<String, AtomicInteger> httpOverloadFailures = new ConcurrentHashMap<>();
 
+    /** Optional TS-15 metrics (rate-limit waits, robots fetch classes, temporary-deny gauge refresh). */
+    private final CrawlerMetrics crawlerMetrics;
+
     public PolitenessGate(RuntimeConfig config) {
-        this(config, buildHttpClient(config), null, null, Clock.systemUTC());
+        this(config, buildHttpClient(config), null, null, Clock.systemUTC(), null);
     }
 
     /** Visible for tests: custom {@link HttpClient} (redirect policy, version). */
     public PolitenessGate(RuntimeConfig config, HttpClient httpClient) {
-        this(config, httpClient, null, null, Clock.systemUTC());
+        this(config, httpClient, null, null, Clock.systemUTC(), null);
     }
 
     /**
@@ -105,7 +109,7 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
      * http://127.0.0.1:8080}); first fetch is {@code origin + "/robots.txt"}.
      */
     public PolitenessGate(RuntimeConfig config, HttpClient httpClient, String robotsBaseUrlOverride) {
-        this(config, httpClient, robotsBaseUrlOverride, null, Clock.systemUTC());
+        this(config, httpClient, robotsBaseUrlOverride, null, Clock.systemUTC(), null);
     }
 
     /**
@@ -120,11 +124,25 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
             String robotsBaseUrlOverride,
             RobotsSiteMetadataSink siteMetadataSink,
             Clock clock) {
+        this(config, httpClient, robotsBaseUrlOverride, siteMetadataSink, clock, null);
+    }
+
+    /**
+     * @param crawlerMetrics optional TS-15 hooks (may be {@code null} in unit tests without observability wiring)
+     */
+    public PolitenessGate(
+            RuntimeConfig config,
+            HttpClient httpClient,
+            String robotsBaseUrlOverride,
+            RobotsSiteMetadataSink siteMetadataSink,
+            Clock clock,
+            CrawlerMetrics crawlerMetrics) {
         this.config = Objects.requireNonNull(config, "config");
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.robotsBaseUrlOverride = robotsBaseUrlOverride;
         this.siteMetadataSink = siteMetadataSink;
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.crawlerMetrics = crawlerMetrics;
         this.robotsParser = new SimpleRobotRulesParser();
         this.robotsPolicyCache =
                 Caffeine.newBuilder()
@@ -136,6 +154,22 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
                         .maximumSize(config.bucketsCacheMaxEntries())
                         .expireAfterAccess(Duration.ofHours(config.bucketsCacheTtlHours()))
                         .build();
+    }
+
+    /**
+     * Refreshes {@link CrawlerMetrics#setRobotsTemporaryDenyDomains} from the live robots policy cache (call from
+     * heartbeat tick).
+     */
+    public void refreshRobotsTemporaryDenyGauge() {
+        if (crawlerMetrics == null) {
+            return;
+        }
+        Instant now = clock.instant();
+        long n =
+                robotsPolicyCache.asMap().values().stream()
+                        .filter(p -> p.blockingDenyActive(now))
+                        .count();
+        crawlerMetrics.setRobotsTemporaryDenyDomains((int) Math.min(Integer.MAX_VALUE, n));
     }
 
     /** Shared HttpClient factory for CLI composition (TS-13). */
@@ -254,6 +288,9 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
 
             recordHttpResponse(hopHostKey, response.statusCode());
             int status = response.statusCode();
+            if (crawlerMetrics != null) {
+                crawlerMetrics.recordRobotsFetchOutcome(crawlDomain, status);
+            }
 
             if (ManualHttpRedirects.isRedirect(status)) {
                 redirectCount++;
@@ -316,6 +353,11 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
                 crawlDomain,
                 RobotsDomainPolicy.transientFailure(ALLOW_ALL_RULES, denyUntil, next));
         bucketCache.invalidate(crawlDomain);
+        // Logical failures (no suitable HTTP terminal class) increment the failure map; pure HTTP errors are
+        // already counted via recordRobotsFetchOutcome on the status line.
+        if (crawlerMetrics != null && reason != null && !reason.startsWith("http_")) {
+            crawlerMetrics.recordRobotsFetchFailure(crawlDomain, reason);
+        }
         log.debug("robots transient domain={} reason={} failures={} denyUntil={}", crawlDomain, reason, next, denyUntil);
     }
 
@@ -383,6 +425,9 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
                 return;
             }
             long waitMs = Math.max(1L, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(decision.waitNs()));
+            if (crawlerMetrics != null) {
+                crawlerMetrics.recordRateLimitWait(waitMs);
+            }
             Thread.sleep(Math.min(waitMs, 60_000L));
         }
     }

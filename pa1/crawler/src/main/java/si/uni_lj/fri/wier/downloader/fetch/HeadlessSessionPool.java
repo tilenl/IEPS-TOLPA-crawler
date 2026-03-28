@@ -16,6 +16,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 
 /**
  * Limits concurrent WebDriver instances; opens a short circuit after repeated acquire timeouts (TS-03).
@@ -29,10 +30,16 @@ class HeadlessSessionPool {
     private final Semaphore permits;
     private final AtomicInteger consecutiveAcquireFailures = new AtomicInteger();
     private volatile Instant circuitOpenUntil = Instant.EPOCH;
+    private final CrawlerMetrics metrics;
 
     HeadlessSessionPool(RuntimeConfig config, Clock clock) {
+        this(config, clock, null);
+    }
+
+    HeadlessSessionPool(RuntimeConfig config, Clock clock, CrawlerMetrics metrics) {
         this.config = Objects.requireNonNull(config, "config");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.metrics = metrics;
         this.permits = new Semaphore(config.fetchMaxHeadlessSessions(), true);
     }
 
@@ -52,11 +59,18 @@ class HeadlessSessionPool {
             consecutiveAcquireFailures.set(0);
             return true;
         }
+        if (metrics != null) {
+            metrics.recordHeadlessAcquireTimeout();
+        }
         int n = consecutiveAcquireFailures.incrementAndGet();
         if (n >= config.fetchHeadlessCircuitOpenThreshold()) {
-            circuitOpenUntil =
-                    clock.instant().plus(Duration.ofMinutes(1));
+            Instant now = clock.instant();
+            boolean wasOpen = now.isBefore(circuitOpenUntil);
+            circuitOpenUntil = now.plus(Duration.ofMinutes(1));
             consecutiveAcquireFailures.set(0);
+            if (metrics != null && !wasOpen) {
+                metrics.recordHeadlessCircuitOpened();
+            }
         }
         return false;
     }

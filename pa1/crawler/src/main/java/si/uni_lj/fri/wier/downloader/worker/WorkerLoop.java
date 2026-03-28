@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,6 +44,7 @@ import si.uni_lj.fri.wier.error.CrawlerErrorCategory;
 import si.uni_lj.fri.wier.error.FailureContext;
 import si.uni_lj.fri.wier.error.ProcessingFailureHandler;
 import si.uni_lj.fri.wier.error.RecoveryPathExecutor;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.scheduler.policies.SchedulingPolicy;
 
 /**
@@ -64,6 +66,8 @@ public final class WorkerLoop implements Worker {
     private final RuntimeConfig config;
     private final Clock clock;
     private final AtomicBoolean shutdown;
+    /** Optional TS-15 metrics (rate-limit deferrals without sleeping in this path). */
+    private final CrawlerMetrics observabilityMetrics;
 
     public WorkerLoop(
             String workerId,
@@ -77,6 +81,34 @@ public final class WorkerLoop implements Worker {
             RuntimeConfig config,
             Clock clock,
             AtomicBoolean shutdown) {
+        this(
+                workerId,
+                frontier,
+                robotsTxtCache,
+                fetcher,
+                parser,
+                storage,
+                failureHandler,
+                recoveryPath,
+                config,
+                clock,
+                shutdown,
+                null);
+    }
+
+    public WorkerLoop(
+            String workerId,
+            Frontier frontier,
+            RobotsTxtCache robotsTxtCache,
+            Fetcher fetcher,
+            Parser parser,
+            Storage storage,
+            ProcessingFailureHandler failureHandler,
+            RecoveryPathExecutor recoveryPath,
+            RuntimeConfig config,
+            Clock clock,
+            AtomicBoolean shutdown,
+            CrawlerMetrics observabilityMetrics) {
         this.workerId = Objects.requireNonNull(workerId, "workerId");
         this.frontier = Objects.requireNonNull(frontier, "frontier");
         this.robotsTxtCache = Objects.requireNonNull(robotsTxtCache, "robotsTxtCache");
@@ -88,6 +120,7 @@ public final class WorkerLoop implements Worker {
         this.config = Objects.requireNonNull(config, "config");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.shutdown = Objects.requireNonNull(shutdown, "shutdown");
+        this.observabilityMetrics = observabilityMetrics;
     }
 
     /** Delegates to {@link SchedulingPolicy#newWorkerId()} (TS-14). */
@@ -135,6 +168,10 @@ public final class WorkerLoop implements Worker {
                         ? reg.tryAcquire(domain)
                         : RateLimitDecision.allowed();
         if (rl.delayed()) {
+            if (observabilityMetrics != null) {
+                observabilityMetrics.recordRateLimitWait(
+                        Math.max(1L, TimeUnit.NANOSECONDS.toMillis(rl.waitNs())));
+            }
             Instant next = clock.instant().plusNanos(rl.waitNs());
             recoveryPath.runWithRetries(
                     workerId,
@@ -278,6 +315,7 @@ public final class WorkerLoop implements Worker {
         FailureContext ctx =
                 new FailureContext(
                         row.pageId(),
+                        workerId,
                         row.url(),
                         domain,
                         row.attemptCount(),

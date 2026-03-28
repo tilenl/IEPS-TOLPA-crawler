@@ -15,6 +15,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
@@ -33,6 +34,11 @@ public final class VirtualThreadCrawlerScheduler implements si.uni_lj.fri.wier.c
     private final PageRepository pageRepository;
     private final WorkerLoopFactory workerLoopFactory;
     private final AtomicBoolean shutdown;
+    /**
+     * When non-null, the first spawned worker id is written here so TS-15 heartbeat logs can reuse a real
+     * {@code claimed_by} identity.
+     */
+    private final AtomicReference<String> heartbeatWorkerIdSink;
 
     private volatile ExecutorService executor;
     private final CountDownLatch runCompleted = new CountDownLatch(1);
@@ -42,10 +48,20 @@ public final class VirtualThreadCrawlerScheduler implements si.uni_lj.fri.wier.c
             PageRepository pageRepository,
             WorkerLoopFactory workerLoopFactory,
             AtomicBoolean shutdown) {
+        this(config, pageRepository, workerLoopFactory, shutdown, null);
+    }
+
+    public VirtualThreadCrawlerScheduler(
+            RuntimeConfig config,
+            PageRepository pageRepository,
+            WorkerLoopFactory workerLoopFactory,
+            AtomicBoolean shutdown,
+            AtomicReference<String> heartbeatWorkerIdSink) {
         this.config = Objects.requireNonNull(config, "config");
         this.pageRepository = Objects.requireNonNull(pageRepository, "pageRepository");
         this.workerLoopFactory = Objects.requireNonNull(workerLoopFactory, "workerLoopFactory");
         this.shutdown = Objects.requireNonNull(shutdown, "shutdown");
+        this.heartbeatWorkerIdSink = heartbeatWorkerIdSink;
     }
 
     @Override
@@ -57,6 +73,9 @@ public final class VirtualThreadCrawlerScheduler implements si.uni_lj.fri.wier.c
         this.executor = exec;
         for (int i = 0; i < workerCount; i++) {
             String workerId = SchedulingPolicy.newWorkerId();
+            if (heartbeatWorkerIdSink != null && i == 0) {
+                heartbeatWorkerIdSink.set(workerId);
+            }
             WorkerLoop loop = workerLoopFactory.create(workerId, shutdown);
             exec.submit(loop::runLoop);
         }

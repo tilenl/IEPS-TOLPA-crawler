@@ -4,11 +4,12 @@
  *
  * Calls: ConfigurationBootstrap, RuntimeConfig, PreferentialCrawler, ClaimService, PolitenessGate, PageRepository.
  *
- * Created: 2026-03. Major revisions: TS-02 wiring, System.exit(0) after crawl completion.
+ * Created: 2026-03. Major revisions: TS-02 wiring, System.exit(0) after crawl completion; TS-15 run summary + heartbeat.
  */
 
 package si.uni_lj.fri.wier.cli;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,6 +22,8 @@ import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.downloader.politeness.PolitenessGate;
 import si.uni_lj.fri.wier.observability.CrawlerHeartbeatScheduler;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
+import si.uni_lj.fri.wier.observability.RunSummaryReporter;
+import si.uni_lj.fri.wier.observability.SeedBootstrapStats;
 import si.uni_lj.fri.wier.queue.claim.ClaimService;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueCoordinator;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
@@ -70,7 +73,13 @@ public final class Main {
         config.validate();
         PGSimpleDataSource dataSource = dataSource(config);
         new SchemaVersionValidator(dataSource).validateExpectedVersion(config.dbExpectedSchemaVersion());
-        EnqueueService enqueueService = new EnqueueService();
+
+        CrawlerMetrics crawlMetrics = new CrawlerMetrics();
+        AtomicReference<String> heartbeatWorkerIdRef = new AtomicReference<>();
+        AtomicReference<SeedBootstrapStats> seedStatsForHook = new AtomicReference<>();
+        AtomicBoolean runSummaryEmitted = new AtomicBoolean(false);
+
+        EnqueueService enqueueService = new EnqueueService(crawlMetrics);
         SiteRepository siteRepository = new SiteRepository(dataSource);
         PolitenessGate politenessGate =
                 new PolitenessGate(
@@ -78,7 +87,8 @@ public final class Main {
                         PolitenessGate.buildHttpClient(config),
                         null,
                         siteRepository,
-                        java.time.Clock.systemUTC());
+                        Clock.systemUTC(),
+                        crawlMetrics);
         sharedPolitenessGate = politenessGate;
         PageRepository pageRepository =
                 new PageRepository(
@@ -88,10 +98,11 @@ public final class Main {
                         config.retryJitterMs(),
                         politenessGate,
                         config,
-                        enqueueService);
+                        enqueueService,
+                        crawlMetrics);
         PostgresStorage postgresStorage = new PostgresStorage(pageRepository);
         sharedEnqueueCoordinator = new EnqueueCoordinator(politenessGate, postgresStorage);
-        FrontierStore frontierStore = new FrontierStore(pageRepository, new CrawlerMetrics());
+        FrontierStore frontierStore = new FrontierStore(pageRepository, crawlMetrics);
         ClaimService.runStartupLeaseRecovery(
                 frontierStore,
                 config.frontierStartupLeaseRecoveryBatchSize(),
@@ -100,13 +111,33 @@ public final class Main {
         PreferentialCrawler app = new PreferentialCrawler(config);
         app.preflightAndLogEffectiveConfig();
 
-        CrawlerMetrics crawlMetrics = new CrawlerMetrics();
         FrontierStore frontierForCrawl = new FrontierStore(pageRepository, crawlMetrics);
         AtomicBoolean shutdown = new AtomicBoolean(false);
         AtomicReference<VirtualThreadCrawlerScheduler> schedulerRef = new AtomicReference<>();
 
-        CrawlerHeartbeatScheduler heartbeat = new CrawlerHeartbeatScheduler(pageRepository, config, "main");
+        CrawlerHeartbeatScheduler heartbeat =
+                new CrawlerHeartbeatScheduler(
+                        pageRepository,
+                        config,
+                        () -> {
+                            String w = heartbeatWorkerIdRef.get();
+                            return w != null ? w : "pending";
+                        },
+                        politenessGate::refreshRobotsTemporaryDenyGauge);
         heartbeat.start();
+
+        Runnable emitRunSummaryOnce =
+                () -> {
+                    if (!runSummaryEmitted.compareAndSet(false, true)) {
+                        return;
+                    }
+                    SeedBootstrapStats s = seedStatsForHook.get();
+                    if (s == null) {
+                        s = new SeedBootstrapStats(0, 0, 0, false);
+                    }
+                    RunSummaryReporter.emitRunSummary(pageRepository, crawlMetrics, s);
+                };
+
         Runtime.getRuntime()
                 .addShutdownHook(
                         new Thread(
@@ -117,6 +148,7 @@ public final class Main {
                                             s.stopGracefully(Duration.ofSeconds(30));
                                         }
                                     } finally {
+                                        emitRunSummaryOnce.run();
                                         try {
                                             heartbeat.close();
                                         } catch (Exception ignored) {
@@ -126,14 +158,19 @@ public final class Main {
                                 },
                                 "crawler-shutdown"));
 
-        app.runCrawlToCompletion(
-                pageRepository,
-                politenessGate,
-                postgresStorage,
-                frontierForCrawl,
-                crawlMetrics,
-                shutdown,
-                schedulerRef);
+        SeedBootstrapStats seeds =
+                app.runCrawlToCompletion(
+                        pageRepository,
+                        politenessGate,
+                        postgresStorage,
+                        frontierForCrawl,
+                        crawlMetrics,
+                        shutdown,
+                        schedulerRef,
+                        heartbeatWorkerIdRef,
+                        seedStatsForHook);
+        seedStatsForHook.set(seeds);
+        emitRunSummaryOnce.run();
         heartbeat.close();
         System.exit(0);
     }
