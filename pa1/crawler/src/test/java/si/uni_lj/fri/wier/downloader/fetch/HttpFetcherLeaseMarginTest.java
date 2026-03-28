@@ -122,6 +122,7 @@ class HttpFetcherLeaseMarginTest {
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
         p.setProperty("crawler.db.expectedSchemaVersion", "4");
+        p.setProperty("crawler.seedUrls", "https://example.com/");
         p.setProperty("crawler.frontier.leaseSeconds", "60");
         RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
         cfg.validate();

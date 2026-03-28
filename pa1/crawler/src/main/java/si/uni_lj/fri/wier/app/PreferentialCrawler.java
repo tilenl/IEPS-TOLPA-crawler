@@ -1,20 +1,44 @@
 /*
- * Application shell: effective TS-13 config snapshot after validation (no secrets).
+ * Application shell: TS-13 preflight logging and TS-02 crawl lifecycle (seed bootstrap + scheduler).
  *
  * Callers: Main. Owned by TS-13 / TS-02.
  *
- * Created: 2026-03. Major revisions: four-line effective snapshot per TS-13.
+ * Created: 2026-03. Major revisions: TS-02 runCrawlToCompletion, seed bootstrap when page table empty.
  */
 
 package si.uni_lj.fri.wier.app;
 
+import java.io.IOException;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
+import si.uni_lj.fri.wier.contracts.CanonicalizationResult;
+import si.uni_lj.fri.wier.contracts.Frontier;
+import si.uni_lj.fri.wier.contracts.RelevanceScorer;
+import si.uni_lj.fri.wier.contracts.Storage;
+import si.uni_lj.fri.wier.downloader.extract.HtmlParser;
+import si.uni_lj.fri.wier.downloader.extract.KeywordRelevanceScorer;
+import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
+import si.uni_lj.fri.wier.downloader.fetch.HttpFetcher;
+import si.uni_lj.fri.wier.downloader.normalize.UrlCanonicalizer;
+import si.uni_lj.fri.wier.downloader.politeness.PolitenessGate;
+import si.uni_lj.fri.wier.downloader.worker.WorkerLoop;
+import si.uni_lj.fri.wier.error.ProcessingFailureHandler;
+import si.uni_lj.fri.wier.error.RecoveryPathExecutor;
+import si.uni_lj.fri.wier.observability.CrawlerMetrics;
+import si.uni_lj.fri.wier.scheduler.VirtualThreadCrawlerScheduler;
+import si.uni_lj.fri.wier.scheduler.WorkerLoopFactory;
+import si.uni_lj.fri.wier.storage.frontier.ContractFrontier;
+import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
+import si.uni_lj.fri.wier.storage.postgres.PostgresStorage;
+import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
 /**
- * Preflight logging for merged runtime configuration (TS-13). Passwords and DB user are never logged; JDBC
- * URL is reduced to host/port/database style when possible.
+ * Preflight logging for merged runtime configuration (TS-13) and TS-02 worker orchestration entrypoint.
  */
 public final class PreferentialCrawler {
 
@@ -60,7 +84,7 @@ public final class PreferentialCrawler {
         log.info(
                 "effectiveConfig retryBudget jitterMs={} recoveryPathMaxAttempts={} recoveryPathBaseBackoffMs={}"
                         + " retryFetchTimeout={} retryFetchOverload={} retryFetchCapacity={} retryDbTransient={}"
-                        + " budgetMaxTotalPages={} budgetMaxFrontierRows={}",
+                        + " budgetMaxTotalPages={} budgetMaxFrontierRows={} seedUrlCount={}",
                 config.retryJitterMs(),
                 config.recoveryPathMaxAttempts(),
                 config.recoveryPathBaseBackoffMs(),
@@ -69,7 +93,8 @@ public final class PreferentialCrawler {
                 config.retryMaxAttemptsFetchCapacity(),
                 config.retryMaxAttemptsDbTransient(),
                 config.budgetMaxTotalPages(),
-                config.budgetMaxFrontierRows());
+                config.budgetMaxFrontierRows(),
+                config.seedUrls().size());
         log.info(
                 "effectiveConfig robotsBucketsHealthScoring robotsCacheTtlHours={} robotsCacheMaxEntries={}"
                         + " temporaryDenyMaxMinutes={} temporaryDenyRetryMinutes={} bucketsCacheTtlHours={}"
@@ -106,5 +131,110 @@ public final class PreferentialCrawler {
 
     public RuntimeConfig config() {
         return config;
+    }
+
+    /**
+     * Inserts configured seed URLs as {@code FRONTIER} rows when {@code crawldb.page} is empty (TS-02); otherwise
+     * no-op. Each seed is canonicalized (TS-05) and scored for frontier priority.
+     */
+    public void bootstrapSeedsIfEmpty(PageRepository pageRepository, Storage storage) throws IOException {
+        if (pageRepository.countPagesTotal() > 0) {
+            log.info("seedBootstrap skipped: crawldb.page already has rows");
+            return;
+        }
+        UrlCanonicalizer canonicalizer = new UrlCanonicalizer();
+        RelevanceScorer scorer = new KeywordRelevanceScorer(config.scoringKeywordConfig());
+        for (String raw : config.seedUrls()) {
+            String trimmed = raw.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            CanonicalizationResult cr = canonicalizer.canonicalize(trimmed, null);
+            if (!cr.accepted()) {
+                log.warn("seedBootstrap rejected seed={} reason={}", trimmed, cr.reasonCode());
+                continue;
+            }
+            String canonical = cr.canonicalUrl();
+            String domain = HostKeys.domainKey(canonical);
+            long siteId =
+                    storage.ensureSite(domain)
+                            .orElseThrow(
+                                    () -> new IllegalStateException("ensureSite returned empty for seed domain=" + domain));
+            double score = scorer.compute(canonical, "", "");
+            storage.insertFrontierIfAbsent(canonical, siteId, score);
+            log.info("seedBootstrap inserted FRONTIER url={} siteId={} score={}", canonical, siteId, score);
+        }
+    }
+
+    /**
+     * Runs virtual-thread workers until the TS-02 termination supervisor observes an empty queue for the grace window,
+     * then returns. Caller should {@code System.exit(0)} after heartbeat teardown when the crawl finished normally.
+     *
+     * @param shutdown shared with the JVM shutdown hook; when set, workers and supervisor stop cooperatively
+     * @param schedulerRef set to the live {@link VirtualThreadCrawlerScheduler} before {@code await} so shutdown
+     *     hooks can call {@link VirtualThreadCrawlerScheduler#stopGracefully(Duration)}
+     */
+    public void runCrawlToCompletion(
+            PageRepository pageRepository,
+            PolitenessGate politenessGate,
+            PostgresStorage storage,
+            FrontierStore frontierStore,
+            CrawlerMetrics metrics,
+            AtomicBoolean shutdown,
+            AtomicReference<VirtualThreadCrawlerScheduler> schedulerRef)
+            throws IOException, InterruptedException {
+        bootstrapSeedsIfEmpty(pageRepository, storage);
+        UrlCanonicalizer canonicalizer = new UrlCanonicalizer();
+        RelevanceScorer scorer = new KeywordRelevanceScorer(config.scoringKeywordConfig());
+        HtmlParser parser =
+                new HtmlParser(
+                        canonicalizer,
+                        scorer,
+                        domain ->
+                                storage.ensureSite(domain)
+                                        .orElseThrow(
+                                                () ->
+                                                        new IllegalStateException(
+                                                                "ensureSite missing for domain=" + domain)));
+        HttpFetcher fetcher = HttpFetcher.from(config, politenessGate);
+        Clock clock = Clock.systemUTC();
+
+        WorkerLoopFactory factory =
+                (workerId, shut) -> {
+                    Frontier frontier =
+                            new ContractFrontier(
+                                    frontierStore,
+                                    workerId,
+                                    Duration.ofSeconds(config.frontierLeaseSeconds()),
+                                    config.frontierLeaseRecoveryBatchSize());
+                    ProcessingFailureHandler failureHandler =
+                            new ProcessingFailureHandler(
+                                    frontier,
+                                    storage,
+                                    config,
+                                    clock,
+                                    LoggerFactory.getLogger(WorkerLoop.class),
+                                    metrics);
+                    RecoveryPathExecutor recoveryPath =
+                            new RecoveryPathExecutor(config, LoggerFactory.getLogger("recovery-" + workerId));
+                    return new WorkerLoop(
+                            workerId,
+                            frontier,
+                            politenessGate,
+                            fetcher,
+                            parser,
+                            storage,
+                            failureHandler,
+                            recoveryPath,
+                            config,
+                            clock,
+                            shut);
+                };
+
+        VirtualThreadCrawlerScheduler scheduler =
+                new VirtualThreadCrawlerScheduler(config, pageRepository, factory, shutdown);
+        schedulerRef.set(scheduler);
+        scheduler.start(config.nCrawlers());
+        scheduler.awaitRunCompletion(Duration.ofDays(7));
     }
 }

@@ -1,17 +1,18 @@
 /*
- * CLI entry: TS-13 precedence (classpath base + profile + env + CLI), then validate, schema, lease recovery.
+ * CLI entry: TS-13 precedence (classpath base + profile + env + CLI), then validate, schema, lease recovery,
+ * TS-02 crawl lifecycle (workers + termination), exit 0 on natural completion.
  *
- * Calls: ConfigurationBootstrap, RuntimeConfig, PreferentialCrawler, ClaimService, TS-06 politeness/enqueue wiring.
+ * Calls: ConfigurationBootstrap, RuntimeConfig, PreferentialCrawler, ClaimService, PolitenessGate, PageRepository.
  *
- * Created: 2026-03. Major revisions: TS-13 args/env/profile bootstrap.
+ * Created: 2026-03. Major revisions: TS-02 wiring, System.exit(0) after crawl completion.
  */
 
 package si.uni_lj.fri.wier.cli;
 
-import java.time.Clock;
 import java.time.Duration;
 import java.util.Properties;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.postgresql.ds.PGSimpleDataSource;
 import si.uni_lj.fri.wier.app.PreferentialCrawler;
 import si.uni_lj.fri.wier.config.ConfigurationBootstrap;
@@ -22,6 +23,8 @@ import si.uni_lj.fri.wier.observability.CrawlerHeartbeatScheduler;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.queue.claim.ClaimService;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueCoordinator;
+import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
+import si.uni_lj.fri.wier.scheduler.VirtualThreadCrawlerScheduler;
 import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
 import si.uni_lj.fri.wier.storage.postgres.PostgresStorage;
 import si.uni_lj.fri.wier.storage.postgres.SchemaVersionValidator;
@@ -30,21 +33,18 @@ import si.uni_lj.fri.wier.storage.postgres.repositories.SiteRepository;
 
 /**
  * Bootstrap: {@link ConfigurationBootstrap} → {@link RuntimeConfig#validate()} → DB → startup lease recovery →
- * effective config log → TS-15 {@code CRAWLER_HEARTBEAT} on {@link RuntimeConfig#healthHeartbeatIntervalMs()}. The
- * main thread blocks until JVM shutdown (SIGINT/SIGTERM). CLI: {@code --n-crawlers N}, {@code -h} / {@code --help}.
+ * TS-02 crawl (virtual-thread workers + termination grace) → {@code System.exit(0)}. SIGINT/SIGTERM stops the
+ * scheduler gracefully then closes the heartbeat. CLI: {@code --n-crawlers N}, {@code -h} / {@code --help}.
  */
 public final class Main {
 
     /**
-     * TS-02 will attach {@link si.uni_lj.fri.wier.downloader.fetch.HttpFetcher} and discovery ingest to this gate;
-     * retained so Stage A/B share one
-     * in-memory robots policy and single-flight loads (TS-06).
+     * TS-02 shares one {@link PolitenessGate} for Stage A enqueue and Stage B fetch; retained for
+     * {@link EnqueueCoordinator} static wiring until callers migrate.
      */
     static volatile PolitenessGate sharedPolitenessGate;
 
-    /**
-     * Stage A enqueue entry point once TS-02 wires discovery; uses the same {@link #sharedPolitenessGate} as fetch.
-     */
+    /** Stage A enqueue entry point for components that still read this static. */
     static volatile EnqueueCoordinator sharedEnqueueCoordinator;
 
     public static void main(String[] args) {
@@ -61,7 +61,7 @@ public final class Main {
 
     /**
      * Ordered bootstrap: validate config before any DB access that depends on frontier settings (TS-13), then
-     * schema check, startup lease recovery (TS-07), then preflight logging.
+     * schema check, startup lease recovery (TS-07), preflight logging, heartbeat, crawl to completion (TS-02).
      */
     static void run(String[] args, int availableCpuCores) throws Exception {
         Properties props =
@@ -70,12 +70,7 @@ public final class Main {
         config.validate();
         PGSimpleDataSource dataSource = dataSource(config);
         new SchemaVersionValidator(dataSource).validateExpectedVersion(config.dbExpectedSchemaVersion());
-        PageRepository pageRepository =
-                new PageRepository(
-                        dataSource,
-                        config.recoveryPathMaxAttempts(),
-                        Duration.ofMillis(config.recoveryPathBaseBackoffMs()),
-                        config.retryJitterMs());
+        EnqueueService enqueueService = new EnqueueService();
         SiteRepository siteRepository = new SiteRepository(dataSource);
         PolitenessGate politenessGate =
                 new PolitenessGate(
@@ -83,8 +78,17 @@ public final class Main {
                         PolitenessGate.buildHttpClient(config),
                         null,
                         siteRepository,
-                        Clock.systemUTC());
+                        java.time.Clock.systemUTC());
         sharedPolitenessGate = politenessGate;
+        PageRepository pageRepository =
+                new PageRepository(
+                        dataSource,
+                        config.recoveryPathMaxAttempts(),
+                        Duration.ofMillis(config.recoveryPathBaseBackoffMs()),
+                        config.retryJitterMs(),
+                        politenessGate,
+                        config,
+                        enqueueService);
         PostgresStorage postgresStorage = new PostgresStorage(pageRepository);
         sharedEnqueueCoordinator = new EnqueueCoordinator(politenessGate, postgresStorage);
         FrontierStore frontierStore = new FrontierStore(pageRepository, new CrawlerMetrics());
@@ -93,9 +97,14 @@ public final class Main {
                 config.frontierStartupLeaseRecoveryBatchSize(),
                 "startup stale lease recovery",
                 "startup");
-        new PreferentialCrawler(config).preflightAndLogEffectiveConfig();
+        PreferentialCrawler app = new PreferentialCrawler(config);
+        app.preflightAndLogEffectiveConfig();
 
-        CountDownLatch shutdown = new CountDownLatch(1);
+        CrawlerMetrics crawlMetrics = new CrawlerMetrics();
+        FrontierStore frontierForCrawl = new FrontierStore(pageRepository, crawlMetrics);
+        AtomicBoolean shutdown = new AtomicBoolean(false);
+        AtomicReference<VirtualThreadCrawlerScheduler> schedulerRef = new AtomicReference<>();
+
         CrawlerHeartbeatScheduler heartbeat = new CrawlerHeartbeatScheduler(pageRepository, config, "main");
         heartbeat.start();
         Runtime.getRuntime()
@@ -103,13 +112,30 @@ public final class Main {
                         new Thread(
                                 () -> {
                                     try {
-                                        heartbeat.close();
+                                        VirtualThreadCrawlerScheduler s = schedulerRef.get();
+                                        if (s != null) {
+                                            s.stopGracefully(Duration.ofSeconds(30));
+                                        }
                                     } finally {
-                                        shutdown.countDown();
+                                        try {
+                                            heartbeat.close();
+                                        } catch (Exception ignored) {
+                                            // best-effort
+                                        }
                                     }
                                 },
                                 "crawler-shutdown"));
-        shutdown.await();
+
+        app.runCrawlToCompletion(
+                pageRepository,
+                politenessGate,
+                postgresStorage,
+                frontierForCrawl,
+                crawlMetrics,
+                shutdown,
+                schedulerRef);
+        heartbeat.close();
+        System.exit(0);
     }
 
     private static PGSimpleDataSource dataSource(RuntimeConfig config) {

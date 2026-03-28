@@ -112,6 +112,7 @@ class RecoveryPolicyUnitTest {
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
         p.setProperty("crawler.db.expectedSchemaVersion", "4");
+        p.setProperty("crawler.seedUrls", "https://example.com/");
         p.setProperty("crawler.retry.jitterMs", "0");
         p.setProperty("crawler.retry.maxAttempts.fetchTimeout", "3");
         return RuntimeConfig.fromProperties(p, 4);
@@ -131,6 +132,7 @@ class RecoveryPolicyUnitTest {
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
         p.setProperty("crawler.db.expectedSchemaVersion", "4");
+        p.setProperty("crawler.seedUrls", "https://example.com/");
         p.setProperty("crawler.retry.jitterMs", "0");
         p.setProperty("crawler.retry.maxAttempts.fetchTimeout", "3");
         p.setProperty("crawler.retry.maxAttempts.fetchCapacity", String.valueOf(max));

@@ -129,6 +129,22 @@ class RuntimeConfigTest {
         assertThrows(IllegalArgumentException.class, cfg::validate);
     }
 
+    @Test
+    void validate_rejectsEmptySeedUrls() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.seedUrls", " , , ");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
+    @Test
+    void validate_rejectsNonHttpSeedUrl() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.seedUrls", "ftp://example.com/");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
     private static Properties baseProps() throws Exception {
         Properties p = new Properties();
         Path kw = Paths.get(RuntimeConfigTest.class.getResource("/keywords-valid.json").toURI());
@@ -137,6 +153,7 @@ class RuntimeConfigTest {
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
         p.setProperty("crawler.db.expectedSchemaVersion", "4");
+        p.setProperty("crawler.seedUrls", "https://example.com/");
         return p;
     }
 }

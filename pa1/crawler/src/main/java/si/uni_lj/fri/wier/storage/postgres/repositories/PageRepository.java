@@ -1,5 +1,6 @@
 package si.uni_lj.fri.wier.storage.postgres.repositories;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -32,8 +33,13 @@ import si.uni_lj.fri.wier.contracts.IngestResult;
 import si.uni_lj.fri.wier.contracts.InsertFrontierResult;
 import si.uni_lj.fri.wier.contracts.LinkInsertResult;
 import si.uni_lj.fri.wier.contracts.PageOutcomeType;
+import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.contracts.PersistOutcome;
+import si.uni_lj.fri.wier.contracts.RobotDecision;
+import si.uni_lj.fri.wier.contracts.RobotDecisionType;
+import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
+import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 
 /**
  * PostgreSQL repository for TS-10 SQL contracts, TS-07 frontier claim / lease recovery, and TS-12 retry
@@ -49,6 +55,11 @@ import si.uni_lj.fri.wier.contracts.PersistOutcome;
  * <p>Frontier claim and stale-lease recovery SQL follow TS-07 normative shapes; orchestration (pre-claim
  * recovery batch, startup drain) lives in {@link si.uni_lj.fri.wier.storage.frontier.FrontierStore} and
  * {@link si.uni_lj.fri.wier.queue.claim.ClaimService}.
+ *
+ * <p>TS-02: when {@link RobotsTxtCache}, {@link RuntimeConfig}, and {@link EnqueueService} are supplied to the
+ * extended constructor, {@link #ingestDiscoveredUrls} (inside {@code persistFetchOutcomeWithLinks}) evaluates
+ * robots (evaluate-only; caller must {@code ensureLoaded} before opening the SERIALIZABLE transaction) and
+ * applies crawl budgets with structured {@code BUDGET_DROPPED} / frontier deferral logging.
  */
 public final class PageRepository {
 
@@ -81,9 +92,12 @@ public final class PageRepository {
     private final int maxSerializableRetries;
     private final Duration serializableBaseBackoff;
     private final int retryJitterMs;
+    private final RobotsTxtCache discoveredIngestRobots;
+    private final RuntimeConfig discoveredIngestConfig;
+    private final EnqueueService discoveredIngestLog;
 
     public PageRepository(DataSource dataSource) {
-        this(dataSource, 3, Duration.ofMillis(100), 250);
+        this(dataSource, 3, Duration.ofMillis(100), 250, null, null, null);
     }
 
     public PageRepository(
@@ -91,11 +105,35 @@ public final class PageRepository {
             int maxSerializableRetries,
             Duration serializableBaseBackoff,
             int retryJitterMs) {
+        this(dataSource, maxSerializableRetries, serializableBaseBackoff, retryJitterMs, null, null, null);
+    }
+
+    /**
+     * @param discoveredIngestRobots when non-null with config and log, discovery ingestion applies TS-02 robots
+     *     evaluate + budgets; any null disables that policy (legacy direct insert for tests).
+     */
+    public PageRepository(
+            DataSource dataSource,
+            int maxSerializableRetries,
+            Duration serializableBaseBackoff,
+            int retryJitterMs,
+            RobotsTxtCache discoveredIngestRobots,
+            RuntimeConfig discoveredIngestConfig,
+            EnqueueService discoveredIngestLog) {
         this.dataSource = dataSource;
         this.maxSerializableRetries = Math.max(1, maxSerializableRetries);
         this.serializableBaseBackoff = serializableBaseBackoff;
         // Jitter spreads retries when many workers collide on the same conflict window.
         this.retryJitterMs = Math.max(0, retryJitterMs);
+        this.discoveredIngestRobots = discoveredIngestRobots;
+        this.discoveredIngestConfig = discoveredIngestConfig;
+        this.discoveredIngestLog = discoveredIngestLog;
+    }
+
+    private boolean isDiscoveredIngestPolicyEnabled() {
+        return discoveredIngestRobots != null
+                && discoveredIngestConfig != null
+                && discoveredIngestLog != null;
     }
 
     public Optional<Long> ensureSite(String domain) {
@@ -155,7 +193,8 @@ public final class PageRepository {
                     claim_expires_at = now() + (? * interval '1 second')
                 FROM candidate c
                 WHERE p.id = c.id
-                RETURNING p.id, p.url, p.site_id, p.relevance_score, p.attempt_count, p.parser_retry_count, p.next_attempt_at
+                RETURNING p.id, p.url, p.site_id, p.relevance_score, p.attempt_count, p.parser_retry_count,
+                          p.next_attempt_at, p.claimed_at, p.claim_expires_at
                 """;
         try (Connection connection = dataSource.getConnection();
                 PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -167,6 +206,8 @@ public final class PageRepository {
                     return Optional.empty();
                 }
                 Timestamp nextAttemptTs = rs.getTimestamp("next_attempt_at");
+                Timestamp claimedTs = rs.getTimestamp("claimed_at");
+                Timestamp claimExpiresTs = rs.getTimestamp("claim_expires_at");
                 return Optional.of(
                         new FrontierRow(
                                 rs.getLong("id"),
@@ -176,6 +217,10 @@ public final class PageRepository {
                                 rs.getInt("attempt_count"),
                                 rs.getInt("parser_retry_count"),
                                 Objects.requireNonNull(nextAttemptTs, "next_attempt_at must not be null for claimed row")
+                                        .toInstant(),
+                                Objects.requireNonNull(claimedTs, "claimed_at must not be null for claimed row")
+                                        .toInstant(),
+                                Objects.requireNonNull(claimExpiresTs, "claim_expires_at must not be null for claimed row")
                                         .toInstant()));
             }
         } catch (SQLException e) {
@@ -234,6 +279,45 @@ public final class PageRepository {
             return new HeartbeatQueueSnapshot(rs.getLong(1), rs.getLong(2), rs.getLong(3));
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to query heartbeat queue snapshot", e);
+        }
+    }
+
+    /**
+     * Total rows in {@code crawldb.page} (TS-02 seed bootstrap: empty table guard).
+     */
+    public long countPagesTotal() {
+        final String sql = "SELECT COUNT(*) FROM crawldb.page";
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            if (rs.next()) {
+                return rs.getLong(1);
+            }
+            return 0L;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to count crawldb.page rows", e);
+        }
+    }
+
+    /**
+     * Rows still queued or leased ({@code FRONTIER} or {@code PROCESSING}), including delayed frontier work
+     * (TS-02 termination condition).
+     */
+    public long countNonTerminalQueuePages() {
+        final String sql =
+                """
+                SELECT COUNT(*) FROM crawldb.page
+                WHERE page_type_code IN ('FRONTIER', 'PROCESSING')
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            if (rs.next()) {
+                return rs.getLong(1);
+            }
+            return 0L;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to count non-terminal queue pages", e);
         }
     }
 
@@ -651,6 +735,74 @@ public final class PageRepository {
             return new IngestResult(accepted, rejected);
         }
 
+        if (!isDiscoveredIngestPolicyEnabled()) {
+            return ingestDiscoveredUrlsLegacy(connection, discoveredUrls, accepted, rejected);
+        }
+
+        RuntimeConfig cfg = discoveredIngestConfig;
+        for (DiscoveredUrl discovered : discoveredUrls) {
+            if (discovered == null || discovered.canonicalUrl() == null || discovered.canonicalUrl().isBlank()) {
+                rejected.add(new IngestRejection(discovered, "INVALID_URL"));
+                continue;
+            }
+            if (discovered.canonicalUrl().length() > 3000) {
+                rejected.add(new IngestRejection(discovered, "URL_TOO_LONG"));
+                continue;
+            }
+
+            RobotDecision robotDecision = discoveredIngestRobots.evaluate(discovered.canonicalUrl());
+            if (robotDecision.type() == RobotDecisionType.DISALLOWED) {
+                rejected.add(new IngestRejection(discovered, "ROBOTS_DISALLOWED"));
+                continue;
+            }
+
+            long totalPages = countAllPages(connection);
+            if (totalPages >= cfg.budgetMaxTotalPages()) {
+                discoveredIngestLog.logBudgetDropped(
+                        discovered.canonicalUrl(), hostForBudgetLog(discovered.canonicalUrl()));
+                rejected.add(new IngestRejection(discovered, "BUDGET_DROPPED"));
+                continue;
+            }
+
+            Instant now = Instant.now();
+            Instant nextAttempt = now;
+            long frontierRows = countFrontierPages(connection);
+            if (frontierRows >= cfg.budgetMaxFrontierRows()) {
+                long delayMs = scoreDeferralDelayMs(discovered.relevanceScore(), cfg);
+                nextAttempt = now.plusMillis(delayMs);
+                discoveredIngestLog.logFrontierDeferred(
+                        discovered.canonicalUrl(), hostForBudgetLog(discovered.canonicalUrl()));
+            }
+            if (robotDecision.type() == RobotDecisionType.TEMPORARY_DENY) {
+                Instant denyUntil = robotDecision.denyUntilOrDefault();
+                if (denyUntil.isAfter(nextAttempt)) {
+                    nextAttempt = denyUntil;
+                }
+            }
+
+            InsertFrontierResult insertResult =
+                    insertFrontierIfAbsent(
+                            connection,
+                            discovered.canonicalUrl(),
+                            discovered.siteId(),
+                            discovered.relevanceScore(),
+                            nextAttempt);
+            accepted.add(insertResult.pageId());
+            insertLink(connection, discovered.fromPageId(), insertResult.pageId());
+        }
+        return new IngestResult(accepted, rejected);
+    }
+
+    /**
+     * Legacy path: insert every validated URL with {@code next_attempt_at = now()} (tests and backward-compatible
+     * constructor).
+     */
+    private IngestResult ingestDiscoveredUrlsLegacy(
+            Connection connection,
+            Collection<DiscoveredUrl> discoveredUrls,
+            List<Long> accepted,
+            List<IngestRejection> rejected)
+            throws SQLException {
         for (DiscoveredUrl discovered : discoveredUrls) {
             if (discovered == null || discovered.canonicalUrl() == null || discovered.canonicalUrl().isBlank()) {
                 rejected.add(new IngestRejection(discovered, "INVALID_URL"));
@@ -668,11 +820,47 @@ public final class PageRepository {
                             discovered.siteId(),
                             discovered.relevanceScore(),
                             Instant.now());
-            // Page id is returned for both new frontier rows and existing URL conflicts (idempotent ingest).
             accepted.add(insertResult.pageId());
             insertLink(connection, discovered.fromPageId(), insertResult.pageId());
         }
         return new IngestResult(accepted, rejected);
+    }
+
+    private static long countAllPages(Connection connection) throws SQLException {
+        final String sql = "SELECT COUNT(*) FROM crawldb.page";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            return rs.next() ? rs.getLong(1) : 0L;
+        }
+    }
+
+    private static long countFrontierPages(Connection connection) throws SQLException {
+        final String sql = "SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'FRONTIER'";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            return rs.next() ? rs.getLong(1) : 0L;
+        }
+    }
+
+    /**
+     * TS-02 frontier high-watermark: lower relevance scores receive longer deferral, clamped to rate-limit bounds.
+     */
+    private static long scoreDeferralDelayMs(double relevanceScore, RuntimeConfig cfg) {
+        double s = Math.max(0.0, Math.min(1.0, relevanceScore));
+        long raw = Math.round((1.0 - s) * (long) cfg.rateLimitMaxBackoffMs());
+        long min = cfg.rateLimitMinDelayMs();
+        long max = cfg.rateLimitMaxBackoffMs();
+        return Math.min(max, Math.max(min, raw));
+    }
+
+    private static String hostForBudgetLog(String canonicalUrl) {
+        try {
+            URI u = URI.create(canonicalUrl);
+            String h = u.getHost();
+            return h != null ? h : "";
+        } catch (IllegalArgumentException e) {
+            return "";
+        }
     }
 
     private void insertLink(Connection connection, long fromPageId, long toPageId) throws SQLException {

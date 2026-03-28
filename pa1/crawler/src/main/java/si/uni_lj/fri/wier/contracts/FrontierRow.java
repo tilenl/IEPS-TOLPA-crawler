@@ -8,6 +8,9 @@ import java.time.Instant;
  *
  * <p>{@code parserRetryCount} counts completed parser-stage reschedules persisted on the page row; it is
  * independent of {@code attemptCount} so fetch-stage retries do not consume the parser retry budget.
+ *
+ * <p>{@code claimedAt} and {@code claimExpiresAt} are set by the atomic claim (TS-07) and feed
+ * {@link si.uni_lj.fri.wier.contracts.FetchRequest#claimExpiresAt()} for lease-margin fetches (TS-03).
  */
 public record FrontierRow(
         long pageId,
@@ -16,4 +19,6 @@ public record FrontierRow(
         double relevanceScore,
         int attemptCount,
         int parserRetryCount,
-        Instant nextAttemptAt) {}
+        Instant nextAttemptAt,
+        Instant claimedAt,
+        Instant claimExpiresAt) {}

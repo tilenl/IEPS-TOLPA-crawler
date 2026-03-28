@@ -29,4 +29,9 @@ class CrawlerEnvironmentNamesTest {
     void propertyKeyToEnvName_rejectsNonCrawlerPrefix() {
         assertThrows(IllegalArgumentException.class, () -> CrawlerEnvironmentNames.propertyKeyToEnvName("foo.bar"));
     }
+
+    @Test
+    void propertyKeyToEnvName_mapsSeedUrls() {
+        assertEquals("CRAWLER_SEEDURLS", CrawlerEnvironmentNames.propertyKeyToEnvName("crawler.seedUrls"));
+    }
 }

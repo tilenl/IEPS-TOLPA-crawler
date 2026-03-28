@@ -24,7 +24,9 @@ class ContractFrontierTest {
                         0.8,
                         0,
                         0,
-                        Instant.parse("2025-01-01T00:00:00Z"));
+                        Instant.parse("2025-01-01T00:00:00Z"),
+                        Instant.parse("2025-01-01T00:00:05Z"),
+                        Instant.parse("2025-01-01T00:01:05Z"));
         class StubDelegate implements ContractFrontier.Delegate {
             String workerSeen;
             Duration leaseSeen;

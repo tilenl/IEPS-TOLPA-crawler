@@ -10,6 +10,9 @@ package si.uni_lj.fri.wier.config;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Properties;
 
@@ -20,6 +23,9 @@ import java.util.Properties;
  * <p>{@link #validate()} must run before database access that depends on bounded frontier/recovery settings;
  * it also validates {@code crawler.scoring.keywordConfig} JSON on the filesystem (relative paths use the JVM
  * working directory).
+ *
+ * <p>TS-02: {@code crawler.seedUrls} is a comma-separated list of HTTP(S) bootstrap URLs (no CLI override;
+ * use env {@code CRAWLER_SEEDURLS} via overlay). At least one URL is required after trim.
  */
 public record RuntimeConfig(
         int nCrawlers,
@@ -52,12 +58,17 @@ public record RuntimeConfig(
         int retryMaxAttemptsDbTransient,
         int budgetMaxTotalPages,
         int budgetMaxFrontierRows,
+        List<String> seedUrls,
         Path scoringKeywordConfig,
         String dbUrl,
         String dbUser,
         String dbPassword,
         int dbPoolSize,
         String dbExpectedSchemaVersion) {
+
+    public RuntimeConfig {
+        seedUrls = seedUrls == null ? List.of() : List.copyOf(seedUrls);
+    }
 
     public static RuntimeConfig fromProperties(Properties p, int availableCpuCores) {
         int n =
@@ -96,6 +107,7 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.retry.maxAttempts.dbTransient", 5),
                 parseInt(p, "crawler.budget.maxTotalPages", 5000),
                 parseInt(p, "crawler.budget.maxFrontierRows", 20_000),
+                parseSeedUrls(Objects.requireNonNull(p.getProperty("crawler.seedUrls"), "crawler.seedUrls")),
                 Path.of(Objects.requireNonNull(p.getProperty("crawler.scoring.keywordConfig"), "crawler.scoring.keywordConfig")),
                 Objects.requireNonNull(p.getProperty("crawler.db.url"), "crawler.db.url"),
                 Objects.requireNonNull(p.getProperty("crawler.db.user"), "crawler.db.user"),
@@ -112,6 +124,21 @@ public record RuntimeConfig(
             return defaultValue;
         }
         return Integer.parseInt(v.trim());
+    }
+
+    /**
+     * Splits comma-separated seed URLs; trims each segment; drops empties. Property value must be non-null
+     * (caller uses {@code requireNonNull} before invoke).
+     */
+    private static List<String> parseSeedUrls(String raw) {
+        List<String> out = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String t = part.trim();
+            if (!t.isEmpty()) {
+                out.add(t);
+            }
+        }
+        return List.copyOf(out);
     }
 
     /**
@@ -191,6 +218,14 @@ public record RuntimeConfig(
                 "0..20");
         require(budgetMaxTotalPages >= 1, "crawler.budget.maxTotalPages", ">= 1");
         require(budgetMaxFrontierRows >= 100, "crawler.budget.maxFrontierRows", ">= 100");
+        require(!seedUrls.isEmpty(), "crawler.seedUrls", "at least one non-blank URL after comma-split");
+        for (String u : seedUrls) {
+            String lower = u.toLowerCase(Locale.ROOT);
+            require(
+                    lower.startsWith("http://") || lower.startsWith("https://"),
+                    "crawler.seedUrls",
+                    "each URL must use http:// or https://");
+        }
         require(dbPoolSize >= 2, "crawler.db.poolSize", ">= 2");
         require(fetchMaxHeadlessSessions <= nCrawlers, "crawler.fetch.maxHeadlessSessions", "must be <= crawler.nCrawlers");
         require(dbPoolSize >= nCrawlers + 1, "crawler.db.poolSize", "must be >= crawler.nCrawlers + 1");

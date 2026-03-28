@@ -173,6 +173,7 @@ class PolitenessGateRobotsRedirectLoopbackTest {
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
         p.setProperty("crawler.db.expectedSchemaVersion", "4");
+        p.setProperty("crawler.seedUrls", "https://example.com/");
         return p;
     }
 }
