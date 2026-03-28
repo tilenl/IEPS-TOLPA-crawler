@@ -41,6 +41,9 @@ class HeadlessSessionPool {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.metrics = metrics;
         this.permits = new Semaphore(config.fetchMaxHeadlessSessions(), true);
+        if (metrics != null) {
+            metrics.setHeadlessPoolCapacity(config.fetchMaxHeadlessSessions());
+        }
     }
 
     /**
@@ -57,6 +60,9 @@ class HeadlessSessionPool {
                         config.fetchHeadlessAcquireTimeoutMs(), TimeUnit.MILLISECONDS);
         if (ok) {
             consecutiveAcquireFailures.set(0);
+            if (metrics != null) {
+                metrics.onHeadlessSlotAcquired();
+            }
             return true;
         }
         if (metrics != null) {
@@ -77,6 +83,9 @@ class HeadlessSessionPool {
 
     void releaseSlot() {
         permits.release();
+        if (metrics != null) {
+            metrics.onHeadlessSlotReleased();
+        }
     }
 
     boolean isCircuitOpen() {

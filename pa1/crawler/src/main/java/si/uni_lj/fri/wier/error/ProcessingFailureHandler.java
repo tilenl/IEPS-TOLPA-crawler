@@ -8,6 +8,7 @@ import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.contracts.Frontier;
 import si.uni_lj.fri.wier.contracts.Storage;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
+import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
 import si.uni_lj.fri.wier.observability.StructuredCrawlerLog;
 
 /**
@@ -75,13 +76,24 @@ public final class ProcessingFailureHandler {
                 decision instanceof RecoveryDecision.Reschedule
                         ? "RESCHEDULED"
                         : (exhausted ? "TERMINAL_EXHAUSTED" : "TERMINAL");
+        // TS-15 queue-state fields: durable transition is always from the leased PROCESSING row.
+        String toState =
+                decision instanceof RecoveryDecision.Reschedule
+                        ? QueueStateStructuredLog.STATE_FRONTIER
+                        : "ERROR";
+        String nextAttemptAtStr =
+                decision instanceof RecoveryDecision.Reschedule r ? r.nextAttemptAt().toString() : "n/a";
         if (exhausted) {
             ConfigRemediation.Remediation rem = remediationForRetryExhausted(cat);
             log.warn(
-                    "event={} result={} workerId={} category={} pageId={} url={} domain={} attemptCount={}"
-                            + " parserRetryCount={} configKey={} remediationHint={} msg={}",
+                    "event={} result={} fromState={} toState={} nextAttemptAt={} workerId={} category={}"
+                            + " pageId={} url={} domain={} attemptCount={} parserRetryCount={} configKey={}"
+                            + " remediationHint={} msg={}",
                     StructuredCrawlerLog.EVENT_PROCESSING_FAILURE,
                     result,
+                    QueueStateStructuredLog.STATE_PROCESSING,
+                    toState,
+                    nextAttemptAtStr,
                     ctx.workerId(),
                     cat.name(),
                     ctx.pageId(),
@@ -96,10 +108,13 @@ public final class ProcessingFailureHandler {
             return;
         }
         log.warn(
-                "event={} result={} workerId={} category={} pageId={} url={} domain={} attemptCount={}"
-                        + " parserRetryCount={} msg={}",
+                "event={} result={} fromState={} toState={} nextAttemptAt={} workerId={} category={} pageId={}"
+                        + " url={} domain={} attemptCount={} parserRetryCount={} msg={}",
                 StructuredCrawlerLog.EVENT_PROCESSING_FAILURE,
                 result,
+                QueueStateStructuredLog.STATE_PROCESSING,
+                toState,
+                nextAttemptAtStr,
                 ctx.workerId(),
                 cat.name(),
                 ctx.pageId(),

@@ -86,6 +86,13 @@ public final class CrawlerMetrics {
     /** Key: {@code domain + "|" + statusClass} where statusClass is e.g. {@code 2xx}, {@code 4xx}, {@code 3xx_5xx}. */
     private final ConcurrentHashMap<String, LongAdder> robotsFetchFailuresByKey = new ConcurrentHashMap<>();
 
+    /** Logical JDBC checkouts seen through {@link si.uni_lj.fri.wier.storage.postgres.CountingDataSource}. */
+    private final AtomicInteger dbConnectionsCheckedOut = new AtomicInteger();
+
+    private volatile int dbPoolCapacity;
+    private final AtomicInteger headlessSlotsInUse = new AtomicInteger();
+    private volatile int headlessPoolCapacity;
+
     public CrawlerMetrics() {
         for (CrawlerErrorCategory c : CrawlerErrorCategory.values()) {
             failuresByCategory.put(c, new AtomicLong());
@@ -387,5 +394,66 @@ public final class CrawlerMetrics {
 
     public static int latencyBucketCount() {
         return LATENCY_BUCKET_COUNT;
+    }
+
+    /** Configured JDBC pool ceiling ({@code crawler.db.poolSize}); used with checkout counts for utilization. */
+    public void setDbPoolCapacity(int capacity) {
+        this.dbPoolCapacity = Math.max(0, capacity);
+    }
+
+    public int dbPoolCapacity() {
+        return dbPoolCapacity;
+    }
+
+    public void onDbConnectionCheckedOut() {
+        dbConnectionsCheckedOut.incrementAndGet();
+    }
+
+    public void onDbConnectionReturned() {
+        dbConnectionsCheckedOut.updateAndGet(v -> Math.max(0, v - 1));
+    }
+
+    public int dbConnectionsCheckedOut() {
+        return Math.max(0, dbConnectionsCheckedOut.get());
+    }
+
+    /**
+     * Permille (0–1000) of configured capacity; 0 when capacity unset. Coarse TS-15 “pool utilization” signal for
+     * logs and run summary (not a JDBC driver pool gauge).
+     */
+    public int dbPoolUtilizationPermille() {
+        int cap = dbPoolCapacity;
+        if (cap <= 0) {
+            return 0;
+        }
+        return (int) Math.min(1000L, (1000L * dbConnectionsCheckedOut()) / cap);
+    }
+
+    public void setHeadlessPoolCapacity(int maxSlots) {
+        this.headlessPoolCapacity = Math.max(0, maxSlots);
+    }
+
+    public int headlessPoolCapacity() {
+        return headlessPoolCapacity;
+    }
+
+    public void onHeadlessSlotAcquired() {
+        headlessSlotsInUse.incrementAndGet();
+    }
+
+    public void onHeadlessSlotReleased() {
+        headlessSlotsInUse.updateAndGet(v -> Math.max(0, v - 1));
+    }
+
+    public int headlessSlotsInUse() {
+        return Math.max(0, headlessSlotsInUse.get());
+    }
+
+    public int headlessSlotUtilizationPermille() {
+        int cap = headlessPoolCapacity;
+        if (cap <= 0) {
+            return 0;
+        }
+        return (int) Math.min(1000L, (1000L * headlessSlotsInUse()) / cap);
     }
 }

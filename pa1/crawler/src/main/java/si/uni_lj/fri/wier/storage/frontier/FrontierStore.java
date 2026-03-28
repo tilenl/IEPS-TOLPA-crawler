@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.contracts.FrontierRow;
 import si.uni_lj.fri.wier.error.CrawlerErrorCategory;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
+import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
 /**
@@ -57,6 +58,10 @@ public final class FrontierStore {
         pageRepository.recoverExpiredLeases(
                 Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId);
         Optional<FrontierRow> claimed = pageRepository.claimNextEligibleFrontier(workerId, leaseDuration);
+        if (claimed.isPresent()) {
+            // TS-15 queue-state: one structured line per successful claim (recovery batches log inside PageRepository).
+            QueueStateStructuredLog.logFrontierClaim(log, workerId, claimed.get());
+        }
         refreshFrontierQueueMetrics();
         return claimed;
     }

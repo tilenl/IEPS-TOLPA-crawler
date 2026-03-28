@@ -192,6 +192,8 @@ public final class PreferentialCrawler {
      *     hooks can call {@link VirtualThreadCrawlerScheduler#stopGracefully(Duration)}
      * @param heartbeatWorkerIdSink first worker id for TS-15 heartbeat alignment (may be {@code null})
      * @param seedStatsSink when non-null, receives bootstrap stats immediately for shutdown-hook summaries
+     * @param onSchedulerStarted invoked immediately after {@link VirtualThreadCrawlerScheduler#start(int)} so
+     *     heartbeats wait for a real {@code workerId} (TS-15 {@code claimed_by} alignment)
      */
     public SeedBootstrapStats runCrawlToCompletion(
             PageRepository pageRepository,
@@ -202,7 +204,8 @@ public final class PreferentialCrawler {
             AtomicBoolean shutdown,
             AtomicReference<VirtualThreadCrawlerScheduler> schedulerRef,
             AtomicReference<String> heartbeatWorkerIdSink,
-            AtomicReference<SeedBootstrapStats> seedStatsSink)
+            AtomicReference<SeedBootstrapStats> seedStatsSink,
+            Runnable onSchedulerStarted)
             throws IOException, InterruptedException {
         SeedBootstrapStats seeds = bootstrapSeedsIfEmpty(pageRepository, storage);
         if (seedStatsSink != null) {
@@ -261,6 +264,9 @@ public final class PreferentialCrawler {
                         config, pageRepository, factory, shutdown, heartbeatWorkerIdSink);
         schedulerRef.set(scheduler);
         scheduler.start(config.nCrawlers());
+        if (onSchedulerStarted != null) {
+            onSchedulerStarted.run();
+        }
         scheduler.awaitRunCompletion(Duration.ofDays(7));
         return seeds;
     }

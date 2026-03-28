@@ -40,6 +40,7 @@ import si.uni_lj.fri.wier.contracts.RobotDecisionType;
 import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
+import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 
 /**
@@ -511,11 +512,7 @@ public final class PageRepository {
                 crawlMetrics.recordLeaseRecoveryBatch(updated);
             }
             if (updated > 0) {
-                log.info(
-                        "recovered {} stale lease row(s) reason={} recoverer={}",
-                        updated,
-                        reason,
-                        recovererIdentity);
+                QueueStateStructuredLog.logLeaseRecoveryBatch(log, updated, reason, recovererIdentity);
             } else if (log.isDebugEnabled()) {
                 log.debug(
                         "stale lease recovery batch reason={} recoverer={} (no rows)",

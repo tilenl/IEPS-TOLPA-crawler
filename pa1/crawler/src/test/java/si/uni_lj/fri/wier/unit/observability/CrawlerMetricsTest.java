@@ -48,4 +48,43 @@ class CrawlerMetricsTest {
         assertEquals(1L, m.budgetDroppedTotal());
         assertEquals(1L, m.frontierDeferredTotal());
     }
+
+    @Test
+    void dbPoolUtilization_permilleReflectsCheckoutsAndCapsAt1000() {
+        CrawlerMetrics m = new CrawlerMetrics();
+        m.setDbPoolCapacity(4);
+        m.onDbConnectionCheckedOut();
+        m.onDbConnectionCheckedOut();
+        assertEquals(500, m.dbPoolUtilizationPermille());
+        m.onDbConnectionCheckedOut();
+        m.onDbConnectionCheckedOut();
+        m.onDbConnectionCheckedOut();
+        assertEquals(1000, m.dbPoolUtilizationPermille());
+        m.onDbConnectionReturned();
+        assertEquals(1000, m.dbPoolUtilizationPermille());
+        m.onDbConnectionReturned();
+        assertEquals(750, m.dbPoolUtilizationPermille());
+    }
+
+    @Test
+    void headlessSlotUtilization_tracksAcquireAndRelease() {
+        CrawlerMetrics m = new CrawlerMetrics();
+        m.setHeadlessPoolCapacity(2);
+        m.onHeadlessSlotAcquired();
+        assertEquals(500, m.headlessSlotUtilizationPermille());
+        m.onHeadlessSlotAcquired();
+        assertEquals(1000, m.headlessSlotUtilizationPermille());
+        m.onHeadlessSlotReleased();
+        assertEquals(500, m.headlessSlotUtilizationPermille());
+    }
+
+    @Test
+    void recordRobotsFetchOutcome_bucketsByDomainAndStatusClass() {
+        CrawlerMetrics m = new CrawlerMetrics();
+        m.recordRobotsFetchOutcome("robots-one.test", 200);
+        m.recordRobotsFetchOutcome("robots-two.test", 404);
+        m.recordRobotsFetchOutcome("Robots-One.Test", 204);
+        assertEquals(2L, m.robotsFetchFailureCountsSnapshot().get("robots-one.test|2xx"));
+        assertEquals(1L, m.robotsFetchFailureCountsSnapshot().get("robots-two.test|4xx"));
+    }
 }

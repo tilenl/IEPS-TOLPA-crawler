@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.sql.DataSource;
 import org.postgresql.ds.PGSimpleDataSource;
 import si.uni_lj.fri.wier.app.PreferentialCrawler;
 import si.uni_lj.fri.wier.config.ConfigurationBootstrap;
@@ -29,6 +30,7 @@ import si.uni_lj.fri.wier.queue.enqueue.EnqueueCoordinator;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 import si.uni_lj.fri.wier.scheduler.VirtualThreadCrawlerScheduler;
 import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
+import si.uni_lj.fri.wier.storage.postgres.CountingDataSource;
 import si.uni_lj.fri.wier.storage.postgres.PostgresStorage;
 import si.uni_lj.fri.wier.storage.postgres.SchemaVersionValidator;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
@@ -71,10 +73,11 @@ public final class Main {
                 ConfigurationBootstrap.resolveEffectiveProperties(Main.class.getClassLoader(), args);
         RuntimeConfig config = RuntimeConfig.fromProperties(props, availableCpuCores);
         config.validate();
-        PGSimpleDataSource dataSource = dataSource(config);
-        new SchemaVersionValidator(dataSource).validateExpectedVersion(config.dbExpectedSchemaVersion());
-
+        PGSimpleDataSource rawDataSource = dataSource(config);
         CrawlerMetrics crawlMetrics = new CrawlerMetrics();
+        crawlMetrics.setDbPoolCapacity(config.dbPoolSize());
+        DataSource dataSource = CountingDataSource.wrap(rawDataSource, crawlMetrics);
+        new SchemaVersionValidator(dataSource).validateExpectedVersion(config.dbExpectedSchemaVersion());
         AtomicReference<String> heartbeatWorkerIdRef = new AtomicReference<>();
         AtomicReference<SeedBootstrapStats> seedStatsForHook = new AtomicReference<>();
         AtomicBoolean runSummaryEmitted = new AtomicBoolean(false);
@@ -119,12 +122,9 @@ public final class Main {
                 new CrawlerHeartbeatScheduler(
                         pageRepository,
                         config,
-                        () -> {
-                            String w = heartbeatWorkerIdRef.get();
-                            return w != null ? w : "pending";
-                        },
-                        politenessGate::refreshRobotsTemporaryDenyGauge);
-        heartbeat.start();
+                        heartbeatWorkerIdRef::get,
+                        politenessGate::refreshRobotsTemporaryDenyGauge,
+                        crawlMetrics);
 
         Runnable emitRunSummaryOnce =
                 () -> {
@@ -168,7 +168,8 @@ public final class Main {
                         shutdown,
                         schedulerRef,
                         heartbeatWorkerIdRef,
-                        seedStatsForHook);
+                        seedStatsForHook,
+                        heartbeat::start);
         seedStatsForHook.set(seeds);
         emitRunSummaryOnce.run();
         heartbeat.close();

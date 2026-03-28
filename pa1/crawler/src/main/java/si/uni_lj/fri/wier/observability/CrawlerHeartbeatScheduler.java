@@ -29,23 +29,35 @@ public final class CrawlerHeartbeatScheduler implements AutoCloseable {
     private final Supplier<String> workerIdSupplier;
     private final int workerCount;
     private final Runnable beforeEachTick;
+    private final CrawlerMetrics optionalMetrics;
     private final ScheduledExecutorService executor;
 
     public CrawlerHeartbeatScheduler(PageRepository repository, RuntimeConfig config, Supplier<String> workerIdSupplier) {
-        this(repository, config, workerIdSupplier, null);
+        this(repository, config, workerIdSupplier, null, null);
+    }
+
+    public CrawlerHeartbeatScheduler(
+            PageRepository repository, RuntimeConfig config, Supplier<String> workerIdSupplier, Runnable beforeEachTick) {
+        this(repository, config, workerIdSupplier, beforeEachTick, null);
     }
 
     /**
      * @param beforeEachTick optional hook (e.g. refresh robots temporary-deny gauge into {@link CrawlerMetrics})
+     * @param optionalMetrics when non-null, pool/headless utilization fields are appended (TS-15 diagnostics)
      */
     public CrawlerHeartbeatScheduler(
-            PageRepository repository, RuntimeConfig config, Supplier<String> workerIdSupplier, Runnable beforeEachTick) {
+            PageRepository repository,
+            RuntimeConfig config,
+            Supplier<String> workerIdSupplier,
+            Runnable beforeEachTick,
+            CrawlerMetrics optionalMetrics) {
         this(
                 Objects.requireNonNull(repository, "repository")::queryHeartbeatQueueSnapshot,
                 config.healthHeartbeatIntervalMs(),
                 Objects.requireNonNull(workerIdSupplier, "workerIdSupplier"),
                 config.nCrawlers(),
-                beforeEachTick);
+                beforeEachTick,
+                optionalMetrics);
     }
 
     /** Visible for tests with a stub {@link SnapshotSource}. */
@@ -55,11 +67,23 @@ public final class CrawlerHeartbeatScheduler implements AutoCloseable {
             Supplier<String> workerIdSupplier,
             int workerCount,
             Runnable beforeEachTick) {
+        this(snapshotSource, intervalMs, workerIdSupplier, workerCount, beforeEachTick, null);
+    }
+
+    /** Visible for tests with a stub {@link SnapshotSource}. */
+    public CrawlerHeartbeatScheduler(
+            SnapshotSource snapshotSource,
+            long intervalMs,
+            Supplier<String> workerIdSupplier,
+            int workerCount,
+            Runnable beforeEachTick,
+            CrawlerMetrics optionalMetrics) {
         this.snapshotSource = Objects.requireNonNull(snapshotSource, "snapshotSource");
         this.intervalMs = intervalMs;
         this.workerIdSupplier = Objects.requireNonNull(workerIdSupplier, "workerIdSupplier");
         this.workerCount = workerCount;
         this.beforeEachTick = beforeEachTick;
+        this.optionalMetrics = optionalMetrics;
         ThreadFactory factory =
                 r -> {
                     Thread t = new Thread(r, "crawler-heartbeat");
@@ -76,20 +100,44 @@ public final class CrawlerHeartbeatScheduler implements AutoCloseable {
 
     private void emitOnce() {
         String workerId = workerIdSupplier.get();
+        if (workerId == null || workerId.isBlank()) {
+            // TS-15: workerId must match a real lease owner; skip tick until the scheduler publishes one.
+            return;
+        }
         try {
             if (beforeEachTick != null) {
                 beforeEachTick.run();
             }
             PageRepository.HeartbeatQueueSnapshot s = snapshotSource.load();
-            log.info(
-                    "event=CRAWLER_HEARTBEAT workerId={} frontierDepth={} processingCount={} pagesTerminalTotal={}"
-                            + " oldestLeaseAgeMs={} workerCount={}",
-                    workerId,
-                    s.frontierDepth(),
-                    s.processingCount(),
-                    s.pagesTerminalTotal(),
-                    s.oldestLeaseAgeMs(),
-                    workerCount);
+            if (optionalMetrics != null) {
+                log.info(
+                        "event=CRAWLER_HEARTBEAT workerId={} frontierDepth={} processingCount={}"
+                                + " pagesTerminalTotal={} oldestLeaseAgeMs={} workerCount={}"
+                                + " dbConnectionsCheckedOut={} dbPoolCapacity={} dbPoolUtilizationPermille={}"
+                                + " headlessSlotsInUse={} headlessPoolCapacity={} headlessUtilizationPermille={}",
+                        workerId,
+                        s.frontierDepth(),
+                        s.processingCount(),
+                        s.pagesTerminalTotal(),
+                        s.oldestLeaseAgeMs(),
+                        workerCount,
+                        optionalMetrics.dbConnectionsCheckedOut(),
+                        optionalMetrics.dbPoolCapacity(),
+                        optionalMetrics.dbPoolUtilizationPermille(),
+                        optionalMetrics.headlessSlotsInUse(),
+                        optionalMetrics.headlessPoolCapacity(),
+                        optionalMetrics.headlessSlotUtilizationPermille());
+            } else {
+                log.info(
+                        "event=CRAWLER_HEARTBEAT workerId={} frontierDepth={} processingCount={}"
+                                + " pagesTerminalTotal={} oldestLeaseAgeMs={} workerCount={}",
+                        workerId,
+                        s.frontierDepth(),
+                        s.processingCount(),
+                        s.pagesTerminalTotal(),
+                        s.oldestLeaseAgeMs(),
+                        workerCount);
+            }
         } catch (Exception e) {
             log.warn("event=CRAWLER_HEARTBEAT_FAILED workerId={} message={}", workerId, e.getMessage(), e);
         }

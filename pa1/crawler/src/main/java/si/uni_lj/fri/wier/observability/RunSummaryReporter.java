@@ -60,8 +60,10 @@ public final class RunSummaryReporter {
                             + " urlDedupHits={} contentDedupHits={} terminalHtmlPersisted={} terminalBinaryPersisted={}"
                             + " budgetDropped={} frontierDeferred={} headlessAcquireTimeouts={}"
                             + " headlessCircuitOpenEvents={} robotsTemporaryDenyDomains={} robotsFetchEventsTotal={}"
-                            + " dbTimeoutLikeFailures={} fetchLatencySamples={} seedsConfigured={} seedsInserted={}"
-                            + " seedsRejected={} seedBootstrapSkippedNonEmpty={}",
+                            + " dbTimeoutLikeFailures={} fetchLatencySamples={} dbConnectionsCheckedOut={}"
+                            + " dbPoolCapacity={} dbPoolUtilizationPermille={} headlessSlotsInUse={}"
+                            + " headlessPoolCapacity={} headlessUtilizationPermille={} seedsConfigured={}"
+                            + " seedsInserted={} seedsRejected={} seedBootstrapSkippedNonEmpty={}",
                     StructuredCrawlerLog.EVENT_CRAWLER_RUN_SUMMARY,
                     types.totalUrls(),
                     types.htmlCount(),
@@ -89,6 +91,12 @@ public final class RunSummaryReporter {
                     robotsFailSum,
                     metrics.dbTimeoutLikeFailures(),
                     fetchSamples,
+                    metrics.dbConnectionsCheckedOut(),
+                    metrics.dbPoolCapacity(),
+                    metrics.dbPoolUtilizationPermille(),
+                    metrics.headlessSlotsInUse(),
+                    metrics.headlessPoolCapacity(),
+                    metrics.headlessSlotUtilizationPermille(),
                     seeds.configuredNonEmpty(),
                     seeds.inserted(),
                     seeds.rejected(),
