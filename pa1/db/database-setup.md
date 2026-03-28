@@ -84,6 +84,61 @@ After successful setup, all of the following should be true:
 - Extension column `crawldb.page.relevance_score` exists.
 - Index `idx_page_frontier_priority` exists for preferential frontier dequeue.
 
+## Reset crawl data (retain schema)
+
+Use this when you want to **wipe all crawler state** (pages, sites, links, images, dedup metadata) but **keep** the database, schema, and lookup rows (`page_type`, `data_type`, `schema_version`). Afterward `crawldb.page` is empty, so the next crawler start will run **seed bootstrap** again (`PreferentialCrawler.bootstrapSeedsIfEmpty`).
+
+**Do not** truncate `crawldb.page_type`, `crawldb.data_type`, or `crawldb.schema_version`.
+
+### pgAdmin (or any SQL client)
+
+Connect to database `crawldb`, open **Query Tool**, and run:
+
+```sql
+TRUNCATE TABLE
+  crawldb.content_owner,
+  crawldb.link,
+  crawldb.image,
+  crawldb.page_data,
+  crawldb.page,
+  crawldb.site
+RESTART IDENTITY;
+```
+
+`RESTART IDENTITY` resets serial sequences on those tables so new `id` values start from 1.
+
+If PostgreSQL reports a foreign-key error, use the same table list with `CASCADE`:
+
+```sql
+TRUNCATE TABLE
+  crawldb.content_owner,
+  crawldb.link,
+  crawldb.image,
+  crawldb.page_data,
+  crawldb.page,
+  crawldb.site
+RESTART IDENTITY CASCADE;
+```
+
+### Docker CLI (equivalent)
+
+From the repository root:
+
+```bash
+docker exec postgresql-wier psql -U user -d crawldb -c "
+TRUNCATE TABLE
+  crawldb.content_owner,
+  crawldb.link,
+  crawldb.image,
+  crawldb.page_data,
+  crawldb.page,
+  crawldb.site
+RESTART IDENTITY CASCADE;
+"
+```
+
+For a **full** reset (new empty cluster and re-run `crawldb.sql` init), remove the container and delete `.docker/pgdata`, then repeat Steps 1–2 instead of truncating.
+
 ## Troubleshooting (Common Issues)
 
 - **Docker daemon not running**

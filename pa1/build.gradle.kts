@@ -58,7 +58,7 @@ sourceSets {
 }
 
 application {
-    mainClass.set("si.uni-lj.fri.wier.cli.Main")
+    mainClass.set("si.uni_lj.fri.wier.cli.Main")
 }
 
 tasks.withType<Test>().configureEach {

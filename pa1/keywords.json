@@ -1,0 +1,19 @@
+{
+  "primary": [
+    "image segmentation",
+    "semantic segmentation",
+    "instance segmentation",
+    "mask",
+    "u-net",
+    "deeplab",
+    "segment anything",
+    "computer vision",
+    "image classification"
+  ],
+  "secondary": [
+    "object detection",
+    "image recognition",
+    "feature extraction",
+    "image processing"
+  ]
+}

@@ -1,4 +1,5 @@
 {
+  "_note": "Classpath fixture for automated tests only. Do not treat as the operator crawl dictionary. For ./gradlew run, copy to pa1/keywords.json (see smoke-run plan) and set crawler.scoring.keywordConfig=keywords.json.",
   "primary": ["image segmentation"],
   "secondary": ["object detection"]
 }
