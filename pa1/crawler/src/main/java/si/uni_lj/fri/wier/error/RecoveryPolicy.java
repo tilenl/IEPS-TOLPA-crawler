@@ -107,7 +107,9 @@ public final class RecoveryPolicy {
         Instant now = clock.instant();
         long jitter = jitterMillis(config.retryJitterMs());
         return switch (category) {
-            case FETCH_TIMEOUT, DB_TRANSIENT -> exponentialBackoff(
+            case FETCH_TIMEOUT, DB_TRANSIENT ->
+                    // FETCH_TIMEOUT includes lease-margin politeness abort (TS-08): same exponential reschedule.
+                    exponentialBackoff(
                     now, config.recoveryPathBaseBackoffMs(), attemptCount, config.rateLimitMaxBackoffMs(), jitter);
             case FETCH_HTTP_OVERLOAD ->
                     // NOTE: TS-08 domain backoff is not persisted yet; use capped global exponential delay.

@@ -40,6 +40,10 @@ class HttpFetcherRedirectLoopbackTest {
         server.createContext(
                 "/final",
                 ex -> {
+                    String ua = ex.getRequestHeaders().getFirst("User-agent");
+                    assertTrue(
+                            ua != null && ua.contains(CrawlerUserAgents.FETCHER),
+                            "TS-03 normative User-Agent on content GET");
                     byte[] b = "<html><body><a href=\"/x\">link</a></body></html>".getBytes(StandardCharsets.UTF_8);
                     ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
                     ex.sendResponseHeaders(200, b.length);

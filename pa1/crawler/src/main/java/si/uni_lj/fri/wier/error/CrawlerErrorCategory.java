@@ -16,7 +16,11 @@ public enum CrawlerErrorCategory {
     ROBOTS_DISALLOWED,
     /** Robots fetch or temporary deny window; retryable with fixed matrix cap. */
     ROBOTS_TRANSIENT,
-    /** Connect/read timeout; retryable with exponential delay. */
+    /**
+     * Connect/read timeout; retryable with exponential delay. Also used for redirect-chain exhaustion, bad {@code
+     * Location} headers, and politeness wait that cannot complete within remaining frontier lease margin (worker
+     * should reschedule per TS-08 / TS-12).
+     */
     FETCH_TIMEOUT,
     /** HTTP 429/503 style overload; retryable with capped backoff. */
     FETCH_HTTP_OVERLOAD,

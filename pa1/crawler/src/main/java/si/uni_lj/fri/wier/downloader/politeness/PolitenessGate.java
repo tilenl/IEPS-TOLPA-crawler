@@ -29,8 +29,10 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +44,8 @@ import si.uni_lj.fri.wier.contracts.RateLimiterRegistry;
 import si.uni_lj.fri.wier.contracts.RobotDecision;
 import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.fetch.CrawlerUserAgents;
+import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
+import si.uni_lj.fri.wier.downloader.fetch.ManualHttpRedirects;
 
 /**
  * Robots + per-domain rate limiting gate (TS-08, TS-03).
@@ -59,6 +63,11 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
     private final RuntimeConfig config;
     private final HttpClient httpClient;
     private final SimpleRobotRulesParser robotsParser;
+    /**
+     * When non-null, first robots URL is {@code robotsBaseUrlOverride + "/robots.txt"} (loopback tests). Otherwise
+     * {@code https://{domain}/robots.txt}.
+     */
+    private final String robotsBaseUrlOverride;
 
     private final Map<String, BaseRobotRules> rulesByDomain = new ConcurrentHashMap<>();
     /** Domains whose robots.txt load completed (success or fallback rules installed). */
@@ -75,13 +84,22 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
     private final ConcurrentHashMap<String, AtomicInteger> httpOverloadFailures = new ConcurrentHashMap<>();
 
     public PolitenessGate(RuntimeConfig config) {
-        this(config, buildHttpClient(config));
+        this(config, buildHttpClient(config), null);
     }
 
     /** Visible for tests: custom {@link HttpClient} (redirect policy, version). */
-    PolitenessGate(RuntimeConfig config, HttpClient httpClient) {
+    public PolitenessGate(RuntimeConfig config, HttpClient httpClient) {
+        this(config, httpClient, null);
+    }
+
+    /**
+     * Loopback / test wiring: {@code robotsBaseUrlOverride} is origin without trailing slash (e.g. {@code
+     * http://127.0.0.1:8080}); first fetch is {@code origin + "/robots.txt"}.
+     */
+    PolitenessGate(RuntimeConfig config, HttpClient httpClient, String robotsBaseUrlOverride) {
         this.config = Objects.requireNonNull(config, "config");
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
+        this.robotsBaseUrlOverride = robotsBaseUrlOverride;
         this.robotsParser = new SimpleRobotRulesParser();
         this.bucketCache =
                 Caffeine.newBuilder()
@@ -144,31 +162,76 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
         }
     }
 
-    private void loadRobotsForDomain(String domain) throws IOException, InterruptedException {
-        blockUntilRateToken(domain);
-        String robotsUrl = "https://" + domain + "/robots.txt";
-        HttpRequest request =
-                HttpRequest.newBuilder(URI.create(robotsUrl))
-                        .timeout(Duration.ofMillis(config.fetchReadTimeoutMs()))
-                        .header("User-Agent", CrawlerUserAgents.FETCHER)
-                        .GET()
-                        .build();
-        HttpResponse<byte[]> response =
-                httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        recordHttpResponse(domain, response.statusCode());
-        BaseRobotRules rules;
-        if (response.statusCode() >= 200 && response.statusCode() < 300) {
-            rules =
-                    robotsParser.parseContent(
-                            robotsUrl,
-                            response.body(),
-                            StandardCharsets.UTF_8.name(),
-                            CrawlerUserAgents.FETCHER);
-        } else {
-            rules = robotsParser.failedFetch(response.statusCode());
+    private void loadRobotsForDomain(String crawlDomain) throws IOException, InterruptedException {
+        String currentUrl = initialRobotsUrl(crawlDomain);
+        int redirectCount = 0;
+        int maxRedirects = config.fetchMaxRedirects();
+        Set<String> seen = new HashSet<>();
+
+        while (true) {
+            if (!seen.add(currentUrl)) {
+                installFallbackRules(crawlDomain, robotsParser.failedFetch(503));
+                return;
+            }
+
+            String hopHostKey = HostKeys.domainKey(currentUrl);
+            blockUntilRateToken(hopHostKey);
+
+            HttpRequest request =
+                    HttpRequest.newBuilder(URI.create(currentUrl))
+                            .timeout(Duration.ofMillis(config.fetchReadTimeoutMs()))
+                            .header("User-Agent", CrawlerUserAgents.FETCHER)
+                            .GET()
+                            .build();
+            HttpResponse<byte[]> response =
+                    httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+
+            recordHttpResponse(hopHostKey, response.statusCode());
+            int status = response.statusCode();
+
+            if (ManualHttpRedirects.isRedirect(status)) {
+                redirectCount++;
+                if (redirectCount > maxRedirects) {
+                    installFallbackRules(crawlDomain, robotsParser.failedFetch(503));
+                    return;
+                }
+                String location =
+                        response.headers().firstValue("Location").orElse(null);
+                if (location == null || location.isBlank()) {
+                    installFallbackRules(crawlDomain, robotsParser.failedFetch(status));
+                    return;
+                }
+                try {
+                    currentUrl = ManualHttpRedirects.resolveLocation(currentUrl, location);
+                } catch (IllegalArgumentException e) {
+                    installFallbackRules(crawlDomain, robotsParser.failedFetch(503));
+                    return;
+                }
+                continue;
+            }
+
+            BaseRobotRules rules;
+            if (status >= 200 && status < 300) {
+                rules =
+                        robotsParser.parseContent(
+                                currentUrl,
+                                response.body(),
+                                StandardCharsets.UTF_8.name(),
+                                CrawlerUserAgents.FETCHER);
+            } else {
+                rules = robotsParser.failedFetch(status);
+            }
+            rulesByDomain.put(crawlDomain, rules);
+            bucketCache.invalidate(crawlDomain);
+            return;
         }
-        rulesByDomain.put(domain, rules);
-        bucketCache.invalidate(domain);
+    }
+
+    private String initialRobotsUrl(String crawlDomain) {
+        if (robotsBaseUrlOverride != null) {
+            return robotsBaseUrlOverride + "/robots.txt";
+        }
+        return "https://" + crawlDomain + "/robots.txt";
     }
 
     private void installFallbackRules(String domain, BaseRobotRules rules) {
@@ -193,7 +256,7 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
     @Override
     public RateLimitDecision tryAcquire(String domain) {
         if (domain == null || domain.isBlank()) {
-            return RateLimitDecision.delayed(java.util.concurrent.TimeUnit.SECONDS.toNanos(1_000_000L));
+            return RateLimitDecision.delayed(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100));
         }
         return tryAcquireDecision(domain);
     }

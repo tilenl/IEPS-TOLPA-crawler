@@ -19,8 +19,10 @@ import si.uni_lj.fri.wier.config.RuntimeConfig;
 
 /**
  * Limits concurrent WebDriver instances; opens a short circuit after repeated acquire timeouts (TS-03).
+ *
+ * <p>Non-final so same-package tests can override {@link #tryAcquireSlot()} without starting a browser.
  */
-final class HeadlessSessionPool {
+class HeadlessSessionPool {
 
     private final RuntimeConfig config;
     private final Clock clock;

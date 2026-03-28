@@ -173,7 +173,7 @@ public final class HttpFetcher implements Fetcher {
             int status = resp.statusCode();
             rateLimiter.recordHttpResponse(domain, status);
 
-            if (isRedirect(status)) {
+            if (ManualHttpRedirects.isRedirect(status)) {
                 redirectCount++;
                 if (redirectCount > config.fetchMaxRedirects()) {
                     throw new FetchException(
@@ -186,7 +186,14 @@ public final class HttpFetcher implements Fetcher {
                             CrawlerErrorCategory.FETCH_HTTP_CLIENT.name(),
                             "redirect without Location url=" + currentUrl);
                 }
-                currentUrl = resolveLocation(currentUrl, location);
+                try {
+                    currentUrl = ManualHttpRedirects.resolveLocation(currentUrl, location);
+                } catch (IllegalArgumentException e) {
+                    throw new FetchException(
+                            CrawlerErrorCategory.FETCH_TIMEOUT.name(),
+                            "bad Location header: " + location,
+                            e);
+                }
                 hopIndex++;
                 continue;
             }
@@ -250,14 +257,6 @@ public final class HttpFetcher implements Fetcher {
         return httpClient.send(req, HttpResponse.BodyHandlers.ofByteArray());
     }
 
-    private static boolean isRedirect(int code) {
-        return code == 301
-                || code == 302
-                || code == 303
-                || code == 307
-                || code == 308;
-    }
-
     private static String firstHeader(HttpResponse<?> resp, String name) {
         return resp.headers().firstValue(name).orElse(null);
     }
@@ -308,8 +307,8 @@ public final class HttpFetcher implements Fetcher {
             long remainingMs = Duration.between(clock.instant(), claimExpiresAt).toMillis();
             if (waitMs + persistReserveMs > remainingMs) {
                 throw new FetchException(
-                        CrawlerErrorCategory.FETCH_HTTP_OVERLOAD.name(),
-                        "politeness wait exceeds lease margin waitMs="
+                        CrawlerErrorCategory.FETCH_TIMEOUT.name(),
+                        "politeness wait exceeds lease margin (reschedule) waitMs="
                                 + waitMs
                                 + " remainingMs="
                                 + remainingMs
@@ -326,17 +325,6 @@ public final class HttpFetcher implements Fetcher {
                 Thread.currentThread().interrupt();
                 throw new FetchException(CrawlerErrorCategory.FETCH_TIMEOUT.name(), "interrupted during wait", e);
             }
-        }
-    }
-
-    private static String resolveLocation(String currentAbsolute, String locationHeader) throws FetchException {
-        try {
-            URI base = URI.create(currentAbsolute);
-            URI resolved = base.resolve(locationHeader.trim());
-            return resolved.toString();
-        } catch (IllegalArgumentException e) {
-            throw new FetchException(
-                    CrawlerErrorCategory.FETCH_TIMEOUT.name(), "bad Location header: " + locationHeader, e);
         }
     }
 
