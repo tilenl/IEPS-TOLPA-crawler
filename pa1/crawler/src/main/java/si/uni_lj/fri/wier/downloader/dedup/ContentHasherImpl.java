@@ -2,8 +2,9 @@
  * TS-09 Level 2 content deduplication: SHA-256 over UTF-8 HTML for {@code page.content_hash} and
  * {@code content_owner} registration in storage.
  *
- * {@link si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository} uses this implementation by default so
- * fetch-time and persist-time hashes stay identical.
+ * <p>Production hashing today runs inside {@link si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository}
+ * at persist time. If a fetch-stage path later computes the same fingerprint, it should delegate to this class (or
+ * the shared {@link si.uni_lj.fri.wier.contracts.ContentHasher} binding) so algorithms cannot drift.
  *
  * Change log: 2026-03 — file header and API docs for TS-09 traceability.
  */

@@ -22,6 +22,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
@@ -308,27 +315,100 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
-    void persistFetchOutcomeWithLinks_concurrentSameHash_twoDisjointBatches() throws Exception {
+    void persistFetchOutcomeWithLinks_serialSameHash_twoDisjointBatches() throws Exception {
         int n = 4;
         long siteId = repository.ensureSite("example.com").orElseThrow();
         ContentHasherImpl hasher = new ContentHasherImpl();
-        runConcurrentSameHashBatch(
-                dataSource, repository, siteId, n, "<html>ts09-concurrent-a</html>", 0, hasher);
-        runConcurrentSameHashBatch(
-                dataSource, repository, siteId, n, "<html>ts09-concurrent-b</html>", 1, hasher);
+        runSerialSameHashBatch(
+                dataSource, repository, siteId, n, "<html>ts09-serial-a</html>", 0, hasher);
+        runSerialSameHashBatch(
+                dataSource, repository, siteId, n, "<html>ts09-serial-b</html>", 1, hasher);
     }
 
     /**
-     * Inserts {@code n} frontier rows, claims each, then persists identical HTML for every claimed page. Asserts
-     * TS-09 LEAST ownership within the batch, duplicate→owner links, and stable {@code content_hash} for the body.
-     *
-     * <p>Persists run <strong>serially</strong> on the test thread: overlapping SERIALIZABLE transactions on the
-     * same {@code content_owner} row from a thread pool occasionally left multiple {@code HTML} rows visible before
-     * all work finished, which is a test harness artifact rather than a spec violation. Serial commits preserve the
-     * same postconditions LEAST guarantees after all pages have settled; cross-worker contention is covered by
-     * {@link #persistFetchOutcomeWithLinks_retriesOnSqlState40001} and production retry policy (TS-10).
+     * TS-09: overlapping {@code SERIALIZABLE} persists for the same HTML body must still yield one {@code HTML} row,
+     * {@code n-1} {@code DUPLICATE} rows, {@code content_owner} keyed by LEAST({@code page_id}), and duplicate→owner
+     * {@code link} edges.
      */
-    private static void runConcurrentSameHashBatch(
+    @Test
+    void persistFetchOutcomeWithLinks_parallelSameHash_overlappingSerializable() throws Exception {
+        int n = 4;
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        ContentHasherImpl hasher = new ContentHasherImpl();
+        String htmlBody = "<html>ts09-parallel-overlap</html>";
+        // Hot content_hash can still trigger 40001 under SERIALIZABLE; extra retries for overlapping persists.
+        PageRepository parallelRepo = new PageRepository(dataSource, 16, Duration.ofMillis(10), 40);
+
+        List<Long> insertedIds = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            String url = "https://example.com/ts09par/u" + i;
+            insertedIds.add(parallelRepo.insertFrontierIfAbsent(url, siteId, 0.5).pageId());
+        }
+        long expectedOwner = insertedIds.stream().mapToLong(Long::longValue).min().orElseThrow();
+
+        List<Long> claimedIds = new ArrayList<>();
+        List<String> claimedUrls = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            FrontierRow row =
+                    parallelRepo.claimNextEligibleFrontier("w-par-" + i, Duration.ofSeconds(120)).orElseThrow();
+            claimedIds.add(row.pageId());
+            claimedUrls.add(row.url());
+        }
+        assertEquals(
+                insertedIds.stream().sorted().toList(),
+                claimedIds.stream().sorted().toList(),
+                "claimed set should match inserted frontier ids");
+
+        CyclicBarrier barrier = new CyclicBarrier(n);
+        ExecutorService executor = Executors.newFixedThreadPool(n);
+        try {
+            List<Future<?>> futures = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                final int idx = i;
+                futures.add(
+                        executor.submit(
+                                () -> {
+                                    try {
+                                        barrier.await(60, TimeUnit.SECONDS);
+                                    } catch (TimeoutException e) {
+                                        throw new IllegalStateException(
+                                                "CyclicBarrier timed out waiting for peers", e);
+                                    } catch (BrokenBarrierException e) {
+                                        throw new IllegalStateException("CyclicBarrier broken", e);
+                                    }
+                                    parallelRepo.persistFetchOutcomeWithLinks(
+                                            new FetchContext(
+                                                    claimedIds.get(idx),
+                                                    claimedUrls.get(idx),
+                                                    siteId,
+                                                    0,
+                                                    Instant.now()),
+                                            new FetchResult(200, "text/html", htmlBody, Instant.now()),
+                                            ParseResult.empty(),
+                                            List.of());
+                                    return null;
+                                }));
+            }
+            for (Future<?> f : futures) {
+                f.get(180, TimeUnit.SECONDS);
+            }
+        } finally {
+            executor.shutdown();
+            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        }
+
+        assertTs09SameHashBatchPostconditions(dataSource, claimedIds, expectedOwner, hasher.sha256(htmlBody), n);
+    }
+
+    /**
+     * Inserts {@code n} frontier rows, claims each, then persists identical HTML for every claimed page <strong>in
+     * sequence</strong> on the test thread. Asserts TS-09 LEAST ownership, duplicate→owner links, and stable
+     * {@code content_hash}. Parallel overlap is covered by {@link
+     * #persistFetchOutcomeWithLinks_parallelSameHash_overlappingSerializable}.
+     */
+    private static void runSerialSameHashBatch(
             DataSource dataSource,
             PageRepository repository,
             long siteId,
@@ -368,7 +448,29 @@ class PageRepositoryIntegrationTest {
                     List.of());
         }
 
-        String expectedHash = hasher.sha256(htmlBody);
+        assertTs09SameHashBatchPostconditions(dataSource, claimedIds, expectedOwner, hasher.sha256(htmlBody), n);
+    }
+
+    private static void assertTs09SameHashBatchPostconditions(
+            DataSource dataSource, List<Long> claimedIds, long expectedOwner, String expectedHash, int n)
+            throws SQLException {
+        long minClaimed = claimedIds.stream().mapToLong(Long::longValue).min().orElseThrow();
+        long ownerFromDb;
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT owner_page_id FROM crawldb.content_owner WHERE content_hash = ?")) {
+            ps.setString(1, expectedHash);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next(), "content_owner row must exist for batch hash");
+                ownerFromDb = rs.getLong(1);
+            }
+        }
+        assertEquals(
+                minClaimed,
+                ownerFromDb,
+                "TS-09 LEAST owner must equal min(page_id) among batch participants");
+        assertEquals(expectedOwner, ownerFromDb);
+
         int htmlCount = 0;
         int dupCount = 0;
         for (long pid : claimedIds) {

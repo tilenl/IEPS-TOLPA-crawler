@@ -89,8 +89,8 @@ public final class PageRepository {
     private static final int MAX_PAGE_METADATA_CHARS = 32_000;
 
     /**
-     * HTML body hashing for TS-09; shared with {@link si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl} so
-     * storage and worker paths cannot drift.
+     * HTML body hashing for TS-09 at persist time via {@link ContentHasherImpl}. Any future fetch-stage hash must
+     * use the same {@link ContentHasher} implementation to keep fingerprints aligned end-to-end.
      */
     private final ContentHasher contentHasher = new ContentHasherImpl();
 
@@ -528,9 +528,10 @@ public final class PageRepository {
         int originalIsolation = connection.getTransactionIsolation();
         boolean originalAutoCommit = connection.getAutoCommit();
         try {
-            connection.setAutoCommit(false);
-            // SERIALIZABLE prevents torn reads between content_owner upsert and page row updates under concurrency.
+            // Isolation must be set before the transaction begins (JDBC + PostgreSQL). Starting with
+            // setAutoCommit(false) first can open READ COMMITTED and leave SERIALIZABLE ineffective.
             connection.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+            connection.setAutoCommit(false);
 
             String contentType = result.contentType() == null ? "" : result.contentType().toLowerCase(Locale.ROOT);
             // Body must be present to persist HTML; missing body is treated as non-HTML even if type says html.
@@ -541,6 +542,9 @@ public final class PageRepository {
             if (html) {
                 String contentHash = contentHasher.sha256(result.body());
                 ownerPageId = registerContentOwnership(connection, contentHash, context.pageId());
+                // A larger page_id may have committed HTML before LEAST chose a smaller owner; reconcile stale rows.
+                downgradeStaleHtmlOwnersForSameContentHash(
+                        connection, contentHash, ownerPageId, result.statusCode(), result.fetchedAt());
                 if (ownerPageId == context.pageId()) {
                     markPageHtml(connection, context.pageId(), result.statusCode(), result.fetchedAt(), result.body(), contentHash);
                     outcomeType = PageOutcomeType.HTML;
@@ -904,8 +908,61 @@ public final class PageRepository {
                 if (!rs.next()) {
                     throw new SQLException("registerContentOwnership returned no rows");
                 }
-                return rs.getLong("owner_page_id");
+                return rs.getLong(1);
             }
+        }
+    }
+
+    /**
+     * When a smaller {@code page.id} becomes canonical after a larger id already committed as {@code HTML}, those
+     * stale owner rows must become {@code DUPLICATE} in the same persist transaction (TS-09).
+     */
+    private void downgradeStaleHtmlOwnersForSameContentHash(
+            Connection connection,
+            String contentHash,
+            long canonicalOwnerPageId,
+            int statusCode,
+            Instant fetchedAt)
+            throws SQLException {
+        final String downgrade =
+                """
+                UPDATE crawldb.page
+                SET page_type_code = 'DUPLICATE',
+                    html_content = NULL,
+                    content_hash = ?,
+                    http_status_code = ?,
+                    accessed_time = ?,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    claim_expires_at = NULL,
+                    parser_retry_count = 0
+                WHERE content_hash = ?
+                  AND page_type_code = 'HTML'
+                  AND id <> ?
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(downgrade)) {
+            statement.setString(1, contentHash);
+            statement.setInt(2, statusCode);
+            statement.setTimestamp(3, Timestamp.from(nonNullInstant(fetchedAt)));
+            statement.setString(4, contentHash);
+            statement.setLong(5, canonicalOwnerPageId);
+            statement.executeUpdate();
+        }
+        final String dedupLinks =
+                """
+                INSERT INTO crawldb.link (from_page, to_page)
+                SELECT p.id, ?
+                FROM crawldb.page p
+                WHERE p.content_hash = ?
+                  AND p.page_type_code = 'DUPLICATE'
+                  AND p.id <> ?
+                ON CONFLICT (from_page, to_page) DO NOTHING
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(dedupLinks)) {
+            statement.setLong(1, canonicalOwnerPageId);
+            statement.setString(2, contentHash);
+            statement.setLong(3, canonicalOwnerPageId);
+            statement.executeUpdate();
         }
     }
 
@@ -999,6 +1056,15 @@ public final class PageRepository {
         return instant == null ? Instant.now() : instant;
     }
 
+    private static boolean isSerializationFailureSqlState(SQLException e) {
+        for (SQLException cur = e; cur != null; cur = cur.getNextException()) {
+            if (SQLSTATE_SERIALIZATION_FAILURE.equals(cur.getSQLState())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private <T> T withSerializableRetry(SqlWork<T> work) {
         SQLException last = null;
         for (int attempt = 1; attempt <= maxSerializableRetries; attempt++) {
@@ -1007,7 +1073,7 @@ public final class PageRepository {
             } catch (SQLException e) {
                 last = e;
                 // Only serialization failures are worth retrying; anything else should fail fast.
-                if (!SQLSTATE_SERIALIZATION_FAILURE.equals(e.getSQLState()) || attempt >= maxSerializableRetries) {
+                if (!isSerializationFailureSqlState(e) || attempt >= maxSerializableRetries) {
                     break;
                 }
                 // Exponential backoff per attempt; jitter reduces synchronized thundering herds on hot rows.
