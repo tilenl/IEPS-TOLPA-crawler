@@ -64,6 +64,47 @@ class PolitenessGateRobotsRedirectLoopbackTest {
     }
 
     @Test
+    void ensureLoaded_redirectToLocalhost_issuesTwoHttpGets() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        int port = server.getAddress().getPort();
+        java.util.concurrent.atomic.AtomicInteger hits = new java.util.concurrent.atomic.AtomicInteger();
+        byte[] body =
+                ("User-agent: *\nDisallow:\n").getBytes(StandardCharsets.UTF_8);
+        server.createContext(
+                "/robots.txt",
+                ex -> {
+                    hits.incrementAndGet();
+                    ex.getResponseHeaders()
+                            .add("Location", "http://localhost:" + port + "/r-final.txt");
+                    ex.sendResponseHeaders(302, -1);
+                    ex.close();
+                });
+        server.createContext(
+                "/r-final.txt",
+                ex -> {
+                    hits.incrementAndGet();
+                    ex.sendResponseHeaders(200, body.length);
+                    ex.getResponseBody().write(body);
+                    ex.close();
+                });
+        server.start();
+        try {
+            RuntimeConfig cfg = baseConfig();
+            HttpClient client =
+                    HttpClient.newBuilder()
+                            .connectTimeout(java.time.Duration.ofMillis(cfg.fetchConnectTimeoutMs()))
+                            .followRedirects(HttpClient.Redirect.NEVER)
+                            .build();
+            PolitenessGate gate = new PolitenessGate(cfg, client, "http://127.0.0.1:" + port);
+            gate.ensureLoaded("127.0.0.1");
+            assertEquals(2, hits.get(), "hop-by-hop redirect should fetch robots hop on 127.0.0.1 then final on localhost");
+            assertEquals(RobotDecisionType.ALLOWED, gate.evaluate("http://127.0.0.1/p").type());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void ensureLoaded_twoHops_respectsMaxRedirects() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         int port = server.getAddress().getPort();
@@ -103,9 +144,10 @@ class PolitenessGateRobotsRedirectLoopbackTest {
             PolitenessGate gate =
                     new PolitenessGate(cfg, client, "http://127.0.0.1:" + port);
             gate.ensureLoaded("127.0.0.1");
-            assertTrue(
-                    gate.getRulesForDomain("127.0.0.1").isAllowNone(),
-                    "hop limit exceeded should install deny-all fallback rules");
+            assertEquals(
+                    RobotDecisionType.TEMPORARY_DENY,
+                    gate.evaluate("http://127.0.0.1/page").type(),
+                    "hop limit exceeded is a transient robots failure (TS-06), not permanent disallow");
         } finally {
             server.stop(0);
         }

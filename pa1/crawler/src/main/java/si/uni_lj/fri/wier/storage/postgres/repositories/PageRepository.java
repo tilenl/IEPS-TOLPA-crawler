@@ -377,8 +377,18 @@ public final class PageRepository {
     }
 
     public InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore) {
+        return insertFrontierIfAbsent(canonicalUrl, siteId, relevanceScore, Instant.now());
+    }
+
+    /**
+     * Inserts a FRONTIER row with an explicit {@code next_attempt_at} (TS-06 deferred enqueue after robots
+     * TEMPORARY_DENY).
+     */
+    public InsertFrontierResult insertFrontierIfAbsent(
+            String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt) {
+        Objects.requireNonNull(nextAttemptAt, "nextAttemptAt");
         try (Connection connection = dataSource.getConnection()) {
-            return insertFrontierIfAbsent(connection, canonicalUrl, siteId, relevanceScore);
+            return insertFrontierIfAbsent(connection, canonicalUrl, siteId, relevanceScore, nextAttemptAt);
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to insert frontier url=" + canonicalUrl, e);
         }
@@ -483,13 +493,13 @@ public final class PageRepository {
     }
 
     private InsertFrontierResult insertFrontierIfAbsent(
-            Connection connection, String canonicalUrl, long siteId, double relevanceScore)
+            Connection connection, String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt)
             throws SQLException {
         // NOTE: DO UPDATE SET url = EXCLUDED.url is a no-op that still runs so xmax distinguishes insert vs conflict.
         final String sql =
                 """
                 INSERT INTO crawldb.page(site_id, page_type_code, url, relevance_score, next_attempt_at, attempt_count)
-                VALUES (?, 'FRONTIER', ?, ?, now(), 0)
+                VALUES (?, 'FRONTIER', ?, ?, ?, 0)
                 ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url
                 RETURNING id, (xmax = 0) AS inserted
                 """;
@@ -497,6 +507,7 @@ public final class PageRepository {
             statement.setLong(1, siteId);
             statement.setString(2, canonicalUrl);
             statement.setDouble(3, relevanceScore);
+            statement.setTimestamp(4, Timestamp.from(nextAttemptAt));
             try (ResultSet rs = statement.executeQuery()) {
                 if (!rs.next()) {
                     throw new SQLException("insertFrontierIfAbsent returned no rows");
@@ -651,7 +662,12 @@ public final class PageRepository {
             }
 
             InsertFrontierResult insertResult =
-                    insertFrontierIfAbsent(connection, discovered.canonicalUrl(), discovered.siteId(), discovered.relevanceScore());
+                    insertFrontierIfAbsent(
+                            connection,
+                            discovered.canonicalUrl(),
+                            discovered.siteId(),
+                            discovered.relevanceScore(),
+                            Instant.now());
             // Page id is returned for both new frontier rows and existing URL conflicts (idempotent ingest).
             accepted.add(insertResult.pageId());
             insertLink(connection, discovered.fromPageId(), insertResult.pageId());

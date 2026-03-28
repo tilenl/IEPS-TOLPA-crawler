@@ -1,5 +1,6 @@
 package si.uni_lj.fri.wier.contracts;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Optional;
 
@@ -22,6 +23,12 @@ public interface Storage {
     IngestResult ingestDiscoveredUrls(Collection<DiscoveredUrl> discoveredUrls);
 
     InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore);
+
+    /**
+     * Frontier insert with explicit {@code next_attempt_at} (TS-06 robots TEMPORARY_DENY deferral).
+     */
+    InsertFrontierResult insertFrontierIfAbsent(
+            String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt);
 
     /**
      * Terminal {@code PROCESSING → ERROR} with diagnostics (TS-10 / TS-12).

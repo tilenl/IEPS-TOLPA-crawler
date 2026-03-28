@@ -5,8 +5,12 @@ import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.config.ConfigRemediation;
 
 /**
- * Stage A ingestion (stub). When budget or frontier limits apply, logs MUST include {@code configKey}
+ * Stage A ingestion logging (stub). When budget or frontier limits apply, logs MUST include {@code configKey}
  * and {@code remediationHint} (TS-15).
+ *
+ * <p>Robots-aware frontier insertion is implemented by {@link EnqueueCoordinator} (TS-06). TS-02 should call it
+ * (or equivalent) when wiring discovery into the DB; {@link si.uni_lj.fri.wier.cli.Main} retains a shared
+ * {@link si.uni_lj.fri.wier.downloader.politeness.PolitenessGate} for that integration.
  */
 public final class EnqueueService {
 

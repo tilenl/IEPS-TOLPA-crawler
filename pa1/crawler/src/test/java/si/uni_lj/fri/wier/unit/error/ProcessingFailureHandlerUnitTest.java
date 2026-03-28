@@ -77,6 +77,12 @@ class ProcessingFailureHandlerUnitTest {
                     }
 
                     @Override
+                    public si.uni_lj.fri.wier.contracts.InsertFrontierResult insertFrontierIfAbsent(
+                            String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
                     public void markPageAsError(long pageId, String category, String message) {
                         throw new AssertionError("should not terminal");
                     }
@@ -154,6 +160,12 @@ class ProcessingFailureHandlerUnitTest {
                     @Override
                     public si.uni_lj.fri.wier.contracts.InsertFrontierResult insertFrontierIfAbsent(
                             String canonicalUrl, long siteId, double relevanceScore) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public si.uni_lj.fri.wier.contracts.InsertFrontierResult insertFrontierIfAbsent(
+                            String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt) {
                         throw new UnsupportedOperationException();
                     }
 

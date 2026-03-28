@@ -1,5 +1,6 @@
 package si.uni_lj.fri.wier.storage.postgres;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Optional;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
@@ -49,6 +50,12 @@ public final class PostgresStorage implements Storage {
     public InsertFrontierResult insertFrontierIfAbsent(
             String canonicalUrl, long siteId, double relevanceScore) {
         return pageRepository.insertFrontierIfAbsent(canonicalUrl, siteId, relevanceScore);
+    }
+
+    @Override
+    public InsertFrontierResult insertFrontierIfAbsent(
+            String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt) {
+        return pageRepository.insertFrontierIfAbsent(canonicalUrl, siteId, relevanceScore, nextAttemptAt);
     }
 
     @Override
