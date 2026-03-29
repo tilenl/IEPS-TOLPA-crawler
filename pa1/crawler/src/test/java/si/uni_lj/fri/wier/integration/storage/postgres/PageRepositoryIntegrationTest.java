@@ -942,6 +942,37 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void minNextAttemptAtForFrontierDomain_emptyWhenNoMatchingFrontier() {
+        repository.ensureSite("ghost.example").orElseThrow();
+        assertTrue(repository.minNextAttemptAtForFrontierDomain("ghost.example").isEmpty());
+    }
+
+    @Test
+    void minNextAttemptAtForFrontierDomain_returnsEarliestAmongFrontierRows() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long laterId = repository.insertFrontierIfAbsent("https://example.com/later-min", siteId, 0.5).pageId();
+        long soonerId = repository.insertFrontierIfAbsent("https://example.com/sooner-min", siteId, 0.5).pageId();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now() + interval '2 hours' WHERE id = ?")) {
+            ps.setLong(1, laterId);
+            ps.executeUpdate();
+        }
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET next_attempt_at = now() + interval '30 seconds' WHERE id = ?")) {
+            ps.setLong(1, soonerId);
+            ps.executeUpdate();
+        }
+        Optional<Instant> min = repository.minNextAttemptAtForFrontierDomain("example.com");
+        assertTrue(min.isPresent());
+        assertTrue(min.get().isAfter(Instant.now().minusSeconds(5)));
+        assertTrue(min.get().isBefore(Instant.now().plus(Duration.ofMinutes(10))));
+    }
+
+    @Test
     void insertFrontierIfAbsent_invokesFrontierWakeNotifier() {
         List<String> wakes = new ArrayList<>();
         PageRepository repo =

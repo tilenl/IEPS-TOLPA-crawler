@@ -32,7 +32,9 @@ class CrawlScopesTest {
     @Test
     void hostMatches_githubScope() {
         assertTrue(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "github.com"));
-        assertTrue(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "api.github.com"));
+        assertFalse(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "api.github.com"));
+        assertFalse(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "stars.github.com"));
+        assertFalse(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "www.github.com"));
         assertFalse(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "example.com"));
         assertFalse(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "github.io"));
         assertFalse(CrawlScopes.hostMatchesCrawlScope(CrawlScope.GITHUB, "raw.githubusercontent.com"));

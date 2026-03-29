@@ -22,7 +22,8 @@ public final class GithubTopicsDiscoveryBlock {
 
     /**
      * @param canonicalUrl absolute URL after TS-05 canonicalization
-     * @return true when host is exactly {@code github.com} and path is {@code /topics} or starts with {@code /topics/}
+     * @return true when host is {@code github.com} or {@code www.github.com} and path is {@code /topics} or starts with
+     *     {@code /topics/}
      */
     public static boolean isBlockedGithubTopicsDiscoveryUrl(String canonicalUrl) {
         Objects.requireNonNull(canonicalUrl, "canonicalUrl");
@@ -31,7 +32,8 @@ public final class GithubTopicsDiscoveryBlock {
             return false;
         }
         try {
-            if (!"github.com".equals(HostKeys.domainKey(trimmed))) {
+            String host = HostKeys.domainKey(trimmed);
+            if (!"github.com".equals(host) && !"www.github.com".equals(host)) {
                 return false;
             }
         } catch (IllegalArgumentException e) {

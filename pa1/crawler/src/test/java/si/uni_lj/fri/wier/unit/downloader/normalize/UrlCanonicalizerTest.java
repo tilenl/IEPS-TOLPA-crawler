@@ -62,6 +62,20 @@ class UrlCanonicalizerTest {
     }
 
     @Test
+    void www_githubCom_host_rewrittenToApex() {
+        CanonicalizationResult r =
+                canonicalizer.canonicalize("https://www.github.com/onnx/models", null);
+        assertAccepted(r, "https://github.com/onnx/models");
+    }
+
+    @Test
+    void www_githubCom_topics_preservesPathAndTrailingSlash() {
+        CanonicalizationResult r =
+                canonicalizer.canonicalize("https://WWW.GitHub.Com/topics/tensorvision/", null);
+        assertAccepted(r, "https://github.com/topics/tensorvision/");
+    }
+
+    @Test
     void query_dropTabAndRefCta() {
         CanonicalizationResult r =
                 canonicalizer.canonicalize("https://github.com/a/b?tab=readme&ref_cta=signup", null);

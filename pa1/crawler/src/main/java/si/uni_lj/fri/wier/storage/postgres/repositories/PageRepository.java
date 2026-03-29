@@ -400,6 +400,39 @@ public final class PageRepository {
         }
     }
 
+    /**
+     * Earliest {@code next_attempt_at} among {@code FRONTIER} rows for {@code crawlDomain}, or empty when none.
+     * Lets the domain pump reschedule a wake when a claim returns no eligible row but delayed frontier work remains.
+     */
+    public Optional<Instant> minNextAttemptAtForFrontierDomain(String crawlDomain) {
+        Objects.requireNonNull(crawlDomain, "crawlDomain");
+        final String sql =
+                """
+                SELECT min(p.next_attempt_at)
+                FROM crawldb.page p
+                INNER JOIN crawldb.site s ON s.id = p.site_id
+                WHERE p.page_type_code = 'FRONTIER'
+                  AND s.domain = ?
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, crawlDomain);
+            try (ResultSet rs = statement.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                Timestamp ts = rs.getTimestamp(1);
+                if (ts == null) {
+                    return Optional.empty();
+                }
+                return Optional.of(ts.toInstant());
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException(
+                    "Failed min(next_attempt_at) for FRONTIER domain=" + crawlDomain, e);
+        }
+    }
+
     private void notifyFrontierDomainWake(String canonicalUrl) {
         if (frontierDomainWakeNotifier == null
                 || canonicalUrl == null

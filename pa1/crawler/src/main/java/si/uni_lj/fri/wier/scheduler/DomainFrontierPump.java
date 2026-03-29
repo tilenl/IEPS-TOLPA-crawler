@@ -185,6 +185,7 @@ public final class DomainFrontierPump {
                     frontierStore.claimNextEligibleFrontierForDomain(
                             pumpWorkerId, leaseDuration, domain, leaseRecoveryBatchSize);
             if (claimed.isEmpty()) {
+                scheduleDomainAfterEmptyClaim(domain);
                 return;
             }
             row = claimed.get();
@@ -281,6 +282,19 @@ public final class DomainFrontierPump {
                     "executor rejected pipeline task: " + e.getMessage());
             scheduleDomainForWork(domain);
         }
+    }
+
+    private void scheduleDomainAfterEmptyClaim(String domain) {
+        if (shutdown.get()) {
+            return;
+        }
+        Optional<Instant> minNext = pageRepository.minNextAttemptAtForFrontierDomain(domain);
+        if (minNext.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long due = Math.max(now, minNext.get().toEpochMilli());
+        scheduleDomainAtEpochMs(domain, due);
     }
 
     private void clearInflightAndRescheduleRow(FrontierRow row, String errorCategory, String diagnostic) {

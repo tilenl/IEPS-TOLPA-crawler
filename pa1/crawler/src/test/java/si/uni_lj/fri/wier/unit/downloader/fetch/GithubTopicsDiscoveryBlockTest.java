@@ -18,6 +18,12 @@ class GithubTopicsDiscoveryBlockTest {
     }
 
     @Test
+    void blocks_wwwGithubCom_topicsPaths() {
+        assertTrue(GithubTopicsDiscoveryBlock.isBlockedGithubTopicsDiscoveryUrl("https://www.github.com/topics/foo"));
+        assertTrue(GithubTopicsDiscoveryBlock.isBlockedGithubTopicsDiscoveryUrl("https://WWW.GITHUB.COM/topics/bar/"));
+    }
+
+    @Test
     void allows_githubCom_repos_and_other_hosts() {
         assertFalse(GithubTopicsDiscoveryBlock.isBlockedGithubTopicsDiscoveryUrl("https://github.com/org/repo"));
         assertFalse(GithubTopicsDiscoveryBlock.isBlockedGithubTopicsDiscoveryUrl("https://github.com/topicsextra"));

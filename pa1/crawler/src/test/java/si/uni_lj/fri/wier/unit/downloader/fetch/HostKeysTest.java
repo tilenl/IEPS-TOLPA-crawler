@@ -23,7 +23,8 @@ class HostKeysTest {
     @Test
     void isGitHubHost() {
         assertTrue(HostKeys.isGitHubHost("github.com"));
-        assertTrue(HostKeys.isGitHubHost("api.github.com"));
+        assertFalse(HostKeys.isGitHubHost("api.github.com"));
+        assertFalse(HostKeys.isGitHubHost("www.github.com"));
         assertFalse(HostKeys.isGitHubHost("example.com"));
     }
 }

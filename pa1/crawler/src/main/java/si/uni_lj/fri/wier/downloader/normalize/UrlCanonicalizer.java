@@ -36,7 +36,8 @@ import si.uni_lj.fri.wier.contracts.Canonicalizer;
  * Canonicalizes raw discovered URLs to deterministic {@code http(s)} strings per TS-05.
  *
  * <p>Pipeline: resolve to absolute URI string → {@link ParsedUrl} + WHATWG → strip fragment → keep only {@code page}
- * query parameter (sorted) → enforce scheme allowlist and max length.
+ * query parameter (sorted) → rewrite {@code www.github.com} host to {@code github.com} → enforce scheme allowlist and max
+ * length.
  */
 public final class UrlCanonicalizer implements Canonicalizer {
 
@@ -60,6 +61,7 @@ public final class UrlCanonicalizer implements Canonicalizer {
             org.netpreserve.urlcanon.Canonicalizer.WHATWG.canonicalize(parsed);
             stripFragment(parsed);
             applyGitHubStyleQueryAllowlist(parsed);
+            rewriteWwwGithubComToApex(parsed);
             String canonical = parsed.toString();
             if (canonical.isBlank()) {
                 return reject("INVALID_URL", trimmedRaw, baseUrl);
@@ -113,6 +115,20 @@ public final class UrlCanonicalizer implements Canonicalizer {
     private static void stripFragment(ParsedUrl parsed) {
         parsed.setFragment("");
         parsed.setHashSign("");
+    }
+
+    /**
+     * Maps {@code www.github.com} to {@code github.com} so dedup, crawl scope, and topic-path discovery blocking align
+     * with operator seeds. Path and trailing slash are unchanged.
+     */
+    private static void rewriteWwwGithubComToApex(ParsedUrl parsed) {
+        String host = parsed.getHost();
+        if (host == null || host.isEmpty()) {
+            return;
+        }
+        if ("www.github.com".equalsIgnoreCase(host)) {
+            parsed.setHost("github.com");
+        }
     }
 
     /**

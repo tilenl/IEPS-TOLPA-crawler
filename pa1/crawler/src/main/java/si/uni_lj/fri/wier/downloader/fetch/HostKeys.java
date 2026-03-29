@@ -34,11 +34,14 @@ public final class HostKeys {
         return host.toLowerCase(Locale.ROOT);
     }
 
-    /** True when the host is {@code github.com} or a subdomain (TS-03 plain-HTTP preference). */
+    /**
+     * True when the host is exactly {@code github.com} (crawl scope / politeness alignment). Subdomains such as {@code
+     * api.github.com} are out of scope for frontier expansion.
+     */
     public static boolean isGitHubHost(String domainKey) {
         if (domainKey == null || domainKey.isBlank()) {
             return false;
         }
-        return "github.com".equals(domainKey) || domainKey.endsWith(".github.com");
+        return "github.com".equals(domainKey);
     }
 }

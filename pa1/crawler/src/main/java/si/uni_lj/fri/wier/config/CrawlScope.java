@@ -8,6 +8,6 @@ package si.uni_lj.fri.wier.config;
 
 /** Crawl host set for frontier and {@code crawldb.site} robots persistence. */
 public enum CrawlScope {
-    /** {@code github.com} and {@code *.github.com} only. */
+    /** {@code github.com} (apex) only; not {@code *.github.com} subdomains. */
     GITHUB
 }
