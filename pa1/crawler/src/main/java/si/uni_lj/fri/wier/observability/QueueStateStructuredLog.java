@@ -67,20 +67,32 @@ public final class QueueStateStructuredLog {
     /**
      * Logs a stale-lease recovery batch ({@code PROCESSING → FRONTIER}). Per-row {@code attemptCount} /
      * {@code nextAttemptAt} vary; SQL sets {@code next_attempt_at = now()} for recovered rows.
+     *
+     * @param crawlDomainContext host key for the claim path that triggered this global sweep (e.g. per-domain
+     *     pump); {@code null} or blank logs as {@code n/a} because recovery is not scoped by domain in SQL.
      */
     public static void logLeaseRecoveryBatch(
-            Logger log, int rowsRecovered, String reason, String recovererIdentity) {
+            Logger log,
+            int rowsRecovered,
+            String reason,
+            String recovererIdentity,
+            String crawlDomainContext) {
         if (!log.isInfoEnabled() || rowsRecovered <= 0) {
             return;
         }
+        String domainField =
+                crawlDomainContext == null || crawlDomainContext.isBlank()
+                        ? "n/a"
+                        : crawlDomainContext;
         log.info(
                 "event={} transition=LEASE_RECOVERY result=OK fromState={} toState={} rowsRecovered={}"
-                        + " nextAttemptAt=now attemptCount=n/a workerId={} reason={}",
+                        + " nextAttemptAt=now attemptCount=n/a workerId={} reason={} crawlDomain={}",
                 StructuredCrawlerLog.EVENT_QUEUE_STATE_TRANSITION,
                 STATE_PROCESSING,
                 STATE_FRONTIER,
                 rowsRecovered,
                 recovererIdentity,
-                reason);
+                reason,
+                domainField);
     }
 }

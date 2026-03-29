@@ -54,9 +54,8 @@ public final class FrontierStore {
     public Optional<FrontierRow> claimNextEligibleFrontier(
             String workerId, Duration leaseDuration, int leaseRecoveryBatchSize) {
         // Recover before candidate selection so expired leases cannot starve the frontier queue.
-        log.debug("pre-claim stale lease recovery batch workerId={}", workerId);
         pageRepository.recoverExpiredLeases(
-                Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId);
+                Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId, null);
         Optional<FrontierRow> claimed = pageRepository.claimNextEligibleFrontier(workerId, leaseDuration);
         return finishClaim(workerId, claimed);
     }
@@ -67,9 +66,8 @@ public final class FrontierStore {
      */
     public Optional<FrontierRow> claimNextEligibleFrontierForDomain(
             String workerId, Duration leaseDuration, String crawlDomain, int leaseRecoveryBatchSize) {
-        log.debug("pre-claim stale lease recovery batch workerId={} domain={}", workerId, crawlDomain);
         pageRepository.recoverExpiredLeases(
-                Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId);
+                Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId, crawlDomain);
         Optional<FrontierRow> claimed =
                 pageRepository.claimNextEligibleFrontierForDomain(workerId, leaseDuration, crawlDomain);
         return finishClaim(workerId, claimed);
@@ -77,7 +75,7 @@ public final class FrontierStore {
 
     private Optional<FrontierRow> finishClaim(String workerId, Optional<FrontierRow> claimed) {
         if (claimed.isPresent()) {
-            // TS-15 queue-state: one structured line per successful claim (recovery batches log inside PageRepository).
+            // TS-15 queue-state: one structured line per successful claim (lease recovery logs in PageRepository).
             QueueStateStructuredLog.logFrontierClaim(log, workerId, claimed.get());
         }
         refreshFrontierQueueMetrics();

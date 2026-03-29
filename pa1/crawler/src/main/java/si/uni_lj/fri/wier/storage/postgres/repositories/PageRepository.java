@@ -615,9 +615,14 @@ public final class PageRepository {
      * Stale-lease recovery (TS-07): {@code FOR UPDATE SKIP LOCKED} on the candidate set so concurrent
      * recoverers do not block each other on disjoint rows. Diagnostic columns follow TS-10 storage notes.
      *
+     * <p>Logs once per call (DEBUG when no rows reclaimed, structured INFO when {@code rowsRecovered &gt; 0}).
+     *
      * @param recovererIdentity who is performing recovery (for application logs; TS-07 worker identity)
+     * @param crawlDomainContext when non-blank, included in log lines as {@code crawlDomain=} (claim path that
+     *     triggered this global sweep); recovery SQL is not filtered by domain.
      */
-    public int recoverExpiredLeases(int batchSize, String reason, String recovererIdentity) {
+    public int recoverExpiredLeases(
+            int batchSize, String reason, String recovererIdentity, String crawlDomainContext) {
         final String sql =
                 """
                 WITH stale AS (
@@ -654,17 +659,28 @@ public final class PageRepository {
                 crawlMetrics.recordLeaseRecoveryBatch(updated);
             }
             if (updated > 0) {
-                QueueStateStructuredLog.logLeaseRecoveryBatch(log, updated, reason, recovererIdentity);
+                QueueStateStructuredLog.logLeaseRecoveryBatch(
+                        log, updated, reason, recovererIdentity, crawlDomainContext);
             } else if (log.isDebugEnabled()) {
+                String domainField =
+                        crawlDomainContext == null || crawlDomainContext.isBlank()
+                                ? "n/a"
+                                : crawlDomainContext;
                 log.debug(
-                        "stale lease recovery batch reason={} recoverer={} (no rows)",
+                        "stale lease recovery batch reason={} recoverer={} rowsRecovered=0 crawlDomain={}",
                         reason,
-                        recovererIdentity);
+                        recovererIdentity,
+                        domainField);
             }
             return updated;
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to recover expired leases", e);
         }
+    }
+
+    /** @see #recoverExpiredLeases(int, String, String, String) */
+    public int recoverExpiredLeases(int batchSize, String reason, String recovererIdentity) {
+        return recoverExpiredLeases(batchSize, reason, recovererIdentity, null);
     }
 
     /**
