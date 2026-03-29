@@ -40,9 +40,11 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.contracts.RateLimitDecision;
 import si.uni_lj.fri.wier.contracts.RateLimiterRegistry;
@@ -95,13 +97,19 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
     /** Optional TS-15 metrics (rate-limit waits, robots fetch classes, temporary-deny gauge refresh). */
     private final CrawlerMetrics crawlerMetrics;
 
+    /**
+     * When {@link #persistSiteMetadata(String, String, String)} runs, only domains passing this test are written to
+     * {@code crawldb.site}; defaults from {@link RuntimeConfig#crawlScope()} when the 7-arg ctor passes {@code null}.
+     */
+    private final Predicate<String> robotsSiteMetadataPersistence;
+
     public PolitenessGate(RuntimeConfig config) {
-        this(config, buildHttpClient(config), null, null, Clock.systemUTC(), null);
+        this(config, buildHttpClient(config), null, null, Clock.systemUTC(), null, null);
     }
 
     /** Visible for tests: custom {@link HttpClient} (redirect policy, version). */
     public PolitenessGate(RuntimeConfig config, HttpClient httpClient) {
-        this(config, httpClient, null, null, Clock.systemUTC(), null);
+        this(config, httpClient, null, null, Clock.systemUTC(), null, null);
     }
 
     /**
@@ -109,7 +117,7 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
      * http://127.0.0.1:8080}); first fetch is {@code origin + "/robots.txt"}.
      */
     public PolitenessGate(RuntimeConfig config, HttpClient httpClient, String robotsBaseUrlOverride) {
-        this(config, httpClient, robotsBaseUrlOverride, null, Clock.systemUTC(), null);
+        this(config, httpClient, robotsBaseUrlOverride, null, Clock.systemUTC(), null, null);
     }
 
     /**
@@ -124,7 +132,7 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
             String robotsBaseUrlOverride,
             RobotsSiteMetadataSink siteMetadataSink,
             Clock clock) {
-        this(config, httpClient, robotsBaseUrlOverride, siteMetadataSink, clock, null);
+        this(config, httpClient, robotsBaseUrlOverride, siteMetadataSink, clock, null, null);
     }
 
     /**
@@ -137,12 +145,31 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
             RobotsSiteMetadataSink siteMetadataSink,
             Clock clock,
             CrawlerMetrics crawlerMetrics) {
+        this(config, httpClient, robotsBaseUrlOverride, siteMetadataSink, clock, crawlerMetrics, null);
+    }
+
+    /**
+     * @param robotsSiteMetadataPersistence when {@code null}, uses {@link CrawlScopes#persistencePredicate} for
+     *     {@link RuntimeConfig#crawlScope()}
+     */
+    public PolitenessGate(
+            RuntimeConfig config,
+            HttpClient httpClient,
+            String robotsBaseUrlOverride,
+            RobotsSiteMetadataSink siteMetadataSink,
+            Clock clock,
+            CrawlerMetrics crawlerMetrics,
+            Predicate<String> robotsSiteMetadataPersistence) {
         this.config = Objects.requireNonNull(config, "config");
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient");
         this.robotsBaseUrlOverride = robotsBaseUrlOverride;
         this.siteMetadataSink = siteMetadataSink;
         this.clock = Objects.requireNonNull(clock, "clock");
         this.crawlerMetrics = crawlerMetrics;
+        this.robotsSiteMetadataPersistence =
+                robotsSiteMetadataPersistence != null
+                        ? robotsSiteMetadataPersistence
+                        : CrawlScopes.persistencePredicate(config.crawlScope());
         this.robotsParser = new SimpleRobotRulesParser();
         this.robotsPolicyCache =
                 Caffeine.newBuilder()
@@ -390,6 +417,9 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
 
     private void persistSiteMetadata(String domain, String robotsUtf8, String sitemapText) {
         if (siteMetadataSink == null) {
+            return;
+        }
+        if (!robotsSiteMetadataPersistence.test(domain)) {
             return;
         }
         try {

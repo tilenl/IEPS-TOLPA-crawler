@@ -14,6 +14,7 @@
 package si.uni_lj.fri.wier.queue.enqueue;
 
 import java.util.Objects;
+import java.util.function.Predicate;
 import si.uni_lj.fri.wier.contracts.InsertFrontierResult;
 import si.uni_lj.fri.wier.contracts.RobotDecision;
 import si.uni_lj.fri.wier.contracts.RobotDecisionType;
@@ -28,10 +29,13 @@ public final class EnqueueCoordinator {
 
     private final RobotsTxtCache robotsTxtCache;
     private final Storage storage;
+    private final Predicate<String> hostAllowedForCrawl;
 
-    public EnqueueCoordinator(RobotsTxtCache robotsTxtCache, Storage storage) {
+    public EnqueueCoordinator(
+            RobotsTxtCache robotsTxtCache, Storage storage, Predicate<String> hostAllowedForCrawl) {
         this.robotsTxtCache = Objects.requireNonNull(robotsTxtCache, "robotsTxtCache");
         this.storage = Objects.requireNonNull(storage, "storage");
+        this.hostAllowedForCrawl = Objects.requireNonNull(hostAllowedForCrawl, "hostAllowedForCrawl");
     }
 
     /**
@@ -45,6 +49,9 @@ public final class EnqueueCoordinator {
     public EnqueueResult tryEnqueue(String canonicalUrl, long siteId, double relevanceScore) {
         Objects.requireNonNull(canonicalUrl, "canonicalUrl");
         String domain = HostKeys.domainKey(canonicalUrl);
+        if (!hostAllowedForCrawl.test(domain)) {
+            return EnqueueResult.rejected("CRAWL_SCOPE");
+        }
         robotsTxtCache.ensureLoaded(domain);
         RobotDecision decision = robotsTxtCache.evaluate(canonicalUrl);
         if (decision.type() == RobotDecisionType.DISALLOWED) {

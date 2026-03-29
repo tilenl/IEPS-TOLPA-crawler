@@ -13,6 +13,8 @@ import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import si.uni_lj.fri.wier.config.CrawlScope;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.contracts.FetchContext;
 import si.uni_lj.fri.wier.contracts.FetchResult;
@@ -46,7 +48,7 @@ class WorkerLoopUnitTest {
         FrontierRow row =
                 new FrontierRow(
                         7L,
-                        "https://example.com/page",
+                        "https://github.com/org/page",
                         3L,
                         0.5,
                         0,
@@ -129,7 +131,7 @@ class WorkerLoopUnitTest {
                         new FetchResult(
                                 200,
                                 "text/html; charset=utf-8",
-                                "<html><body><a href=\"https://other.example/x\">x</a></body></html>",
+                                "<html><body><a href=\"https://github.com/other/x\">x</a></body></html>",
                                 t0);
 
         Path kw = Paths.get(WorkerLoopUnitTest.class.getResource("/keywords-valid.json").toURI());
@@ -137,7 +139,8 @@ class WorkerLoopUnitTest {
                 new HtmlParser(
                         new UrlCanonicalizer(),
                         new KeywordRelevanceScorer(kw),
-                        domain -> 5L);
+                        domain -> 5L,
+                        CrawlScopes.persistencePredicate(CrawlScope.GITHUB));
 
         RuntimeConfig cfg = testConfig();
         Clock clock = Clock.fixed(t0, ZoneOffset.UTC);

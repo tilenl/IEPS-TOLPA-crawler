@@ -10,6 +10,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import si.uni_lj.fri.wier.contracts.ExtractedImage;
 import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
+import si.uni_lj.fri.wier.config.CrawlScope;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.downloader.extract.HtmlParser;
 import si.uni_lj.fri.wier.downloader.extract.KeywordRelevanceScorer;
@@ -27,7 +29,8 @@ class HtmlParserUnitTest {
                 new HtmlParser(
                         new UrlCanonicalizer(),
                         scorer,
-                        domain -> 99L);
+                        domain -> 99L,
+                        CrawlScopes.persistencePredicate(CrawlScope.GITHUB));
     }
 
     @Test
@@ -46,7 +49,7 @@ class HtmlParserUnitTest {
                 """
                 <html><body>
                 <button onclick="location.href='/a'">A</button>
-                <span onclick='document.location="https://example.com/b"'>B</span>
+                <span onclick='document.location="https://github.com/other/b"'>B</span>
                 </body></html>
                 """;
         ParseResult r = parser.parse("https://github.com/org/repo", html);
@@ -55,9 +58,37 @@ class HtmlParserUnitTest {
 
     @Test
     void malformedHtml_stillExtractsWhatJsoupCan() {
-        String html = "<html><a href=\"https://example.com/x\">ok</a><unclosed>";
-        ParseResult r = parser.parse("https://base.example/", html);
+        String html = "<html><a href=\"https://github.com/x\">ok</a><unclosed>";
+        ParseResult r = parser.parse("https://github.com/base/repo", html);
         assertEquals(1, r.discoveredUrls().size());
+    }
+
+    @Test
+    void offScope_httpHttpsTarget_omittedFromDiscovered() {
+        String html =
+                "<html><body>"
+                        + "<a href=\"https://example.com/off\">e</a>"
+                        + "<a href=\"https://github.com/on\">g</a>"
+                        + "</body></html>";
+        ParseResult r = parser.parse("https://github.com/org/repo", html);
+        assertEquals(1, r.discoveredUrls().size());
+        assertTrue(r.discoveredUrls().get(0).canonicalUrl().contains("github.com/on"));
+    }
+
+    @Test
+    void onclick_in_head_notExtracted_whenElementStaysInHead() {
+        // HTML5 often reparents invalid <a> from <head> into <body>; use <script> in head so the node stays there.
+        String html =
+                """
+                <html><head>
+                <script onclick="location.href='https://example.com/head-onclick'"></script>
+                </head><body>
+                <a href="https://github.com/body-link">b</a>
+                </body></html>
+                """;
+        ParseResult r = parser.parse("https://github.com/p/repo", html);
+        assertEquals(1, r.discoveredUrls().size());
+        assertTrue(r.discoveredUrls().get(0).canonicalUrl().contains("github.com/body-link"));
     }
 
     @Test

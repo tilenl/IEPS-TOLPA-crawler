@@ -38,6 +38,7 @@ import si.uni_lj.fri.wier.contracts.Storage;
 import si.uni_lj.fri.wier.contracts.Worker;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
 import si.uni_lj.fri.wier.contracts.FetchException;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
 import si.uni_lj.fri.wier.error.CrawlerErrorCategory;
@@ -257,6 +258,9 @@ public final class WorkerLoop implements Worker {
 
         ParseResult withSource = attachSourcePage(parsed, row.pageId());
         for (String d : distinctDiscoveryDomains(withSource)) {
+            if (!CrawlScopes.hostMatchesCrawlScope(config.crawlScope(), d)) {
+                continue;
+            }
             try {
                 robotsTxtCache.ensureLoaded(d);
             } catch (RuntimeException e) {

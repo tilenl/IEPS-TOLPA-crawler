@@ -58,6 +58,7 @@ public record RuntimeConfig(
         int retryMaxAttemptsDbTransient,
         int budgetMaxTotalPages,
         int budgetMaxFrontierRows,
+        CrawlScope crawlScope,
         List<String> seedUrls,
         Path scoringKeywordConfig,
         String dbUrl,
@@ -107,6 +108,7 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.retry.maxAttempts.dbTransient", 5),
                 parseInt(p, "crawler.budget.maxTotalPages", 5000),
                 parseInt(p, "crawler.budget.maxFrontierRows", 20_000),
+                CrawlScopes.parseCrawlScope(p.getProperty("crawler.crawlScope")),
                 parseSeedUrls(Objects.requireNonNull(p.getProperty("crawler.seedUrls"), "crawler.seedUrls")),
                 Path.of(Objects.requireNonNull(p.getProperty("crawler.scoring.keywordConfig"), "crawler.scoring.keywordConfig")),
                 Objects.requireNonNull(p.getProperty("crawler.db.url"), "crawler.db.url"),
@@ -218,6 +220,7 @@ public record RuntimeConfig(
                 "0..20");
         require(budgetMaxTotalPages >= 1, "crawler.budget.maxTotalPages", ">= 1");
         require(budgetMaxFrontierRows >= 100, "crawler.budget.maxFrontierRows", ">= 100");
+        Objects.requireNonNull(crawlScope, "crawlScope");
         require(!seedUrls.isEmpty(), "crawler.seedUrls", "at least one non-blank URL after comma-split");
         for (String u : seedUrls) {
             String lower = u.toLowerCase(Locale.ROOT);

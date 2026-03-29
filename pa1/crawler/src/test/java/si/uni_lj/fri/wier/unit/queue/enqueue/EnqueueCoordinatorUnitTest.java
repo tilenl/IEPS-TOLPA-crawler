@@ -15,7 +15,10 @@ import crawlercommons.robots.SimpleRobotRules;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.Optional;
+import java.util.function.Predicate;
 import org.junit.jupiter.api.Test;
+import si.uni_lj.fri.wier.config.CrawlScope;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.contracts.InsertFrontierResult;
 import si.uni_lj.fri.wier.contracts.IngestResult;
 import si.uni_lj.fri.wier.contracts.LinkInsertResult;
@@ -30,26 +33,28 @@ import si.uni_lj.fri.wier.queue.enqueue.EnqueueCoordinator.EnqueueKind;
 
 class EnqueueCoordinatorUnitTest {
 
+    private static final Predicate<String> GITHUB_ONLY = CrawlScopes.persistencePredicate(CrawlScope.GITHUB);
+
     @Test
     void tryEnqueue_temporaryDeny_insertsWithExplicitNextAttempt() {
         Instant denyUntil = Instant.parse("2026-03-10T15:00:00Z");
         RobotsTxtCache robots =
                 new ScriptedRobotsCache(RobotDecision.temporaryDeny(denyUntil, "ROBOTS_TRANSIENT_HTTP"));
         RecordingStorage storage = new RecordingStorage();
-        EnqueueCoordinator coordinator = new EnqueueCoordinator(robots, storage);
-        var result = coordinator.tryEnqueue("https://example.com/page", 9L, 0.5);
+        EnqueueCoordinator coordinator = new EnqueueCoordinator(robots, storage, GITHUB_ONLY);
+        var result = coordinator.tryEnqueue("https://github.com/org/page", 9L, 0.5);
         assertEquals(EnqueueKind.DEFERRED, result.kind());
         assertNotNull(result.insertResult());
         assertEquals(denyUntil, storage.nextAttemptSeen);
-        assertEquals("https://example.com/page", storage.urlSeen);
+        assertEquals("https://github.com/org/page", storage.urlSeen);
     }
 
     @Test
     void tryEnqueue_disallowed_skipsInsert() {
         RobotsTxtCache robots = new ScriptedRobotsCache(RobotDecision.disallowed("ROBOTS_DISALLOWED"));
         RecordingStorage storage = new RecordingStorage();
-        EnqueueCoordinator coordinator = new EnqueueCoordinator(robots, storage);
-        var result = coordinator.tryEnqueue("https://example.com/search", 1L, 0.1);
+        EnqueueCoordinator coordinator = new EnqueueCoordinator(robots, storage, GITHUB_ONLY);
+        var result = coordinator.tryEnqueue("https://github.com/org/search", 1L, 0.1);
         assertEquals(EnqueueKind.REJECTED, result.kind());
         assertNull(result.insertResult());
         assertNull(storage.urlSeen);
@@ -59,12 +64,23 @@ class EnqueueCoordinatorUnitTest {
     void tryEnqueue_allowed_insertsImmediately() {
         RobotsTxtCache robots = new ScriptedRobotsCache(RobotDecision.allowed());
         RecordingStorage storage = new RecordingStorage();
-        EnqueueCoordinator coordinator = new EnqueueCoordinator(robots, storage);
-        var result = coordinator.tryEnqueue("https://example.com/ok", 2L, 0.8);
+        EnqueueCoordinator coordinator = new EnqueueCoordinator(robots, storage, GITHUB_ONLY);
+        var result = coordinator.tryEnqueue("https://github.com/org/ok", 2L, 0.8);
         assertEquals(EnqueueKind.ACCEPTED, result.kind());
         assertNotNull(result.insertResult());
-        assertEquals("https://example.com/ok", storage.urlSeen);
+        assertEquals("https://github.com/org/ok", storage.urlSeen);
         assertNull(storage.nextAttemptSeen);
+    }
+
+    @Test
+    void tryEnqueue_offScope_rejectsBeforeRobots() {
+        RobotsTxtCache robots = new ScriptedRobotsCache(RobotDecision.allowed());
+        RecordingStorage storage = new RecordingStorage();
+        EnqueueCoordinator coordinator = new EnqueueCoordinator(robots, storage, GITHUB_ONLY);
+        var result = coordinator.tryEnqueue("https://example.com/page", 1L, 0.5);
+        assertEquals(EnqueueKind.REJECTED, result.kind());
+        assertEquals("CRAWL_SCOPE", result.reason());
+        assertNull(storage.urlSeen);
     }
 
     private static final class ScriptedRobotsCache implements RobotsTxtCache, RateLimiterRegistry {

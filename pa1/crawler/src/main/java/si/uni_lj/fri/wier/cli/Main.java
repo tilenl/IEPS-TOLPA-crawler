@@ -19,6 +19,7 @@ import org.postgresql.ds.PGSimpleDataSource;
 import si.uni_lj.fri.wier.app.PreferentialCrawler;
 import si.uni_lj.fri.wier.config.ConfigurationBootstrap;
 import si.uni_lj.fri.wier.config.ConfigurationBootstrap.CliHelpRequestedException;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.downloader.politeness.PolitenessGate;
 import si.uni_lj.fri.wier.observability.CrawlerHeartbeatScheduler;
@@ -91,7 +92,8 @@ public final class Main {
                         null,
                         siteRepository,
                         Clock.systemUTC(),
-                        crawlMetrics);
+                        crawlMetrics,
+                        null);
         sharedPolitenessGate = politenessGate;
         PageRepository pageRepository =
                 new PageRepository(
@@ -104,7 +106,9 @@ public final class Main {
                         enqueueService,
                         crawlMetrics);
         PostgresStorage postgresStorage = new PostgresStorage(pageRepository);
-        sharedEnqueueCoordinator = new EnqueueCoordinator(politenessGate, postgresStorage);
+        sharedEnqueueCoordinator =
+                new EnqueueCoordinator(
+                        politenessGate, postgresStorage, CrawlScopes.persistencePredicate(config.crawlScope()));
         FrontierStore frontierStore = new FrontierStore(pageRepository, crawlMetrics);
         ClaimService.runStartupLeaseRecovery(
                 frontierStore,

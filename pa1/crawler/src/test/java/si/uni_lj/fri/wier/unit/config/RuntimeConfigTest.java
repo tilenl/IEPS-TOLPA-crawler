@@ -9,6 +9,7 @@ import java.nio.file.Paths;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import si.uni_lj.fri.wier.config.CrawlScope;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 
 class RuntimeConfigTest {
@@ -40,6 +41,14 @@ class RuntimeConfigTest {
         assertEquals(3, cfg.retryMaxAttemptsFetchCapacity());
         assertEquals(10, cfg.fetchMaxRedirects());
         assertEquals(45_000, cfg.healthHeartbeatIntervalMs());
+        assertEquals(CrawlScope.GITHUB, cfg.crawlScope());
+    }
+
+    @Test
+    void fromProperties_invalidCrawlScope_throws() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.crawlScope", "UNKNOWN");
+        assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.fromProperties(p, 4));
     }
 
     @Test

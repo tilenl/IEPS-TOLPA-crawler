@@ -5,7 +5,8 @@
  * {@code fromPageId = 0}; the worker MUST rewrite {@code fromPageId} to the leased source page before persistence
  * (TS-02 Stage B).
  *
- * Created: 2026-03. Major revision: full TS-04 implementation (replaces empty stub).
+ * Created: 2026-03. Major revision: full TS-04 implementation (replaces empty stub). Outlinks use {@code body}
+ * descendants only ({@code body a[href]}, {@code body [onclick]}) per TS-04.
  */
 
 package si.uni_lj.fri.wier.downloader.extract;
@@ -14,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.jsoup.Jsoup;
@@ -33,7 +35,8 @@ import si.uni_lj.fri.wier.contracts.RelevanceScorer;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
 
 /**
- * Parses one HTML document into links, onclick targets, images, and light metadata.
+ * Parses one HTML document into links, onclick targets, images, and light metadata. Crawl outlinks are taken only
+ * from {@code <body>} (not {@code <head>}); see TS-04.
  */
 public final class HtmlParser implements Parser {
 
@@ -59,20 +62,27 @@ public final class HtmlParser implements Parser {
     private final Canonicalizer canonicalizer;
     private final RelevanceScorer relevanceScorer;
     private final Function<String, Long> siteIdForDomain;
+    /** Registry host keys allowed as crawl frontier targets ({@link HostKeys#domainKey(String)}). */
+    private final Predicate<String> hostAllowedForCrawlOutlinks;
 
     /**
      * @param canonicalizer TS-05 normalizer for every extracted URL string
      * @param relevanceScorer frontier priority input
      * @param siteIdForDomain maps registry host key (see {@link HostKeys#domainKey(String)}) to {@code site.id};
      *     typically wraps {@link si.uni_lj.fri.wier.contracts.Storage#ensureSite(String)}
+     * @param hostAllowedForCrawlOutlinks when false for a target host, the URL is not added to discovered outlinks
+     *     (images are unaffected)
      */
     public HtmlParser(
             Canonicalizer canonicalizer,
             RelevanceScorer relevanceScorer,
-            Function<String, Long> siteIdForDomain) {
+            Function<String, Long> siteIdForDomain,
+            Predicate<String> hostAllowedForCrawlOutlinks) {
         this.canonicalizer = Objects.requireNonNull(canonicalizer, "canonicalizer");
         this.relevanceScorer = Objects.requireNonNull(relevanceScorer, "relevanceScorer");
         this.siteIdForDomain = Objects.requireNonNull(siteIdForDomain, "siteIdForDomain");
+        this.hostAllowedForCrawlOutlinks =
+                Objects.requireNonNull(hostAllowedForCrawlOutlinks, "hostAllowedForCrawlOutlinks");
     }
 
     @Override
@@ -94,7 +104,7 @@ public final class HtmlParser implements Parser {
 
     private List<DiscoveredUrl> extractHrefLinks(Document doc, String baseCanonical) {
         List<DiscoveredUrl> out = new ArrayList<>();
-        Elements links = doc.select("a[href]");
+        Elements links = doc.select("body a[href]");
         for (Element link : links) {
             try {
                 String absolute = link.attr("abs:href");
@@ -109,7 +119,11 @@ public final class HtmlParser implements Parser {
                     continue;
                 }
                 String canonical = cr.canonicalUrl();
-                long siteId = siteIdForDomain.apply(HostKeys.domainKey(canonical));
+                String targetHost = HostKeys.domainKey(canonical);
+                if (!hostAllowedForCrawlOutlinks.test(targetHost)) {
+                    continue;
+                }
+                long siteId = siteIdForDomain.apply(targetHost);
                 String anchorText = link.text().trim();
                 String context = surroundingText(link);
                 double score = relevanceScorer.compute(canonical, anchorText, context);
@@ -127,7 +141,7 @@ public final class HtmlParser implements Parser {
 
     private List<DiscoveredUrl> extractOnclickLinks(Document doc, String baseCanonical) {
         List<DiscoveredUrl> out = new ArrayList<>();
-        Elements nodes = doc.select("[onclick]");
+        Elements nodes = doc.select("body [onclick]");
         for (Element el : nodes) {
             String onclick = el.attr("onclick");
             if (onclick == null || onclick.isBlank()) {
@@ -150,7 +164,11 @@ public final class HtmlParser implements Parser {
                     continue;
                 }
                 String canonical = cr.canonicalUrl();
-                long siteId = siteIdForDomain.apply(HostKeys.domainKey(canonical));
+                String targetHost = HostKeys.domainKey(canonical);
+                if (!hostAllowedForCrawlOutlinks.test(targetHost)) {
+                    continue;
+                }
+                long siteId = siteIdForDomain.apply(targetHost);
                 String anchorText = el.text().trim();
                 String context = surroundingText(el);
                 double score = relevanceScorer.compute(canonical, anchorText, context);

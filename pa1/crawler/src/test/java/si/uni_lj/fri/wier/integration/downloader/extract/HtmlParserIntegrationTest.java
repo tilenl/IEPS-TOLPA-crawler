@@ -10,6 +10,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import si.uni_lj.fri.wier.contracts.ExtractedImage;
 import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
+import si.uni_lj.fri.wier.config.CrawlScope;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.contracts.ParseResult;
 import si.uni_lj.fri.wier.downloader.extract.HtmlParser;
 import si.uni_lj.fri.wier.downloader.extract.KeywordRelevanceScorer;
@@ -31,7 +33,8 @@ class HtmlParserIntegrationTest {
                 new HtmlParser(
                         new UrlCanonicalizer(),
                         scorer,
-                        domain -> 42L);
+                        domain -> 42L,
+                        CrawlScopes.persistencePredicate(CrawlScope.GITHUB));
     }
 
     @Test
@@ -48,7 +51,7 @@ class HtmlParserIntegrationTest {
                 """
                 <html><body>
                 <button onclick="location.href='/a'">A</button>
-                <span onclick='document.location="https://example.com/b"'>B</span>
+                <span onclick='document.location="https://github.com/other/b"'>B</span>
                 </body></html>
                 """;
         ParseResult r = parser.parse("https://github.com/org/repo", html);
@@ -57,9 +60,22 @@ class HtmlParserIntegrationTest {
 
     @Test
     void malformedHtml_stillExtractsWhatJsoupCan() {
-        String html = "<html><a href=\"https://example.com/x\">ok</a><unclosed>";
-        ParseResult r = parser.parse("https://base.example/", html);
+        String html = "<html><a href=\"https://github.com/x\">ok</a><unclosed>";
+        ParseResult r = parser.parse("https://github.com/base/repo", html);
         assertEquals(1, r.discoveredUrls().size());
+    }
+
+    @Test
+    void bodyLink_extracted_headScriptOnclick_ignored() {
+        String html =
+                """
+                <html><head>
+                <script onclick="location.href='https://example.com/never'"></script>
+                </head><body><a href="/topics/seg">t</a></body></html>
+                """;
+        ParseResult r = parser.parse("https://github.com/org/repo", html);
+        assertEquals(1, r.discoveredUrls().size());
+        assertTrue(r.discoveredUrls().get(0).canonicalUrl().contains("/topics/seg"));
     }
 
     @Test

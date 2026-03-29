@@ -33,5 +33,6 @@ class CrawlerEnvironmentNamesTest {
     @Test
     void propertyKeyToEnvName_mapsSeedUrls() {
         assertEquals("CRAWLER_SEEDURLS", CrawlerEnvironmentNames.propertyKeyToEnvName("crawler.seedUrls"));
+        assertEquals("CRAWLER_CRAWLSCOPE", CrawlerEnvironmentNames.propertyKeyToEnvName("crawler.crawlScope"));
     }
 }

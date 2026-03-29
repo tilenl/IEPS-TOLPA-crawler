@@ -7,7 +7,7 @@ Download/render page content and return normalized fetch response metadata.
 ## Boundary With Parser
 
 - `Fetcher` is responsible for transport and rendering only (status/content-type/body/timestamps/mode);
-- HTML DOM traversal and link/image extraction are parser responsibilities in `TS-04` using `Jsoup`;
+- HTML DOM traversal and link/image extraction are parser responsibilities in `TS-04` using `Jsoup` (crawl outlinks are `body`-scoped per TS-04);
 - `Fetcher` MUST NOT implement link extraction logic to avoid duplicated parsing behavior.
 
 ## Domain-Aware Strategy

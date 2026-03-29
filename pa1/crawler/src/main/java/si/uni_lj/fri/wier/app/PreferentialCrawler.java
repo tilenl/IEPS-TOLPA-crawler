@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.contracts.CanonicalizationResult;
 import si.uni_lj.fri.wier.contracts.Frontier;
@@ -86,7 +87,7 @@ public final class PreferentialCrawler {
         log.info(
                 "effectiveConfig retryBudget jitterMs={} recoveryPathMaxAttempts={} recoveryPathBaseBackoffMs={}"
                         + " retryFetchTimeout={} retryFetchOverload={} retryFetchCapacity={} retryDbTransient={}"
-                        + " budgetMaxTotalPages={} budgetMaxFrontierRows={} seedUrlCount={}",
+                        + " budgetMaxTotalPages={} budgetMaxFrontierRows={} seedUrlCount={} crawlScope={}",
                 config.retryJitterMs(),
                 config.recoveryPathMaxAttempts(),
                 config.recoveryPathBaseBackoffMs(),
@@ -96,7 +97,8 @@ public final class PreferentialCrawler {
                 config.retryMaxAttemptsDbTransient(),
                 config.budgetMaxTotalPages(),
                 config.budgetMaxFrontierRows(),
-                config.seedUrls().size());
+                config.seedUrls().size(),
+                config.crawlScope());
         log.info(
                 "effectiveConfig robotsBucketsHealthScoring robotsCacheTtlHours={} robotsCacheMaxEntries={}"
                         + " temporaryDenyMaxMinutes={} temporaryDenyRetryMinutes={} bucketsCacheTtlHours={}"
@@ -137,7 +139,7 @@ public final class PreferentialCrawler {
 
     /**
      * Inserts configured seed URLs as {@code FRONTIER} rows when {@code crawldb.page} is empty (TS-02); otherwise
-     * returns a skip snapshot. Each seed is canonicalized (TS-05) and scored for frontier priority.
+     * returns a skip snapshot. Each seed is canonicalized (TS-05); relevance uses a temporary fixed score (see below).
      */
     public SeedBootstrapStats bootstrapSeedsIfEmpty(PageRepository pageRepository, Storage storage) throws IOException {
         int configuredNonEmpty = 0;
@@ -151,7 +153,6 @@ public final class PreferentialCrawler {
             return new SeedBootstrapStats(configuredNonEmpty, 0, 0, true);
         }
         UrlCanonicalizer canonicalizer = new UrlCanonicalizer();
-        RelevanceScorer scorer = new KeywordRelevanceScorer(config.scoringKeywordConfig());
         int inserted = 0;
         int rejected = 0;
         for (String raw : config.seedUrls()) {
@@ -171,7 +172,9 @@ public final class PreferentialCrawler {
                     storage.ensureSite(domain)
                             .orElseThrow(
                                     () -> new IllegalStateException("ensureSite returned empty for seed domain=" + domain));
-            double score = scorer.compute(canonical, "", "");
+            // TODO: Revert to full seed scoring via RelevanceScorer (e.g. new KeywordRelevanceScorer(...).compute(
+            // canonical, "", "")) once keyword relevance scoring is fixed for URL-only / empty-context inputs.
+            double score = 1.0;
             InsertFrontierResult ins = storage.insertFrontierIfAbsent(canonical, siteId, score);
             if (ins.inserted()) {
                 inserted++;
@@ -222,7 +225,8 @@ public final class PreferentialCrawler {
                                         .orElseThrow(
                                                 () ->
                                                         new IllegalStateException(
-                                                                "ensureSite missing for domain=" + domain)));
+                                                                "ensureSite missing for domain=" + domain)),
+                        CrawlScopes.persistencePredicate(config.crawlScope()));
         HttpFetcher fetcher = HttpFetcher.from(config, politenessGate, metrics);
         Clock clock = Clock.systemUTC();
 

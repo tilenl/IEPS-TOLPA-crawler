@@ -17,17 +17,19 @@ Parser boundary is strict:
 - `href`, `img`, and `onclick` candidate element selection MUST use Jsoup CSS selectors;
 - regex is used only to parse redirect URLs from `onclick` attribute values.
 
+**Crawl outlinks (href + onclick):** selectors MUST be restricted to **`body` descendants** in the **parsed** DOM (`body a[href]`, `body [onclick]`). Elements that remain under `<head>` after HTML5 tree construction (e.g. typical `<script>` nodes) therefore do not contribute outlinks. **Note:** invalid markup such as `<a href>` placed in `<head>` is often **re-parented into `<body>`** by the HTML5 algorithm; those anchors may still match `body a[href]` and be discovered. Image and metadata extraction are unchanged (images may appear anywhere in the document the parser exposes; title/meta remain head-based via `Document` APIs).
+
 ```java
 Document doc = Jsoup.parse(html, canonicalUrl);
-Elements hrefLinks = doc.select("a[href]");
+Elements hrefLinks = doc.select("body a[href]");
 Elements imageNodes = doc.select("img[src]");
-Elements onclickNodes = doc.select("[onclick]");
+Elements onclickNodes = doc.select("body [onclick]");
 ```
 
 ## Required Extraction Targets
 
-- links from `a[href]`;
-- links from JavaScript `onclick` redirects (`location.href`, `document.location`);
+- links from `body a[href]` (anchors inside `<body>` only);
+- links from JavaScript `onclick` redirects (`location.href`, `document.location`) on elements inside `<body>` only (`body [onclick]`);
 - image references from `img[src]`;
 - anchor/context text for scoring.
 
@@ -36,12 +38,13 @@ Elements onclickNodes = doc.select("[onclick]");
 - resolve all URLs to absolute before ingestion;
 - preserve source `from_page_id` for link graph insertion;
 - normalize anchor/context text for scoring input;
-- skip malformed URLs safely (log and continue).
+- skip malformed URLs safely (log and continue);
+- only nodes under the parsed `<body>` element qualify; nodes remaining under `<head>` do not (see HTML5 reparenting note above).
 
 Concrete extraction example (after resolving and canonicalizing the href per TS-05, and computing relevance):
 
 ```java
-for (Element link : doc.select("a[href]")) {
+for (Element link : doc.select("body a[href]")) {
     String absolute = link.attr("abs:href");
     String anchorText = link.text();
     String canonical = canonicalizer.canonicalize(absolute, canonicalUrl).canonicalUrl();
@@ -57,6 +60,7 @@ for (Element link : doc.select("a[href]")) {
 - parser MUST include text context from clickable element;
 - results are passed to Stage A pipeline identically to `href` links.
 - non-http(s) schemes are rejected in Stage A (`TS-05`) and MUST NOT trigger fetch/persistence.
+- only elements matching `body [onclick]` are considered (same head/body rule as `a[href]`).
 
 Jsoup is used to identify elements containing the `onclick` attribute, but since it does not parse JavaScript, a regular expression is required to extract the target URL from the attribute's string value.
 
@@ -65,7 +69,7 @@ For example, an element might look like:
 
 ```java
 Pattern p = Pattern.compile("(?:location\\.href|document\\.location)\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]");
-for (Element el : doc.select("[onclick]")) {
+for (Element el : doc.select("body [onclick]")) {
     Matcher m = p.matcher(el.attr("onclick"));
     if (m.find()) {
         String extractedUrl = m.group(1);
@@ -94,8 +98,9 @@ Example:
 
 ## Required Tests
 
-- `href` extraction with relative and absolute URLs;
-- `onclick` extraction from multiple assignment variants;
+- `href` extraction with relative and absolute URLs (inside `body`);
+- `onclick` extraction from multiple assignment variants (inside `body`);
+- `onclick` on a node that **remains** under `<head>` after parse (e.g. `<script>` in head) MUST NOT produce discovered crawl outlinks;
 - malformed HTML resilience;
 - image extraction count and `BINARY` content type on each reference.
 

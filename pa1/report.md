@@ -3,6 +3,19 @@
 ## Introduction
 This report describes the implementation of a preferential web crawler for the `github.com` domain, focused on **image segmentation**.
 
+## Crawl scope (host allowlist)
+
+The crawler **only follows and enqueues** discovered HTTP(S) links whose **registry host** is in scope for the active configuration. For the default **`GITHUB`** crawl scope (see `crawler.crawlScope` in runtime configuration), **in-scope hosts are:
+
+- `github.com`
+- any subdomain of `github.com` (e.g. `api.github.com`, `gist.github.com`)
+
+Hosts such as **`github.io`** (GitHub Pages), **`githubusercontent.com`** / **`raw.githubusercontent.com`**, and other third-party domains are **not** in scope for frontier expansion: those URLs are not added as new crawl candidates, and robots content for those hosts is **not** written to `crawldb.site` (in-memory robots rules may still be used for redirect hops only).
+
+**Image references (`img[src]`)** are not filtered by this crawl scope: extracted image URLs may still point at CDNs or other hosts for metadata storage only (no extra crawl of those hosts as HTML pages via the image row alone).
+
+---
+
 ## Crawler Architecture
 The crawler consists of five main components as specified in the assignment:
 1. **HTTP Downloader and Renderer**: Uses Selenium (headless Chromium) for rendering and Java 21 `HttpClient` for optimized fetching.

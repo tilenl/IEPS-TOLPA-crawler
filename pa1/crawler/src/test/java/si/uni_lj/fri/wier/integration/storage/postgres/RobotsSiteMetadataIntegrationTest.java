@@ -30,6 +30,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.downloader.politeness.PolitenessGate;
 import si.uni_lj.fri.wier.storage.postgres.repositories.SiteRepository;
+import si.uni_lj.fri.wier.support.TestRobotsPersistencePolicy;
 
 @Testcontainers(disabledWithoutDocker = true)
 class RobotsSiteMetadataIntegrationTest {
@@ -126,7 +127,14 @@ class RobotsSiteMetadataIntegrationTest {
                             .build();
             SiteRepository siteRepository = new SiteRepository(dataSource);
             PolitenessGate gate =
-                    new PolitenessGate(cfg, client, "http://127.0.0.1:" + port, siteRepository, java.time.Clock.systemUTC());
+                    new PolitenessGate(
+                            cfg,
+                            client,
+                            "http://127.0.0.1:" + port,
+                            siteRepository,
+                            java.time.Clock.systemUTC(),
+                            null,
+                            TestRobotsPersistencePolicy.githubScopePlusLoopback(cfg.crawlScope()));
             gate.ensureLoaded("127.0.0.1");
             try (Connection c = dataSource.getConnection();
                     PreparedStatement ps =

@@ -58,6 +58,7 @@ public final class CrawlerEnvironmentNames {
         "crawler.retry.maxAttempts.dbTransient",
         "crawler.budget.maxTotalPages",
         "crawler.budget.maxFrontierRows",
+        "crawler.crawlScope",
         "crawler.seedUrls",
         "crawler.scoring.keywordConfig",
         "crawler.db.url",
