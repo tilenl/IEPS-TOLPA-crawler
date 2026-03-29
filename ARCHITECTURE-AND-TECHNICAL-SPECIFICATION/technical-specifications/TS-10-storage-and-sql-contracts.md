@@ -19,7 +19,6 @@ Define authoritative database operations and method-to-SQL mappings.
 - `persistFetchOutcomeWithLinks(...)`
 - `upsertSite(...)`
 - `insertImageRef(...)`
-- `insertPageData(...)`
 - `registerContentOwnership(...)`
 - `resolveContentOwner(...)`
 
@@ -71,6 +70,10 @@ Define authoritative database operations and method-to-SQL mappings.
   - that transaction MUST run at **`SERIALIZABLE`** isolation ([TS-09](TS-09-deduplication-url-and-content.md)); it includes content-owner upsert / `page` terminal updates / discovered-link batch / **duplicate→owner link** (when applicable) in a single commit unit;
   - if any non-tolerable DB failure occurs, both outcome and associated discovered-link effects MUST roll back together;
   - expected per-URL policy rejections in a healthy transaction (for example `URL_TOO_LONG` or disallowed canonicalized URL) are recorded as rejected outcomes and do NOT require transaction rollback.
+- **Binary `page_data` placeholder (same transaction as `persistFetchOutcomeWithLinks`)**
+  - for non-HTML (`BINARY`) outcomes, implementation MAY upsert at most one `crawldb.page_data` row per `(page_id, data_type_code)` when the response maps to seeded types `PDF`, `DOC`, `DOCX`, `PPT`, or `PPTX` (from `Content-Type` and/or URL path); **`page_data.data` MUST remain NULL** (no stored payload bytes);
+  - idempotent pattern: `INSERT INTO crawldb.page_data (page_id, data_type_code, data) VALUES (?, ?, NULL) ON CONFLICT (page_id, data_type_code) DO UPDATE SET data = NULL`;
+  - HTML outcomes MUST NOT insert title/meta (or any other) rows into `page_data` for extracted head metadata.
 
 Atomicity clarification (normative):
 - "atomic" means one commit unit for the fetched source page: page outcome + all accepted discovered-link effects become visible together, or none become visible;

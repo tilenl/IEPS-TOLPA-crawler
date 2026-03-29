@@ -50,9 +50,10 @@
 | Migration file | Purpose |
 | --- | --- |
 | `V002__processing_lease_check_schema_v2.sql` | Repair orphan `PROCESSING` rows; add `ck_page_processing_lease`; bump `schema_version` to **2**. |
-| `V003__page_data_metadata_schema_v3.sql` | Add `TITLE` / `META_DESCRIPTION` to `data_type`; unique index on `page_data(page_id, data_type_code)` for TS-10 upserts; bump `schema_version` to **3**. |
+| `V003__page_data_metadata_schema_v3.sql` | Historical: added `TITLE` / `META_DESCRIPTION` to `data_type` and unique index on `page_data(page_id, data_type_code)`; superseded by **V006** for fresh baselines (`crawldb.sql` no longer seeds those types). |
 | `V004__parser_retry_count_schema_v4.sql` | Add `parser_retry_count` on `crawldb.page`; bump `schema_version` to **4**. |
 | `V005__link_no_self_loop_schema_v5.sql` | Delete self-loop `link` rows; add `ck_link_no_self_loop`; bump `schema_version` to **5**. |
+| `V006__remove_page_data_title_meta_schema_v6.sql` | Remove `TITLE` / `META_DESCRIPTION` `page_data` rows and `data_type` codes; bump `schema_version` to **6**. (V003 metadata types are historical only.) |
 
 ## Migration Strategy
 

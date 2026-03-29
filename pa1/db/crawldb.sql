@@ -168,9 +168,7 @@ INSERT INTO crawldb.data_type VALUES
 	('DOC'),
 	('DOCX'),
 	('PPT'),
-	('PPTX'),
-	('TITLE'),
-	('META_DESCRIPTION');
+	('PPTX');
 
 INSERT INTO crawldb.page_type VALUES 
 	('HTML'),
@@ -180,4 +178,4 @@ INSERT INTO crawldb.page_type VALUES
 	('PROCESSING'),
 	('ERROR');
 
-INSERT INTO crawldb.schema_version (id, version) VALUES (1, 5);
+INSERT INTO crawldb.schema_version (id, version) VALUES (1, 6);

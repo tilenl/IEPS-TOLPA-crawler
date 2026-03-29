@@ -484,7 +484,7 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
-    void persistFetchOutcomeWithLinks_persistsPageMetadataToPageData() throws Exception {
+    void persistFetchOutcomeWithLinks_doesNotWritePageDataForHtml() throws Exception {
         long siteId = repository.ensureSite("example.com").orElseThrow();
         long pageId = repository.insertFrontierIfAbsent("https://example.com/meta", siteId, 0.9).pageId();
         repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
@@ -501,18 +501,59 @@ class PageRepositoryIntegrationTest {
 
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =
-                        c.prepareStatement(
-                                "SELECT data_type_code, convert_from(data, 'UTF8') AS txt "
-                                        + "FROM crawldb.page_data WHERE page_id = ? ORDER BY data_type_code")) {
+                        c.prepareStatement("SELECT COUNT(*) FROM crawldb.page_data WHERE page_id = ?")) {
             ps.setLong(1, pageId);
             try (ResultSet rs = ps.executeQuery()) {
                 assertTrue(rs.next());
-                assertEquals("META_DESCRIPTION", rs.getString(1));
-                assertEquals("Meta desc here", rs.getString(2));
+                assertEquals(0, rs.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_binaryUpsertsPageDataWithNullData_forPdfMime() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/doc.bin", siteId, 0.5).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        repository.persistFetchOutcomeWithLinks(
+                new FetchContext(pageId, "https://example.com/doc.bin", siteId, 0, Instant.now()),
+                new FetchResult(200, "application/pdf", "%PDF-1.4 minimal", Instant.now()),
+                ParseResult.empty(),
+                List.of());
+
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "SELECT data_type_code, data FROM crawldb.page_data WHERE page_id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
                 assertTrue(rs.next());
-                assertEquals("TITLE", rs.getString(1));
-                assertEquals("Doc title", rs.getString(2));
+                assertEquals("PDF", rs.getString(1));
+                rs.getBytes(2);
+                assertTrue(rs.wasNull());
                 assertFalse(rs.next());
+            }
+        }
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_binarySkipsPageDataWhenTypeUnmapped() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long pageId = repository.insertFrontierIfAbsent("https://example.com/pic.png", siteId, 0.5).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        repository.persistFetchOutcomeWithLinks(
+                new FetchContext(pageId, "https://example.com/pic.png", siteId, 0, Instant.now()),
+                new FetchResult(200, "image/png", "fake", Instant.now()),
+                ParseResult.empty(),
+                List.of());
+
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT COUNT(*) FROM crawldb.page_data WHERE page_id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals(0, rs.getInt(1));
             }
         }
     }

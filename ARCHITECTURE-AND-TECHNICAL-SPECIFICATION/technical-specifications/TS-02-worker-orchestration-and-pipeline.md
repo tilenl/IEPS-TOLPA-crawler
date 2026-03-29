@@ -132,7 +132,7 @@ Stage B robots pre-fetch gate (normative):
 
 Concrete outcome mapping:
 - HTML response -> `page_type_code='HTML'`, `html_content` persisted;
-- binary target (`.doc/.docx/.ppt/.pptx`) -> `page_type_code='BINARY'`, `page_data` row inserted, `html_content=NULL`;
+- non-HTML response -> `page_type_code='BINARY'`, `html_content=NULL`; when the resource maps to seeded types `PDF`/`DOC`/`DOCX`/`PPT`/`PPTX`, a `page_data` row is upserted with **`data` NULL** (type-only placeholder; no blob persistence);
 - content hash collision -> `page_type_code='DUPLICATE'`, `html_content=NULL`, duplicate linkage persisted.
 
 ## Transaction Boundaries

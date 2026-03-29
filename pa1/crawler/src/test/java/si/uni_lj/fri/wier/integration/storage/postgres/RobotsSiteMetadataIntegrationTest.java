@@ -164,7 +164,7 @@ class RobotsSiteMetadataIntegrationTest {
         p.setProperty("crawler.db.url", POSTGRES.getJdbcUrl());
         p.setProperty("crawler.db.user", POSTGRES.getUsername());
         p.setProperty("crawler.db.password", POSTGRES.getPassword());
-        p.setProperty("crawler.db.expectedSchemaVersion", "5");
+        p.setProperty("crawler.db.expectedSchemaVersion", "6");
         p.setProperty("crawler.seedUrls", "https://example.com/");
         RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 2);
         cfg.validate();

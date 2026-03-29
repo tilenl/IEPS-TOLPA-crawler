@@ -47,7 +47,7 @@ The guide’s defaults are - used for pgAdmin program, to monitor the data insid
 | Password                 | `SecretPassword`                                                             |
 
 
-After the first successful init, `crawldb.schema_version` must report version `**5`**, matching `crawler.db.expectedSchemaVersion` in `application.properties`.
+After the first successful init, `crawldb.schema_version` must report version `**6`**, matching `crawler.db.expectedSchemaVersion` in `application.properties`.
 
 For **verification queries**, **troubleshooting**, and **resetting crawl data** without recreating Docker, keep using `[db/database-setup.md](db/database-setup.md)`.
 
@@ -57,7 +57,7 @@ Edit `[crawler/src/main/resources/application.properties](crawler/src/main/resou
 
 - `crawler.db.url` — typically `jdbc:postgresql://localhost:5432/crawldb` (adjust the port if you changed Docker’s publish mapping).
 - `crawler.db.user` / `crawler.db.password` — must match `POSTGRES_USER` / `POSTGRES_PASSWORD` from Docker (defaults above).
-- `crawler.db.expectedSchemaVersion` — must equal the value in `crawldb.schema_version` ( `**5`** for the current `crawldb.sql`).
+- `crawler.db.expectedSchemaVersion` — must equal the value in `crawldb.schema_version` ( `**6`** for the current `crawldb.sql`).
 
 Also set, according to your crawl plan:
 

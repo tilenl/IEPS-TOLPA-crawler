@@ -1,7 +1,6 @@
 package si.uni_lj.fri.wier.storage.postgres.repositories;
 
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -21,7 +20,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.contracts.ContentHasher;
 import si.uni_lj.fri.wier.contracts.DiscoveredUrl;
-import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
 import si.uni_lj.fri.wier.contracts.ExtractedImage;
 import si.uni_lj.fri.wier.contracts.FetchContext;
 import si.uni_lj.fri.wier.contracts.FetchResult;
@@ -47,8 +45,10 @@ import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
  * deduplication (atomic {@code content_owner} + duplicate→owner {@code link}), and TS-12 retry diagnostics.
  *
  * <p>All statements are executed as prepared statements, and Stage B persistence runs in one
- * SERIALIZABLE transaction with bounded retry on SQLSTATE 40001. TS-04 page metadata is upserted into
- * {@code crawldb.page_data} during {@code persistFetchOutcomeWithLinks} for HTML outcomes. Reschedule and
+ * SERIALIZABLE transaction with bounded retry on SQLSTATE 40001. HTML outcomes do not write
+ * {@code crawldb.page_data}; non-HTML outcomes upsert one {@code page_data} row with {@code data} NULL and a
+ * classified {@code data_type_code} ({@code PDF}/{@code DOC}/{@code DOCX}/{@code PPT}/{@code PPTX}) when
+ * mapping succeeds. Reschedule and
  * terminal-error updates require {@code page_type_code = 'PROCESSING'} so SQL matches TS-10 transitions.
  * Parser-stage reschedules increment {@code parser_retry_count} only; fetch-stage reschedules increment
  * {@code attempt_count} only (TS-12).
@@ -85,14 +85,11 @@ public final class PageRepository {
 
     private static final String SQLSTATE_SERIALIZATION_FAILURE = "40001";
 
-    /** {@code crawldb.data_type.code} for document title bytes in {@code crawldb.page_data.data}. */
-    private static final String PAGE_DATA_TYPE_TITLE = "TITLE";
-
-    /** {@code crawldb.data_type.code} for meta description bytes in {@code crawldb.page_data.data}. */
-    private static final String PAGE_DATA_TYPE_META_DESCRIPTION = "META_DESCRIPTION";
-
-    /** Caps stored UTF-8 text so a single metadata field cannot dominate the transaction log. */
-    private static final int MAX_PAGE_METADATA_CHARS = 32_000;
+    private static final String PAGE_DATA_TYPE_PDF = "PDF";
+    private static final String PAGE_DATA_TYPE_DOC = "DOC";
+    private static final String PAGE_DATA_TYPE_DOCX = "DOCX";
+    private static final String PAGE_DATA_TYPE_PPT = "PPT";
+    private static final String PAGE_DATA_TYPE_PPTX = "PPTX";
 
     /**
      * HTML body hashing for TS-09 at persist time via {@link ContentHasherImpl}. Any future fetch-stage hash must
@@ -699,13 +696,14 @@ public final class PageRepository {
                 }
             } else {
                 markPageBinary(connection, context.pageId(), result.statusCode(), result.fetchedAt());
+                upsertBinaryPageDataPlaceholder(
+                        connection, context.pageId(), result.contentType(), context.canonicalUrl());
                 outcomeType = PageOutcomeType.BINARY;
             }
 
-            // TS-04 image rows and page_data metadata reference the HTML page row (data NULL on image rows per TS-11).
+            // TS-04 image rows reference the HTML page row (data NULL on image rows per TS-11).
             if (html && parsed != null) {
                 insertExtractedImages(connection, context.pageId(), parsed.extractedImages(), result.fetchedAt());
-                insertPageData(connection, context.pageId(), parsed.pageMetadata());
             }
 
             // Parser output and caller-supplied links are both ingested in one transaction for atomicity.
@@ -811,51 +809,81 @@ public final class PageRepository {
     }
 
     /**
-     * TS-10 {@code insertPageData}: upserts optional title and meta description into {@code crawldb.page_data}
-     * as UTF-8 {@code bytea} values, idempotent per (page_id, data_type_code).
+     * Non-HTML persist: one {@code page_data} row with {@code data} NULL for classified document types only.
+     * Unmapped content types skip insert (no new {@code data_type} codes).
      */
-    private void insertPageData(Connection connection, long pageId, Optional<ExtractedPageMetadata> metadataOpt)
-            throws SQLException {
-        if (metadataOpt.isEmpty()) {
+    private static void upsertBinaryPageDataPlaceholder(
+            Connection connection, long pageId, String contentType, String canonicalUrl) throws SQLException {
+        Optional<String> typeOpt = resolveBinaryDocumentDataTypeCode(contentType, canonicalUrl);
+        if (typeOpt.isEmpty()) {
             return;
         }
-        ExtractedPageMetadata meta = metadataOpt.get();
-        if (meta.title() != null) {
-            String trimmed = meta.title().trim();
-            if (!trimmed.isEmpty()) {
-                upsertPageDataRow(connection, pageId, PAGE_DATA_TYPE_TITLE, truncateForStorage(trimmed));
-            }
-        }
-        if (meta.metaDescription() != null) {
-            String trimmed = meta.metaDescription().trim();
-            if (!trimmed.isEmpty()) {
-                upsertPageDataRow(
-                        connection, pageId, PAGE_DATA_TYPE_META_DESCRIPTION, truncateForStorage(trimmed));
-            }
-        }
-    }
-
-    private static void upsertPageDataRow(Connection connection, long pageId, String dataTypeCode, String text)
-            throws SQLException {
         final String sql =
                 """
                 INSERT INTO crawldb.page_data (page_id, data_type_code, data)
-                VALUES (?, ?, ?)
-                ON CONFLICT (page_id, data_type_code) DO UPDATE SET data = EXCLUDED.data
+                VALUES (?, ?, NULL)
+                ON CONFLICT (page_id, data_type_code) DO UPDATE SET data = NULL
                 """;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, pageId);
-            statement.setString(2, dataTypeCode);
-            statement.setBytes(3, text.getBytes(StandardCharsets.UTF_8));
+            statement.setString(2, typeOpt.get());
             statement.executeUpdate();
         }
     }
 
-    private static String truncateForStorage(String s) {
-        if (s.length() <= MAX_PAGE_METADATA_CHARS) {
-            return s;
+    /**
+     * Maps Content-Type and URL path to {@code crawldb.data_type} for PDF and Office binaries. Returns empty when
+     * neither MIME nor path extension matches.
+     */
+    static Optional<String> resolveBinaryDocumentDataTypeCode(String contentType, String canonicalUrl) {
+        String ct = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+        if (ct.contains("application/vnd.openxmlformats-officedocument.wordprocessingml.document")) {
+            return Optional.of(PAGE_DATA_TYPE_DOCX);
         }
-        return s.substring(0, MAX_PAGE_METADATA_CHARS);
+        if (ct.contains("application/msword")) {
+            return Optional.of(PAGE_DATA_TYPE_DOC);
+        }
+        if (ct.contains("application/vnd.openxmlformats-officedocument.presentationml.presentation")) {
+            return Optional.of(PAGE_DATA_TYPE_PPTX);
+        }
+        if (ct.contains("application/vnd.ms-powerpoint")) {
+            return Optional.of(PAGE_DATA_TYPE_PPT);
+        }
+        if (ct.contains("application/pdf")) {
+            return Optional.of(PAGE_DATA_TYPE_PDF);
+        }
+        String path = pathForExtensionLookup(canonicalUrl);
+        if (path == null) {
+            return Optional.empty();
+        }
+        if (path.endsWith(".docx")) {
+            return Optional.of(PAGE_DATA_TYPE_DOCX);
+        }
+        if (path.endsWith(".doc")) {
+            return Optional.of(PAGE_DATA_TYPE_DOC);
+        }
+        if (path.endsWith(".pptx")) {
+            return Optional.of(PAGE_DATA_TYPE_PPTX);
+        }
+        if (path.endsWith(".ppt")) {
+            return Optional.of(PAGE_DATA_TYPE_PPT);
+        }
+        if (path.endsWith(".pdf")) {
+            return Optional.of(PAGE_DATA_TYPE_PDF);
+        }
+        return Optional.empty();
+    }
+
+    private static String pathForExtensionLookup(String canonicalUrl) {
+        if (canonicalUrl == null || canonicalUrl.isBlank()) {
+            return null;
+        }
+        try {
+            String path = URI.create(canonicalUrl).getPath();
+            return path == null ? null : path.toLowerCase(Locale.ROOT);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /**
