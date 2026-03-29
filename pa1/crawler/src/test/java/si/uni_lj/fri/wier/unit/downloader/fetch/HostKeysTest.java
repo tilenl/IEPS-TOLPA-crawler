@@ -23,8 +23,16 @@ class HostKeysTest {
     @Test
     void isGitHubHost() {
         assertTrue(HostKeys.isGitHubHost("github.com"));
+        assertTrue(HostKeys.isGitHubHost("www.github.com"));
         assertFalse(HostKeys.isGitHubHost("api.github.com"));
-        assertFalse(HostKeys.isGitHubHost("www.github.com"));
         assertFalse(HostKeys.isGitHubHost("example.com"));
+    }
+
+    @Test
+    void githubSiteRegistryKey_mapsWwwToApex() {
+        assertEquals("github.com", HostKeys.githubSiteRegistryKey("www.github.com"));
+        assertEquals("github.com", HostKeys.githubSiteRegistryKey("github.com"));
+        assertEquals("api.github.com", HostKeys.githubSiteRegistryKey("api.github.com"));
+        assertEquals("example.com", HostKeys.githubSiteRegistryKey("example.com"));
     }
 }

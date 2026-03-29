@@ -35,13 +35,24 @@ public final class HostKeys {
     }
 
     /**
-     * True when the host is exactly {@code github.com} (crawl scope / politeness alignment). Subdomains such as {@code
-     * api.github.com} are out of scope for frontier expansion.
+     * True for the public GitHub web hosts used in crawl scope: {@code github.com} and {@code www.github.com} (apex
+     * alias). Other subdomains such as {@code api.github.com} are out of scope for frontier expansion.
      */
     public static boolean isGitHubHost(String domainKey) {
         if (domainKey == null || domainKey.isBlank()) {
             return false;
         }
-        return "github.com".equals(domainKey);
+        return "github.com".equals(domainKey) || "www.github.com".equals(domainKey);
+    }
+
+    /**
+     * Maps {@code www.github.com} to {@code github.com} for {@code crawldb.site.domain} and {@code ensureSite} keys;
+     * returns {@code domainKey} unchanged for all other values (including {@code github.com} and non-GitHub hosts).
+     */
+    public static String githubSiteRegistryKey(String domainKey) {
+        if (domainKey == null || domainKey.isBlank()) {
+            return domainKey;
+        }
+        return "www.github.com".equals(domainKey) ? "github.com" : domainKey;
     }
 }

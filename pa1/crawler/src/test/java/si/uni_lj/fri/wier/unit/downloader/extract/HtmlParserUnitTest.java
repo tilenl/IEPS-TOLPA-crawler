@@ -9,6 +9,8 @@ import java.nio.file.Paths;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import si.uni_lj.fri.wier.contracts.CanonicalizationResult;
+import si.uni_lj.fri.wier.contracts.Canonicalizer;
 import si.uni_lj.fri.wier.contracts.ExtractedImage;
 import si.uni_lj.fri.wier.contracts.ExtractedPageMetadata;
 import si.uni_lj.fri.wier.config.CrawlScope;
@@ -42,6 +44,34 @@ class HtmlParserUnitTest {
         assertEquals(1, r.discoveredUrls().size());
         assertTrue(r.discoveredUrls().get(0).canonicalUrl().startsWith("https://github.com/topics/foo"));
         assertEquals(99L, r.discoveredUrls().get(0).siteId());
+    }
+
+    @Test
+    void href_absoluteWwwGithub_normalizedToApexByTs05() {
+        String html =
+                "<html><body><a href=\"https://www.github.com/org/www-normalized\">x</a></body></html>";
+        ParseResult r = parser.parse("https://github.com/topics/seed", html);
+        assertEquals(1, r.discoveredUrls().size());
+        assertEquals("https://github.com/org/www-normalized", r.discoveredUrls().get(0).canonicalUrl());
+    }
+
+    @Test
+    void href_whenCanonicalPreservesWwwHost_githubScopeStillAdmits() throws Exception {
+        Canonicalizer fixedWww =
+                (raw, base) -> CanonicalizationResult.accepted("https://www.github.com/org/preserved");
+        Path kw = Paths.get(HtmlParserUnitTest.class.getResource("/keywords-valid.json").toURI());
+        HtmlParser p =
+                new HtmlParser(
+                        fixedWww,
+                        new KeywordRelevanceScorer(kw),
+                        domain -> 99L,
+                        CrawlScopes.persistencePredicate(CrawlScope.GITHUB));
+        ParseResult r =
+                p.parse(
+                        "https://github.com/topics/seed",
+                        "<html><body><a href=\"https://example.com/ignored\">x</a></body></html>");
+        assertEquals(1, r.discoveredUrls().size());
+        assertEquals("https://www.github.com/org/preserved", r.discoveredUrls().get(0).canonicalUrl());
     }
 
     @Test

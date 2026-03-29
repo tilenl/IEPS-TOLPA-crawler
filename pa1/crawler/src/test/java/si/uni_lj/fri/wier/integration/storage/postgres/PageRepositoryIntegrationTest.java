@@ -1395,6 +1395,22 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void ingestDiscoveredUrls_wwwGithubTopicsBlocked_nonTopicsAccepted_whenDiscoveryBlockEnabled() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, 20_000, true);
+        PageRepository repo = policyRepository(cfg);
+        long gh = repo.ensureSite("github.com").orElseThrow();
+        long fromPage = repo.insertFrontierIfAbsent("https://github.com/org/seed-www-ingest", gh, 0.5).pageId();
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl("https://www.github.com/topics/from-www", gh, fromPage, "t", "c", 0.9),
+                                new DiscoveredUrl("https://www.github.com/org/from-www", gh, fromPage, "r", "c", 0.8)));
+        assertEquals(1, r.acceptedPageIds().size());
+        assertEquals(1, r.rejections().size());
+        assertEquals("GITHUB_TOPICS_PATH_BLOCKED", r.rejections().getFirst().reasonCode());
+    }
+
+    @Test
     void ingestDiscoveredUrls_githubTopicsAllowed_whenDiscoveryBlockDisabled() throws Exception {
         RuntimeConfig cfg = budgetRuntimeConfig(5000, 20_000, false);
         PageRepository repo = policyRepository(cfg);

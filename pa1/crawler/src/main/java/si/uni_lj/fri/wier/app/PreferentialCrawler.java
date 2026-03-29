@@ -178,7 +178,7 @@ public final class PreferentialCrawler {
                 continue;
             }
             String canonical = cr.canonicalUrl();
-            String domain = HostKeys.domainKey(canonical);
+            String domain = HostKeys.githubSiteRegistryKey(HostKeys.domainKey(canonical));
             long siteId =
                     storage.ensureSite(domain)
                             .orElseThrow(
@@ -238,12 +238,14 @@ public final class PreferentialCrawler {
                 new HtmlParser(
                         canonicalizer,
                         scorer,
-                        domain ->
-                                storage.ensureSite(domain)
-                                        .orElseThrow(
-                                                () ->
-                                                        new IllegalStateException(
-                                                                "ensureSite missing for domain=" + domain)),
+                        domain -> {
+                            String registry = HostKeys.githubSiteRegistryKey(domain);
+                            return storage.ensureSite(registry)
+                                    .orElseThrow(
+                                            () ->
+                                                    new IllegalStateException(
+                                                            "ensureSite missing for domain=" + registry));
+                        },
                         CrawlScopes.persistencePredicate(config.crawlScope()));
         HttpFetcher fetcher = HttpFetcher.from(config, politenessGate, metrics);
         Clock clock = Clock.systemUTC();

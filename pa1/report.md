@@ -8,7 +8,9 @@ This report describes the implementation of a preferential web crawler for the `
 The crawler **only follows and enqueues** discovered HTTP(S) links whose **registry host** is in scope for the active configuration. For the default **`GITHUB`** crawl scope (see `crawler.crawlScope` in runtime configuration), **in-scope hosts are:
 
 - `github.com`
-- any subdomain of `github.com` (e.g. `api.github.com`, `gist.github.com`)
+- `www.github.com` (treated as the same site as `github.com` for scope, `crawldb.site` keys, and deduplication alignment with TS-05 canonicalization)
+
+Other `*.github.com` subdomains (e.g. `api.github.com`, `gist.github.com`) are **not** in scope for frontier expansion.
 
 Hosts such as **`github.io`** (GitHub Pages), **`githubusercontent.com`** / **`raw.githubusercontent.com`**, and other third-party domains are **not** in scope for frontier expansion: those URLs are not added as new crawl candidates, and robots content for those hosts is **not** written to `crawldb.site` (in-memory robots rules may still be used for redirect hops only).
 
