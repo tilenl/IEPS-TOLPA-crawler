@@ -12,7 +12,6 @@ package si.uni_lj.fri.wier.downloader.extract;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -53,6 +52,9 @@ public final class HtmlParser implements Parser {
 
     /** Placeholder until the worker injects the real source page id (see class Javadoc). */
     private static final long PLACEHOLDER_FROM_PAGE_ID = 0L;
+
+    /** Assignment: persist {@code crawldb.image.content_type} as {@code BINARY} for all {@code img[src]} refs. */
+    private static final String IMAGE_CONTENT_TYPE = "BINARY";
 
     private final Canonicalizer canonicalizer;
     private final RelevanceScorer relevanceScorer;
@@ -178,8 +180,7 @@ public final class HtmlParser implements Parser {
                 }
                 String canonical = cr.canonicalUrl();
                 String fn = filenameFromUrl(canonical);
-                String ct = inferImageContentType(fn);
-                out.add(new ExtractedImage(canonical, fn, ct));
+                out.add(new ExtractedImage(canonical, fn, IMAGE_CONTENT_TYPE));
             } catch (Exception e) {
                 if (log.isDebugEnabled()) {
                     log.debug("skip image: {}", e.toString());
@@ -253,25 +254,5 @@ public final class HtmlParser implements Parser {
             segment = segment.substring(0, h);
         }
         return segment.isBlank() ? "image" : segment;
-    }
-
-    private static String inferImageContentType(String filename) {
-        String lower = filename.toLowerCase(Locale.ROOT);
-        if (lower.endsWith(".png")) {
-            return "image/png";
-        }
-        if (lower.endsWith(".gif")) {
-            return "image/gif";
-        }
-        if (lower.endsWith(".webp")) {
-            return "image/webp";
-        }
-        if (lower.endsWith(".svg") || lower.endsWith(".svgz")) {
-            return "image/svg+xml";
-        }
-        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
-            return "image/jpeg";
-        }
-        return null;
     }
 }

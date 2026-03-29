@@ -25,7 +25,7 @@ class ParseResultContractTest {
         List<DiscoveredUrl> links = new ArrayList<>();
         links.add(new DiscoveredUrl("https://example.com/a", 2L, 10L, "a", "ctx", 0.3));
         List<ExtractedImage> images = new ArrayList<>();
-        images.add(new ExtractedImage("https://example.com/i.png", "i.png", "image/png"));
+        images.add(new ExtractedImage("https://example.com/i.png", "i.png", "BINARY"));
 
         ParseResult result = new ParseResult(links, images, null);
         links.clear();

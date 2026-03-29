@@ -61,14 +61,14 @@ class HtmlParserUnitTest {
     }
 
     @Test
-    void images_extractedWithOptionalContentType() {
+    void images_extractedWithBinaryContentType() {
         String html =
                 "<html><body><img src=\"https://cdn.example.com/a/b/logo.png\" alt=\"x\"></body></html>";
         ParseResult r = parser.parse("https://example.com/", html);
         assertEquals(1, r.extractedImages().size());
         ExtractedImage img = r.extractedImages().get(0);
         assertTrue(img.canonicalUrl().contains("logo.png"));
-        assertEquals("image/png", img.contentType());
+        assertEquals("BINARY", img.contentType());
     }
 
     @Test

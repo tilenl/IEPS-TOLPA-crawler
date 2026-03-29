@@ -81,7 +81,7 @@ Accepted assignment variants include both:
 ## Image Extraction Rules
 
 - store image URL reference only; no binary download;
-- map filename/content type when inferable;
+- map filename from the URL path when inferable (e.g. last segment); **`content_type` is always the literal `BINARY`** for every extracted `img[src]` row (assignment requirement);
 - persist with `accessed_time`.
 - **Storage contract:** `crawldb.image.data` (**`bytea`**) MUST remain **NULL** for this project—only URL metadata (`filename`, `content_type`, `accessed_time`, `page_id`) is in scope ([04-domain-and-scope-definition.md](../04-domain-and-scope-definition.md), [TS-11](TS-11-database-schema-and-migrations.md)).
 
@@ -89,7 +89,7 @@ Example:
 - image URL: `https://raw.githubusercontent.com/org/repo/main/docs/img.png`
 - persisted metadata:
   - filename: `img.png`
-  - content_type: inferred from extension (`image/png` when inferable)
+  - content_type: `BINARY`
   - data payload: not stored
 
 ## Required Tests
@@ -97,7 +97,7 @@ Example:
 - `href` extraction with relative and absolute URLs;
 - `onclick` extraction from multiple assignment variants;
 - malformed HTML resilience;
-- image extraction count and metadata inference.
+- image extraction count and `BINARY` content type on each reference.
 
 ## Implementation Location
 

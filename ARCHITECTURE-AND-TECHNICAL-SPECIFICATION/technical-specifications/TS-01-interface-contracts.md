@@ -92,7 +92,7 @@ Ownership clarification:
 - `FetchRequest`: `canonicalUrl`, `workerId`, `claimExpiresAt`, `firstHopRateLimitSatisfied` (TS-03 / TS-08; outer worker gate may already have consumed the first-hop politeness token).
 - `FetchResult`: `statusCode`, `contentType`, `body`, `fetchedAt`, `fetchMode` (`PLAIN_HTTP` | `HEADLESS`), optional `finalUrlAfterRedirects` (after hop-by-hop redirects; claimed URL remains the storage key).
 - `ParseResult`: `discoveredUrls` (canonical outlinks), `extractedImages` (`ExtractedImage` list), optional `pageMetadata` (`ExtractedPageMetadata`). Normative extraction rules: [TS-04](TS-04-parser-and-extraction-specification.md).
-- `ExtractedImage`: `canonicalUrl`, optional `filename`, optional `contentType` (TS-04; `crawldb.image.data` remains NULL).
+- `ExtractedImage`: `canonicalUrl`, optional `filename`, `contentType` always `BINARY` for assignment storage in `crawldb.image` (TS-04; `crawldb.image.data` remains NULL).
 - `ExtractedPageMetadata`: optional `title`, optional `metaDescription` (document-level strings when extracted).
 - `RobotDecision`: `ALLOWED`, `DISALLOWED`, or `TEMPORARY_DENY`, optional reason and optional `denyUntil`.
 - `RateLimitDecision`: `ALLOWED` or `DELAYED(waitNs)`.

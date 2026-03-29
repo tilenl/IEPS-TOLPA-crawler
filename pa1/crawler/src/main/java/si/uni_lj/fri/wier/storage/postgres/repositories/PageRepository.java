@@ -7,7 +7,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
-import java.sql.Types;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -767,6 +766,9 @@ public final class PageRepository {
         }
     }
 
+    /** Assignment: {@code crawldb.image.content_type} is always {@code BINARY} for extracted {@code img} refs. */
+    private static final String IMAGE_ROW_CONTENT_TYPE = "BINARY";
+
     /**
      * Persists TS-04 image references for the current HTML page (URL metadata only; {@code data} stays
      * NULL).
@@ -792,17 +794,9 @@ public final class PageRepository {
                     continue;
                 }
                 String filename = effectiveImageFilename(image);
-                String contentType = image.contentType();
-                if (contentType != null && contentType.length() > 50) {
-                    contentType = contentType.substring(0, 50);
-                }
                 statement.setLong(1, pageId);
                 statement.setString(2, filename);
-                if (contentType == null || contentType.isBlank()) {
-                    statement.setNull(3, Types.VARCHAR);
-                } else {
-                    statement.setString(3, contentType);
-                }
+                statement.setString(3, IMAGE_ROW_CONTENT_TYPE);
                 statement.setTimestamp(4, Timestamp.from(accessedAt));
                 statement.addBatch();
                 batchCount++;
