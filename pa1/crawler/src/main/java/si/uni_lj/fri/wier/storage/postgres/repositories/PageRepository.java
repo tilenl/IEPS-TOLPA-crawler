@@ -39,6 +39,7 @@ import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
+import si.uni_lj.fri.wier.downloader.fetch.GithubTopicsDiscoveryBlock;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 
@@ -1117,6 +1118,11 @@ public final class PageRepository {
             }
             if (discovered.canonicalUrl().length() > 3000) {
                 rejected.add(new IngestRejection(discovered, "URL_TOO_LONG"));
+                continue;
+            }
+            if (cfg.discoveryBlockGithubTopicsPaths()
+                    && GithubTopicsDiscoveryBlock.isBlockedGithubTopicsDiscoveryUrl(discovered.canonicalUrl())) {
+                rejected.add(new IngestRejection(discovered, "GITHUB_TOPICS_PATH_BLOCKED"));
                 continue;
             }
 

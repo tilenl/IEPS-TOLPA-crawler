@@ -1348,6 +1348,37 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void ingestDiscoveredUrls_githubTopicsBlocked_whenDiscoveryBlockEnabled() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, 20_000, true);
+        PageRepository repo = policyRepository(cfg);
+        long gh = repo.ensureSite("github.com").orElseThrow();
+        long fromPage = repo.insertFrontierIfAbsent("https://github.com/org/seed", gh, 0.5).pageId();
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl("https://github.com/topics/foo", gh, fromPage, "t", "c", 0.9),
+                                new DiscoveredUrl("https://github.com/org/repo", gh, fromPage, "r", "c", 0.8)));
+        assertEquals(1, r.acceptedPageIds().size());
+        assertEquals(1, r.rejections().size());
+        assertEquals("GITHUB_TOPICS_PATH_BLOCKED", r.rejections().getFirst().reasonCode());
+    }
+
+    @Test
+    void ingestDiscoveredUrls_githubTopicsAllowed_whenDiscoveryBlockDisabled() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, 20_000, false);
+        PageRepository repo = policyRepository(cfg);
+        long gh = repo.ensureSite("github.com").orElseThrow();
+        long fromPage = repo.insertFrontierIfAbsent("https://github.com/org/seed2", gh, 0.5).pageId();
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl("https://github.com/topics/bar", gh, fromPage, "t", "c", 0.9),
+                                new DiscoveredUrl("https://github.com/org/other", gh, fromPage, "r", "c", 0.8)));
+        assertEquals(2, r.acceptedPageIds().size());
+        assertTrue(r.rejections().isEmpty());
+    }
+
+    @Test
     void ingestDiscoveredUrls_frontierFullLowScore_whenAtFrontierCapAndNotBetter() throws Exception {
         final int frontierCap = 100;
         RuntimeConfig cfg = budgetRuntimeConfig(5000, frontierCap);
@@ -1385,6 +1416,11 @@ class PageRepositoryIntegrationTest {
     }
 
     private static RuntimeConfig budgetRuntimeConfig(int maxTotalPages, int maxFrontierRows) throws Exception {
+        return budgetRuntimeConfig(maxTotalPages, maxFrontierRows, false);
+    }
+
+    private static RuntimeConfig budgetRuntimeConfig(int maxTotalPages, int maxFrontierRows, boolean blockGithubTopics)
+            throws Exception {
         Properties p = new Properties();
         Path kw = Paths.get(PageRepositoryIntegrationTest.class.getResource("/keywords-valid.json").toURI());
         p.setProperty("crawler.scoring.keywordConfig", kw.toString());
@@ -1395,6 +1431,7 @@ class PageRepositoryIntegrationTest {
         p.setProperty("crawler.seedUrls", "https://example.com/");
         p.setProperty("crawler.budget.maxTotalPages", Integer.toString(maxTotalPages));
         p.setProperty("crawler.budget.maxFrontierRows", Integer.toString(maxFrontierRows));
+        p.setProperty("crawler.discovery.blockGithubTopicsPaths", Boolean.toString(blockGithubTopics));
         RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
         cfg.validate();
         return cfg;

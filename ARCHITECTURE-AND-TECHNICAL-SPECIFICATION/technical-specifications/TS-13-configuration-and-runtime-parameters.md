@@ -76,6 +76,14 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 
 **Single-domain profile:** This crawler targets one primary domain (`04-domain-and-scope-definition.md`). A separate per-domain page cap is **not** defined. `maxTotalPages` bounds total stored rows; `maxFrontierRows` bounds queued work. Both use the same **swap-out worst `FRONTIER`** admission rule when admitting a **new** row would exceed the respective cap.
 
+### Discovery filtering (GitHub topic hubs)
+
+| Key | Default | Validation | Crawler impact |
+| --- | --- | --- | --- |
+| `crawler.discovery.blockGithubTopicsPaths` | `false` if the property is **absent** from merged config; the repository ships `true` in `application.properties` for repo-first expansion | `true` / `false` / `yes` / `no` / `1` / `0` (case-insensitive); other values fail property parsing at load | When **true**, Stage A discovery ingestion MUST reject canonical URLs whose host is exactly `github.com` and whose path is `/topics` or starts with `/topics/` (ingest reason `GITHUB_TOPICS_PATH_BLOCKED`). No `page` row and no `link` row is created for that discovery. When **false**, those URLs are admitted like any other discovery (subject to robots and budgets). **TS-02 seed bootstrap** (`crawler.seedUrls`) is **not** affected: seeds use `insertFrontierIfAbsent` and bypass this filter. |
+
+Environment override: `CRAWLER_DISCOVERY_BLOCKGITHUBTOPICSPATHS` (maps from `crawler.discovery.blockGithubTopicsPaths` per `CrawlerEnvironmentNames`).
+
 ### Scoring
 
 | Key | Default | Validation | Crawler impact |
@@ -190,6 +198,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - when `crawler.budget.maxTotalPages` would be exceeded by a **new** distinct `page` insert, Stage A MUST attempt score-based `FRONTIER` replacement per `TS-02`; if replacement succeeds, Stage A MUST log `FRONTIER_EVICTED_FOR_SCORE` (or equivalent) with `configKey` / `remediationHint` per Parameter-linked diagnostics; if replacement is impossible, Stage A MUST emit `BUDGET_DROPPED` with `configKey` and `remediationHint` (`TS-15`);
 - when `crawler.budget.maxFrontierRows` would be exceeded by a **new** distinct `FRONTIER` insert, Stage A MUST apply the same replacement rule; if the discovery is not strictly better than the worst `FRONTIER`, Stage A MUST defer and/or reject per `TS-02` and log with `configKey` and `remediationHint` where applicable;
 - when canonical URL length exceeds DB contract (`>3000`), Stage A rejects URL as non-retryable `URL_TOO_LONG` and logs structured diagnostics;
+- when `crawler.discovery.blockGithubTopicsPaths` is true, Stage A MUST reject discovered `github.com` topic-hub URLs (`/topics`, `/topics/...`) before frontier insert with `GITHUB_TOPICS_PATH_BLOCKED` (seeds exempt);
 - lease recovery MUST run in bounded batches using `crawler.frontier.leaseRecoveryBatchSize`;
 - startup lease recovery MUST run before worker loops and continue until no stale leases remain, using `crawler.frontier.startupLeaseRecoveryBatchSize`;
 - recovery-path transition writes (`reschedule` / `markPageAsError`) MUST apply bounded transient retries using `crawler.recoveryPath.maxAttempts`, `crawler.recoveryPath.baseBackoffMs`, and `crawler.retry.jitterMs`.
@@ -220,6 +229,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - recovery-path bounded-retry config wiring test;
 - headless config validation tests.
 - `crawler.fetch.maxRedirects` and `crawler.health.heartbeatIntervalMs` validation tests.
+- `crawler.discovery.blockGithubTopicsPaths`: unit tests for URL matching; integration tests that ingest is rejected when true and allowed when false for `https://github.com/topics/...` (seeds unchanged).
 - robots and bucket cache max-entry validation tests.
 - where structured logging is implemented: assert `configKey` and `remediationHint` on at least one `BUDGET_DROPPED` event, one `FRONTIER_EVICTED_FOR_SCORE` (or equivalent), and one frontier-deferral event when applicable (`TS-15`).
 
@@ -228,6 +238,8 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/config/`, `.../cli/`, `.../app/`, `.../observability/`
 - key file(s):
   - `config/RuntimeConfig.java`
+  - `downloader/fetch/GithubTopicsDiscoveryBlock.java` (topic-hub path detection for discovery filter)
+  - `storage/postgres/repositories/PageRepository.java` (discovery ingest gate)
   - `config/ConfigRemediation.java` (centralized `configKey` / `remediationHint` strings aligned with Parameter-linked diagnostics)
   - `cli/Main.java` (CLI argument precedence and binding)
   - `app/PreferentialCrawler.java` (startup preflight validation and effective config logging without secrets)

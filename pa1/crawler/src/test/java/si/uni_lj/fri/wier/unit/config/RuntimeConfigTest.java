@@ -1,7 +1,9 @@
 package si.uni_lj.fri.wier.unit.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,6 +44,23 @@ class RuntimeConfigTest {
         assertEquals(10, cfg.fetchMaxRedirects());
         assertEquals(45_000, cfg.healthHeartbeatIntervalMs());
         assertEquals(CrawlScope.GITHUB, cfg.crawlScope());
+        assertFalse(cfg.discoveryBlockGithubTopicsPaths());
+    }
+
+    @Test
+    void fromProperties_discoveryBlockGithubTopicsPaths_true() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.discovery.blockGithubTopicsPaths", "true");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        assertTrue(cfg.discoveryBlockGithubTopicsPaths());
+    }
+
+    @Test
+    void fromProperties_discoveryBlockGithubTopicsPaths_invalid_throws() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.discovery.blockGithubTopicsPaths", "maybe");
+        assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.fromProperties(p, 4));
     }
 
     @Test

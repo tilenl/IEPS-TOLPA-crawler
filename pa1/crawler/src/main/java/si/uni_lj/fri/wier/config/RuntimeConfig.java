@@ -59,6 +59,7 @@ public record RuntimeConfig(
         int retryMaxAttemptsDbTransient,
         int budgetMaxTotalPages,
         int budgetMaxFrontierRows,
+        boolean discoveryBlockGithubTopicsPaths,
         CrawlScope crawlScope,
         List<String> seedUrls,
         Path scoringKeywordConfig,
@@ -113,6 +114,7 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.retry.maxAttempts.dbTransient", 5),
                 parseInt(p, "crawler.budget.maxTotalPages", 5000),
                 parseInt(p, "crawler.budget.maxFrontierRows", 20_000),
+                parseBoolean(p, "crawler.discovery.blockGithubTopicsPaths", false),
                 CrawlScopes.parseCrawlScope(p.getProperty("crawler.crawlScope")),
                 parseSeedUrls(Objects.requireNonNull(p.getProperty("crawler.seedUrls"), "crawler.seedUrls")),
                 Path.of(Objects.requireNonNull(p.getProperty("crawler.scoring.keywordConfig"), "crawler.scoring.keywordConfig")),
@@ -146,6 +148,21 @@ public record RuntimeConfig(
             return defaultValue;
         }
         return Double.parseDouble(v.trim());
+    }
+
+    private static boolean parseBoolean(Properties p, String key, boolean defaultValue) {
+        String v = p.getProperty(key);
+        if (v == null || v.isBlank()) {
+            return defaultValue;
+        }
+        String t = v.trim().toLowerCase(Locale.ROOT);
+        return switch (t) {
+            case "true", "yes", "1" -> true;
+            case "false", "no", "0" -> false;
+            default ->
+                    throw new IllegalArgumentException(
+                            "Invalid boolean for " + key + ": " + v + " (use true/false, yes/no, or 1/0)");
+        };
     }
 
     /**
