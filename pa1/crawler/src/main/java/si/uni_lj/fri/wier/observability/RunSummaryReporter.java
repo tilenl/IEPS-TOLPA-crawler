@@ -58,7 +58,8 @@ public final class RunSummaryReporter {
                             + " errorsByCategory=[{}] topDomains=[{}] rateLimitWaits={} rateLimitWaitMsTotal={}"
                             + " leaseRecoveryRows={} leaseRecoveryBatches={} maxObservedLeaseAgeMs={}"
                             + " urlDedupHits={} contentDedupHits={} terminalHtmlPersisted={} terminalBinaryPersisted={}"
-                            + " budgetDropped={} frontierDeferred={} headlessAcquireTimeouts={}"
+                            + " budgetDropped={} frontierDeferred={} frontierEvictedForScore={}"
+                            + " frontierFullLowScore={} headlessAcquireTimeouts={}"
                             + " headlessCircuitOpenEvents={} robotsTemporaryDenyDomains={} robotsFetchEventsTotal={}"
                             + " dbTimeoutLikeFailures={} fetchLatencySamples={} dbConnectionsCheckedOut={}"
                             + " dbPoolCapacity={} dbPoolUtilizationPermille={} headlessSlotsInUse={}"
@@ -85,6 +86,8 @@ public final class RunSummaryReporter {
                     metrics.terminalBinaryPages(),
                     metrics.budgetDroppedTotal(),
                     metrics.frontierDeferredTotal(),
+                    metrics.frontierEvictedForScoreTotal(),
+                    metrics.frontierFullLowScoreTotal(),
                     metrics.headlessAcquireTimeouts(),
                     metrics.headlessCircuitOpenEvents(),
                     metrics.robotsTemporaryDenyDomains(),

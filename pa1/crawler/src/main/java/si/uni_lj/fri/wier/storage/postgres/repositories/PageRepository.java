@@ -62,7 +62,8 @@ import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
  * <p>TS-02: when {@link RobotsTxtCache}, {@link RuntimeConfig}, and {@link EnqueueService} are supplied to the
  * extended constructor, {@link #ingestDiscoveredUrls} (inside {@code persistFetchOutcomeWithLinks}) evaluates
  * robots (evaluate-only; caller must {@code ensureLoaded} before opening the SERIALIZABLE transaction) and
- * applies crawl budgets with structured {@code BUDGET_DROPPED} / frontier deferral logging.
+ * applies crawl budgets with score-based {@code FRONTIER} replacement, {@code BUDGET_DROPPED}, and
+ * {@code FRONTIER_FULL_LOW_SCORE} logging per TS-13.
  */
 public final class PageRepository {
 
@@ -82,6 +83,12 @@ public final class PageRepository {
      */
     public record HeartbeatQueueSnapshot(
             long frontierDepth, long processingCount, long pagesTerminalTotal, long oldestLeaseAgeMs) {}
+
+    /**
+     * Lowest-scoring {@code FRONTIER} candidate for TS-02 replacement (read in one query; eviction re-validates
+     * {@code id} + {@code FRONTIER} under row lock).
+     */
+    private record FrontierVictimRow(long id, double relevanceScore, String url) {}
 
     private static final Logger log = LoggerFactory.getLogger(PageRepository.class);
 
@@ -1113,24 +1120,76 @@ public final class PageRepository {
                 continue;
             }
 
-            // TS-02 backpressure order: (1) global page budget, (2) frontier high-watermark deferral, (3) robots + ingest.
+            String domain = hostForBudgetLog(discovered.canonicalUrl());
+            Optional<Long> existingPageId = findPageIdByUrl(connection, discovered.canonicalUrl());
             long totalPages = countAllPages(connection);
-            if (totalPages >= cfg.budgetMaxTotalPages()) {
-                discoveredIngestLog.logBudgetDropped(
-                        discovered.canonicalUrl(), hostForBudgetLog(discovered.canonicalUrl()));
-                rejected.add(new IngestRejection(discovered, "BUDGET_DROPPED"));
-                continue;
+            long frontierRows = countFrontierPages(connection);
+            boolean needSwapForTotal =
+                    existingPageId.isEmpty() && totalPages >= cfg.budgetMaxTotalPages();
+            boolean needSwapForFrontier =
+                    existingPageId.isEmpty() && frontierRows >= cfg.budgetMaxFrontierRows();
+
+            // TS-02 / TS-13: a new distinct row would exceed a cap — evict the worst FRONTIER row if the newcomer
+            // strictly outranks it; never evict non-FRONTIER rows.
+            if (needSwapForTotal || needSwapForFrontier) {
+                double newScore = discovered.relevanceScore();
+                Optional<FrontierVictimRow> initialVictim = selectLowestScoringFrontierVictim(connection);
+                if (initialVictim.isEmpty()) {
+                    discoveredIngestLog.logBudgetDropped(discovered.canonicalUrl(), domain);
+                    rejected.add(new IngestRejection(discovered, "BUDGET_DROPPED"));
+                    continue;
+                }
+                if (Double.compare(newScore, initialVictim.get().relevanceScore()) <= 0) {
+                    if (needSwapForTotal) {
+                        discoveredIngestLog.logBudgetDropped(discovered.canonicalUrl(), domain);
+                        rejected.add(new IngestRejection(discovered, "BUDGET_DROPPED"));
+                    } else {
+                        discoveredIngestLog.logFrontierFullLowScore(discovered.canonicalUrl(), domain);
+                        rejected.add(new IngestRejection(discovered, "FRONTIER_FULL_LOW_SCORE"));
+                    }
+                    continue;
+                }
+                FrontierVictimRow evictedVictim = initialVictim.get();
+                boolean evictedOk = false;
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    FrontierVictimRow target =
+                            attempt == 0
+                                    ? initialVictim.get()
+                                    : selectLowestScoringFrontierVictim(connection).orElse(null);
+                    if (target == null) {
+                        break;
+                    }
+                    if (Double.compare(newScore, target.relevanceScore()) <= 0) {
+                        break;
+                    }
+                    if (evictFrontierVictimById(connection, target.id())) {
+                        evictedVictim = target;
+                        evictedOk = true;
+                        break;
+                    }
+                }
+                if (!evictedOk) {
+                    if (needSwapForTotal) {
+                        discoveredIngestLog.logBudgetDropped(discovered.canonicalUrl(), domain);
+                        rejected.add(new IngestRejection(discovered, "BUDGET_DROPPED"));
+                    } else {
+                        discoveredIngestLog.logFrontierFullLowScore(discovered.canonicalUrl(), domain);
+                        rejected.add(new IngestRejection(discovered, "FRONTIER_FULL_LOW_SCORE"));
+                    }
+                    continue;
+                }
+                String triggerKeys = budgetTriggerConfigKeys(needSwapForTotal, needSwapForFrontier);
+                discoveredIngestLog.logFrontierEvictedForScore(
+                        evictedVictim.url(),
+                        evictedVictim.relevanceScore(),
+                        discovered.canonicalUrl(),
+                        newScore,
+                        triggerKeys,
+                        domain);
             }
 
             Instant now = Instant.now();
             Instant nextAttempt = now;
-            long frontierRows = countFrontierPages(connection);
-            if (frontierRows >= cfg.budgetMaxFrontierRows()) {
-                long delayMs = scoreDeferralDelayMs(discovered.relevanceScore(), cfg);
-                nextAttempt = now.plusMillis(delayMs);
-                discoveredIngestLog.logFrontierDeferred(
-                        discovered.canonicalUrl(), hostForBudgetLog(discovered.canonicalUrl()));
-            }
 
             RobotDecision robotDecision = discoveredIngestRobots.evaluate(discovered.canonicalUrl());
             if (robotDecision.type() == RobotDecisionType.DISALLOWED) {
@@ -1206,15 +1265,80 @@ public final class PageRepository {
         }
     }
 
+    private static Optional<Long> findPageIdByUrl(Connection connection, String canonicalUrl) throws SQLException {
+        final String sql = "SELECT id FROM crawldb.page WHERE url = ? LIMIT 1";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, canonicalUrl);
+            try (ResultSet rs = statement.executeQuery()) {
+                return rs.next() ? Optional.of(rs.getLong(1)) : Optional.empty();
+            }
+        }
+    }
+
     /**
-     * TS-02 frontier high-watermark: lower relevance scores receive longer deferral, clamped to rate-limit bounds.
+     * Picks the queued {@code FRONTIER} row with minimum {@code relevance_score}; tie-break matches claim ordering
+     * spirit (later {@code next_attempt_at} and higher {@code id} lose first).
      */
-    private static long scoreDeferralDelayMs(double relevanceScore, RuntimeConfig cfg) {
-        double s = Math.max(0.0, Math.min(1.0, relevanceScore));
-        long raw = Math.round((1.0 - s) * (long) cfg.rateLimitMaxBackoffMs());
-        long min = cfg.rateLimitMinDelayMs();
-        long max = cfg.rateLimitMaxBackoffMs();
-        return Math.min(max, Math.max(min, raw));
+    private static Optional<FrontierVictimRow> selectLowestScoringFrontierVictim(Connection connection)
+            throws SQLException {
+        final String sql =
+                """
+                SELECT id, relevance_score, url FROM crawldb.page
+                WHERE page_type_code = 'FRONTIER'
+                ORDER BY relevance_score ASC, next_attempt_at DESC NULLS LAST, id DESC
+                LIMIT 1
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            if (!rs.next()) {
+                return Optional.empty();
+            }
+            return Optional.of(
+                    new FrontierVictimRow(rs.getLong(1), rs.getDouble(2), rs.getString(3)));
+        }
+    }
+
+    /**
+     * Deletes one {@code FRONTIER} row and all {@code link} edges touching it. Locks the row with {@code FOR UPDATE
+     * SKIP LOCKED} so a concurrent claimer does not block eviction; returns {@code false} if the row was not locked
+     * (already claimed, deleted, or no longer {@code FRONTIER}).
+     */
+    private static boolean evictFrontierVictimById(Connection connection, long victimPageId) throws SQLException {
+        final String lockSql =
+                """
+                SELECT id FROM crawldb.page
+                WHERE id = ? AND page_type_code = 'FRONTIER'
+                FOR UPDATE SKIP LOCKED
+                """;
+        try (PreparedStatement lockStmt = connection.prepareStatement(lockSql)) {
+            lockStmt.setLong(1, victimPageId);
+            try (ResultSet rs = lockStmt.executeQuery()) {
+                if (!rs.next()) {
+                    return false;
+                }
+            }
+        }
+        final String delLinks = "DELETE FROM crawldb.link WHERE from_page = ? OR to_page = ?";
+        try (PreparedStatement ps = connection.prepareStatement(delLinks)) {
+            ps.setLong(1, victimPageId);
+            ps.setLong(2, victimPageId);
+            ps.executeUpdate();
+        }
+        final String delPage = "DELETE FROM crawldb.page WHERE id = ? AND page_type_code = 'FRONTIER'";
+        try (PreparedStatement ps = connection.prepareStatement(delPage)) {
+            ps.setLong(1, victimPageId);
+            return ps.executeUpdate() == 1;
+        }
+    }
+
+    private static String budgetTriggerConfigKeys(boolean hitTotalCap, boolean hitFrontierCap) {
+        if (hitTotalCap && hitFrontierCap) {
+            return "crawler.budget.maxTotalPages,crawler.budget.maxFrontierRows";
+        }
+        if (hitTotalCap) {
+            return "crawler.budget.maxTotalPages";
+        }
+        return "crawler.budget.maxFrontierRows";
     }
 
     private static String hostForBudgetLog(String canonicalUrl) {

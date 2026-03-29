@@ -71,10 +71,10 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 
 | Key | Default | Validation | Crawler impact |
 | --- | --- | --- | --- |
-| `crawler.budget.maxTotalPages` | `5000` | `>=1` | Hard cap on **new** distinct pages inserted for the run (assignment scope). When reached, Stage A stops inserting new frontier rows and emits `BUDGET_DROPPED` (`TS-02`, `TS-15`). |
-| `crawler.budget.maxFrontierRows` | `20000` | `>=100` | High watermark on frontier queue size. When at or above this level, Stage A **defers** low-priority discoveries (future `next_attempt_at`) instead of dropping them terminally (`TS-02`). |
+| `crawler.budget.maxTotalPages` | `5000` | `>=1` | Upper bound on **concurrent** `crawldb.page` rows (`COUNT(*)` on `page`) for the run. When Stage A would insert a **new** distinct URL (not an upsert conflict on `url`) and the table is already at this count, Stage A MUST first attempt **score-based `FRONTIER` replacement** per `TS-02`: delete exactly one `page_type_code='FRONTIER'` row with the **lowest** `relevance_score` (deterministic tie-break), after removing `link` rows referencing that `page_id`, and insert the new row **only if** the discovery’s score is **strictly greater** than the victim’s. If no qualifying victim exists or the discovery is not better, Stage A MUST reject the insert and emit `BUDGET_DROPPED` (`TS-02`, `TS-15`). Successful replacement emits `FRONTIER_EVICTED_FOR_SCORE` (or equivalent) with `configKey` including this property. |
+| `crawler.budget.maxFrontierRows` | `20000` | `>=100` | Upper bound on concurrent `FRONTIER` rows (`COUNT(*)` where `page_type_code='FRONTIER'`). When a new distinct URL would be inserted and this count is already at or above the limit, Stage A MUST apply the **same** score-based `FRONTIER` replacement as `maxTotalPages` (victim selection and `FRONTIER`-only deletion are identical). If the discovery is not strictly better than the worst `FRONTIER`, Stage A MUST defer (`next_attempt_at`) and/or reject with an explicit ingest reason rather than growing the frontier past the watermark (`TS-02`). |
 
-**Single-domain profile:** This crawler targets one primary domain (`04-domain-and-scope-definition.md`). A separate per-domain page cap is **not** defined: `maxTotalPages` is the only page-count guardrail.
+**Single-domain profile:** This crawler targets one primary domain (`04-domain-and-scope-definition.md`). A separate per-domain page cap is **not** defined. `maxTotalPages` bounds total stored rows; `maxFrontierRows` bounds queued work. Both use the same **swap-out worst `FRONTIER`** admission rule when admitting a **new** row would exceed the respective cap.
 
 ### Scoring
 
@@ -134,8 +134,9 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 
 | Event / situation | Primary `configKey` (log field) | Normative `remediationHint` (log field) |
 | --- | --- | --- |
-| Global page budget hit (`BUDGET_DROPPED`) | `crawler.budget.maxTotalPages` | To crawl more distinct pages in a run, increase `crawler.budget.maxTotalPages` and ensure database and disk capacity are sufficient for the larger crawl. |
-| Frontier high-watermark deferral (`FRONTIER_DEFERRED` or equivalent) | `crawler.budget.maxFrontierRows` | To admit more URLs into the frontier sooner, increase `crawler.budget.maxFrontierRows`, or reduce discovery breadth via scoring seeds and link policy; very large queues increase memory and DB load. |
+| Global page budget rejection (`BUDGET_DROPPED`) — insert refused after score-based `FRONTIER` replacement was not possible | `crawler.budget.maxTotalPages` | To store more concurrent pages without replacement churn, increase `crawler.budget.maxTotalPages` and ensure database and disk capacity are sufficient. If the table is full of terminal rows and no `FRONTIER` victim exists, replacement cannot run until the frontier is non-empty or the cap is raised. |
+| Frontier high-watermark deferral or rejection (`FRONTIER_DEFERRED` or equivalent) — discovery not strictly better than worst `FRONTIER` | `crawler.budget.maxFrontierRows` | To admit weaker discoveries sooner without deferral, increase `crawler.budget.maxFrontierRows`, or tune scoring/link policy; very large queues increase memory and DB load. |
+| Score-based `FRONTIER` replacement succeeded (`FRONTIER_EVICTED_FOR_SCORE` or equivalent) | `crawler.budget.maxTotalPages` and/or `crawler.budget.maxFrontierRows` | Informational: a lower-scoring queued URL was removed to admit a better discovery under the active cap(s). To reduce how often replacement runs, raise the relevant budget(s) or narrow discovery breadth. |
 | Fetch timeout retries exhausted (terminal `FETCH_TIMEOUT`) | `crawler.retry.maxAttempts.fetchTimeout` (and optionally `crawler.fetch.connectTimeoutMs`, `crawler.fetch.readTimeoutMs`) | To allow more attempts before giving up, increase `crawler.retry.maxAttempts.fetchTimeout`; to wait longer per attempt, increase `crawler.fetch.connectTimeoutMs` or `crawler.fetch.readTimeoutMs` if appropriate for slow origins. |
 | Overload retries exhausted (terminal overload path) | `crawler.retry.maxAttempts.fetchOverload` (and optionally `crawler.rateLimit.maxBackoffMs`) | To tolerate longer overload episodes, increase `crawler.retry.maxAttempts.fetchOverload` or adjust `crawler.rateLimit.maxBackoffMs` within policy limits. |
 | Headless capacity retries exhausted (`FETCH_CAPACITY_EXHAUSTED`) | `crawler.retry.maxAttempts.fetchCapacity` (and optionally `crawler.fetch.maxHeadlessSessions`, `crawler.fetch.headlessAcquireTimeoutMs`) | To allow more capacity-exhaustion retries before terminal handling, increase `crawler.retry.maxAttempts.fetchCapacity`; to reduce saturation, increase `crawler.fetch.maxHeadlessSessions` (must remain `<= crawler.nCrawlers`) or `crawler.fetch.headlessAcquireTimeoutMs` per headless guidance. |
@@ -185,8 +186,8 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 
 - dequeue eligibility MUST use persisted `next_attempt_at <= now()`;
 - retry delays MUST include jitter for transient categories;
-- when `crawler.budget.maxTotalPages` is reached, Stage A insertion stops and logs budget-drop events with `configKey` and `remediationHint` (`TS-15`);
-- when `crawler.budget.maxFrontierRows` is at the high watermark, Stage A defers low-priority discoveries per `TS-02` and logs with `configKey` and `remediationHint` where applicable;
+- when `crawler.budget.maxTotalPages` would be exceeded by a **new** distinct `page` insert, Stage A MUST attempt score-based `FRONTIER` replacement per `TS-02`; if replacement succeeds, Stage A MUST log `FRONTIER_EVICTED_FOR_SCORE` (or equivalent) with `configKey` / `remediationHint` per Parameter-linked diagnostics; if replacement is impossible, Stage A MUST emit `BUDGET_DROPPED` with `configKey` and `remediationHint` (`TS-15`);
+- when `crawler.budget.maxFrontierRows` would be exceeded by a **new** distinct `FRONTIER` insert, Stage A MUST apply the same replacement rule; if the discovery is not strictly better than the worst `FRONTIER`, Stage A MUST defer and/or reject per `TS-02` and log with `configKey` and `remediationHint` where applicable;
 - when canonical URL length exceeds DB contract (`>3000`), Stage A rejects URL as non-retryable `URL_TOO_LONG` and logs structured diagnostics;
 - lease recovery MUST run in bounded batches using `crawler.frontier.leaseRecoveryBatchSize`;
 - startup lease recovery MUST run before worker loops and continue until no stale leases remain, using `crawler.frontier.startupLeaseRecoveryBatchSize`;
@@ -210,8 +211,8 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - invalid value rejection tests;
 - effective config snapshot tests.
 - retry/budget parameter wiring tests in integration pipeline (including `crawler.retry.maxAttempts.fetchCapacity` validation);
-- assignment cap enforcement test for `crawler.budget.maxTotalPages=5000`;
-- frontier high-watermark deferral test for `crawler.budget.maxFrontierRows`;
+- assignment tests for `crawler.budget.maxTotalPages`: score-based `FRONTIER` replacement admits a higher-scoring URL when at cap, and `BUDGET_DROPPED` when replacement is impossible;
+- assignment tests for `crawler.budget.maxFrontierRows`: replacement at watermark and defer/reject when the newcomer is not better than the worst `FRONTIER`;
 - DB pool-size validation test (`poolSize >= nCrawlers + 1`);
 - lease-recovery batch-size wiring test;
 - startup lease-recovery batch-size wiring test;
@@ -219,7 +220,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - headless config validation tests.
 - `crawler.fetch.maxRedirects` and `crawler.health.heartbeatIntervalMs` validation tests.
 - robots and bucket cache max-entry validation tests.
-- where structured logging is implemented: assert `configKey` and `remediationHint` on at least one `BUDGET_DROPPED` event and one frontier-deferral event (`TS-15`).
+- where structured logging is implemented: assert `configKey` and `remediationHint` on at least one `BUDGET_DROPPED` event, one `FRONTIER_EVICTED_FOR_SCORE` (or equivalent), and one frontier-deferral event when applicable (`TS-15`).
 
 ## Implementation Location
 

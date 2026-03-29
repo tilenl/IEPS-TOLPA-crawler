@@ -61,6 +61,8 @@ public final class CrawlerMetrics {
 
     private final AtomicLong budgetDroppedTotal = new AtomicLong();
     private final AtomicLong frontierDeferredTotal = new AtomicLong();
+    private final AtomicLong frontierEvictedForScoreTotal = new AtomicLong();
+    private final AtomicLong frontierFullLowScoreTotal = new AtomicLong();
 
     private final AtomicLong leaseRecoveryRowsTotal = new AtomicLong();
     private final AtomicLong leaseRecoveryBatchesTotal = new AtomicLong();
@@ -177,12 +179,28 @@ public final class CrawlerMetrics {
         frontierDeferredTotal.incrementAndGet();
     }
 
+    public void recordFrontierEvictedForScore() {
+        frontierEvictedForScoreTotal.incrementAndGet();
+    }
+
+    public void recordFrontierFullLowScore() {
+        frontierFullLowScoreTotal.incrementAndGet();
+    }
+
     public long budgetDroppedTotal() {
         return budgetDroppedTotal.get();
     }
 
     public long frontierDeferredTotal() {
         return frontierDeferredTotal.get();
+    }
+
+    public long frontierEvictedForScoreTotal() {
+        return frontierEvictedForScoreTotal.get();
+    }
+
+    public long frontierFullLowScoreTotal() {
+        return frontierFullLowScoreTotal.get();
     }
 
     /**

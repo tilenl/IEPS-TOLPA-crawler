@@ -25,7 +25,7 @@
 - parse summary (links/images extracted);
 - dedup decisions (URL/content);
 - persistence outcomes and failures.
-- budget-drop (`BUDGET_DROPPED`) and frontier deferral at high-watermark (`FRONTIER_DEFERRED` or equivalent) with `configKey` / `remediationHint` per `TS-13`;
+- budget-drop (`BUDGET_DROPPED`) when a new row is refused after score-based replacement cannot run; frontier deferral at high-watermark (`FRONTIER_DEFERRED` or equivalent) when the newcomer is not better than the worst `FRONTIER`; **score-based replacement success** (`FRONTIER_EVICTED_FOR_SCORE` or equivalent) with victim URL, new URL, both scores, and `configKey` / `remediationHint` per `TS-13`;
 - URL-length rejection events (`URL_TOO_LONG`) for canonical URLs rejected before DB insert.
 - robots fetch outcomes (`2xx`, `4xx`, `3xx/5xx`) and robots decision outcomes.
 - **`FETCH_INCOMPLETE_SHELL`**: emitted when the fetcher escalates from plain HTTP to headless (or flags shell HTML) per [TS-03](TS-03-fetcher-specification.md); MUST include `url`, `domain`, `workerId`.
@@ -71,7 +71,7 @@ At crawler stop, emit summary:
 - top domains by fetch count.
 - total rate-limit delays and cumulative delayed time.
 - total lease recoveries and max observed lease age.
-- total budget drops (`BUDGET_DROPPED`) and deferred ingestions.
+- total budget drops (`BUDGET_DROPPED`), deferred ingestions, and count of successful `FRONTIER` score replacements (`FRONTIER_EVICTED_FOR_SCORE` or equivalent).
 
 Summary should also include seed bootstrap metadata:
 - number of seeds configured;

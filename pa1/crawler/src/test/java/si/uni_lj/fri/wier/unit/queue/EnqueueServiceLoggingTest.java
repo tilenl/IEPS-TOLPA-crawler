@@ -48,4 +48,29 @@ class EnqueueServiceLoggingTest {
         assertTrue(msg.contains("configKey=crawler.budget.maxFrontierRows"));
         assertTrue(msg.contains("workerId=ingestion"));
     }
+
+    @Test
+    void frontierEvictedForScore_log_contains_event_and_triggerKeys() {
+        new EnqueueService()
+                .logFrontierEvictedForScore(
+                        "https://example.com/victim",
+                        0.1,
+                        "https://example.com/new",
+                        0.9,
+                        "crawler.budget.maxFrontierRows",
+                        "example.com");
+        String msg = appender.list.getFirst().getFormattedMessage();
+        assertTrue(msg.contains("event=FRONTIER_EVICTED_FOR_SCORE"));
+        assertTrue(msg.contains("triggerConfigKeys=crawler.budget.maxFrontierRows"));
+        assertTrue(msg.contains("victimScore=0.1"));
+        assertTrue(msg.contains("newScore=0.9"));
+    }
+
+    @Test
+    void frontierFullLowScore_log_contains_configKey() {
+        new EnqueueService().logFrontierFullLowScore("https://example.com/weak", "example.com");
+        String msg = appender.list.getFirst().getFormattedMessage();
+        assertTrue(msg.contains("event=FRONTIER_FULL_LOW_SCORE"));
+        assertTrue(msg.contains("configKey=crawler.budget.maxFrontierRows"));
+    }
 }

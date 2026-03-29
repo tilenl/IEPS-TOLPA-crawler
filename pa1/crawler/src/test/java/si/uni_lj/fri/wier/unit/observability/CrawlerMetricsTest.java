@@ -43,10 +43,14 @@ class CrawlerMetricsTest {
         m.recordLeaseRecoveryBatch(3);
         m.recordBudgetDropped();
         m.recordFrontierDeferred();
+        m.recordFrontierEvictedForScore();
+        m.recordFrontierFullLowScore();
         assertEquals(3L, m.leaseRecoveryRowsTotal());
         assertEquals(1L, m.leaseRecoveryBatchesTotal());
         assertEquals(1L, m.budgetDroppedTotal());
         assertEquals(1L, m.frontierDeferredTotal());
+        assertEquals(1L, m.frontierEvictedForScoreTotal());
+        assertEquals(1L, m.frontierFullLowScoreTotal());
     }
 
     @Test

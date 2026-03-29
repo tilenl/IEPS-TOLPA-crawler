@@ -14,16 +14,36 @@ public final class ConfigRemediation {
     public static Remediation budgetTotalPagesDropped() {
         return new Remediation(
                 "crawler.budget.maxTotalPages",
-                "To crawl more distinct pages in a run, increase crawler.budget.maxTotalPages and ensure"
-                        + " database and disk capacity are sufficient for the larger crawl.");
+                "To store more concurrent pages without score-based replacement churn, increase"
+                        + " crawler.budget.maxTotalPages and ensure database and disk capacity are sufficient."
+                        + " If the table is full of terminal rows and no FRONTIER victim exists, replacement"
+                        + " cannot run until the frontier is non-empty or the cap is raised.");
     }
 
     public static Remediation frontierHighWatermarkDeferred() {
         return new Remediation(
                 "crawler.budget.maxFrontierRows",
-                "To admit more URLs into the frontier sooner, increase crawler.budget.maxFrontierRows,"
+                "To admit weaker discoveries sooner without rejection, increase crawler.budget.maxFrontierRows,"
                         + " or reduce discovery breadth via scoring seeds and link policy; very large"
                         + " queues increase memory and DB load.");
+    }
+
+    /** TS-13 / TS-15: informational log when a FRONTIER row was evicted to admit a higher-scoring discovery. */
+    public static Remediation frontierEvictedForScore() {
+        return new Remediation(
+                "crawler.budget.maxTotalPages,crawler.budget.maxFrontierRows",
+                "A lower-scoring FRONTIER URL was removed to admit a better discovery under the active cap(s)."
+                        + " To reduce replacement churn, raise crawler.budget.maxTotalPages and/or"
+                        + " crawler.budget.maxFrontierRows, or narrow discovery breadth.");
+    }
+
+    /** TS-02: new distinct URL at frontier watermark but not strictly better than the worst FRONTIER row. */
+    public static Remediation frontierFullLowScore() {
+        return new Remediation(
+                "crawler.budget.maxFrontierRows",
+                "The frontier is at its configured size and this URL does not outrank the lowest-scoring queued"
+                        + " candidate. Increase crawler.budget.maxFrontierRows, improve discovery relevance,"
+                        + " or wait until the queue drains.");
     }
 
     public static Remediation fetchTimeoutExhausted() {

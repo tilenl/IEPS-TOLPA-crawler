@@ -175,13 +175,15 @@ Recovery guarantees:
 
 ## Backpressure And Crawl Budget Contract
 
-- ingestion MUST enforce global crawl budget and queue budget from `TS-13`;
-- when budget is exhausted, discovered URL is not inserted to frontier and decision is logged as `BUDGET_DROPPED`;
-- budget-hit path MUST remain idempotent and must not mutate already-processed terminal pages.
-- required decision order for discovered URLs:
-  1. reject if global max pages reached;
-  2. if frontier high-watermark reached, defer low-score URLs by setting future `next_attempt_at`;
-  3. otherwise ingest normally.
+- ingestion MUST enforce global crawl budget and frontier queue budget from `TS-13`;
+- when a **new** distinct `page` row would violate `crawler.budget.maxTotalPages` or `crawler.budget.maxFrontierRows`, Stage A MUST first attempt **score-based `FRONTIER` replacement**: delete exactly one victim row with `page_type_code='FRONTIER'` and minimum `relevance_score` (deterministic tie-break), after deleting `link` rows that reference that `page_id`, and insert the new URL **only if** its relevance score is **strictly greater** than the victim’s. Only **FRONTIER** rows are eligible victims; terminal and `PROCESSING` rows MUST NOT be deleted for this purpose.
+- if replacement succeeds, implementations MUST emit `FRONTIER_EVICTED_FOR_SCORE` (or equivalent) per `TS-13` / `TS-15`.
+- if the global row count is at `maxTotalPages` and replacement is **not** possible (no qualifying `FRONTIER` victim, or discovery score is not strictly better), the discovered URL MUST NOT receive a new `page` row and the decision MUST be logged as `BUDGET_DROPPED`.
+- if only the frontier watermark applies and replacement is not possible, Stage A MUST defer (`next_attempt_at`) and/or reject with an explicit ingest reason rather than grow `FRONTIER` past the configured limit.
+- budget and replacement paths MUST remain idempotent and MUST NOT mutate already-processed terminal pages.
+- required decision order for discovered URLs that would create a **new** `page` row (after URL validation length, etc.):
+  1. if `COUNT(page) >= maxTotalPages` **or** `COUNT(FRONTIER) >= maxFrontierRows`, attempt score-based `FRONTIER` replacement as above; on failure when total-page cap blocks admission, `BUDGET_DROPPED`; on failure when only frontier cap applies, defer/reject per policy;
+  2. otherwise ingest normally (robots and `insertFrontierIfAbsent` per Stage A contract).
 
 ## Termination Evaluation Contract
 

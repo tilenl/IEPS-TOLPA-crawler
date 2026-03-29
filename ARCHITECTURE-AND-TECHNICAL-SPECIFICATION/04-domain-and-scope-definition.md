@@ -34,9 +34,10 @@ Notes:
 - do not clone repos or traverse full repo trees.
 
 Hard budget guardrails (normative):
-- maximum stored pages per run: `5000` (`crawler.budget.maxTotalPages`);
-- ingestion must stop inserting new frontier rows when global cap is reached;
-- frontier queue size is bounded by `crawler.budget.maxFrontierRows` (high-watermark deferral per `TS-02` / `TS-13`);
+- maximum **concurrent** rows in `crawldb.page` for the run: `5000` (`crawler.budget.maxTotalPages`);
+- maximum **concurrent** `FRONTIER` rows: `crawler.budget.maxFrontierRows` (`TS-02` / `TS-13`);
+- when admitting a **new** distinct URL would exceed either cap, Stage A attempts **score-based replacement**: remove the lowest-scoring `FRONTIER` row (and its `link` edges) and insert the new row only if the discovery’s relevance score is **strictly higher** than the victim’s; terminal and in-flight rows are never removed this way;
+- if replacement is not possible and the **total** row cap blocks admission, no new `page` row is created (`BUDGET_DROPPED` per `TS-13`);
 - on budget rejection, link relation MAY still be persisted when target already exists, but no new page row is created.
 
 ## Relevance Domain

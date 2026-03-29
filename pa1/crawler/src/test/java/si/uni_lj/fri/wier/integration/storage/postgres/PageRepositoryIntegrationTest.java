@@ -10,6 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Properties;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -58,7 +60,10 @@ import si.uni_lj.fri.wier.observability.SeedBootstrapStats;
 import si.uni_lj.fri.wier.queue.claim.ClaimService;
 import si.uni_lj.fri.wier.storage.frontier.FrontierStore;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
+import si.uni_lj.fri.wier.config.RuntimeConfig;
+import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
+import si.uni_lj.fri.wier.unit.downloader.fetch.AllowAllPolitenessStub;
 
 @Testcontainers(disabledWithoutDocker = true)
 class PageRepositoryIntegrationTest {
@@ -1238,6 +1243,181 @@ class PageRepositoryIntegrationTest {
         } finally {
             lg.detachAppender(appender);
             appender.stop();
+        }
+    }
+
+    @Test
+    void ingestDiscoveredUrls_scoreEviction_atMaxFrontierRows_replacesLowestScoringFrontier() throws Exception {
+        // TS-13: crawler.budget.maxFrontierRows must be >= 100 at validate() time.
+        final int frontierCap = 100;
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, frontierCap);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("example.com").orElseThrow();
+        long fromPage = repo.insertFrontierIfAbsent("https://example.com/parent-fe", siteId, 0.5).pageId();
+        repo.insertFrontierIfAbsent("https://example.com/fe-low", siteId, 0.1);
+        repo.insertFrontierIfAbsent("https://example.com/fe-mid", siteId, 0.2);
+        for (int i = 0; i < frontierCap - 3; i++) {
+            repo.insertFrontierIfAbsent("https://example.com/fe-fill-" + i, siteId, 0.4);
+        }
+        assertEquals((long) frontierCap, countFrontierRows());
+
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://example.com/fe-better", siteId, fromPage, "", "", 0.99)));
+
+        assertEquals(1, r.acceptedPageIds().size());
+        assertTrue(r.rejections().isEmpty());
+        assertEquals((long) frontierCap, countFrontierRows());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT COUNT(*) FROM crawldb.page WHERE url = ?")) {
+            ps.setString(1, "https://example.com/fe-low");
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(0, rs.getInt(1));
+            }
+            ps.setString(1, "https://example.com/fe-better");
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(1, rs.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void ingestDiscoveredUrls_scoreEviction_atMaxTotalPages_replacesWorstFrontier() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(3, 20_000);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("example.com").orElseThrow();
+        long fromPage = repo.insertFrontierIfAbsent("https://example.com/tp-parent", siteId, 0.5).pageId();
+        repo.insertFrontierIfAbsent("https://example.com/tp-a", siteId, 0.1);
+        repo.insertFrontierIfAbsent("https://example.com/tp-b", siteId, 0.2);
+        assertEquals(3L, countAllPages());
+        assertEquals(3L, countFrontierRows());
+
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl("https://example.com/tp-new", siteId, fromPage, "", "", 0.95)));
+
+        assertEquals(1, r.acceptedPageIds().size());
+        assertTrue(r.rejections().isEmpty());
+        assertEquals(3L, countAllPages());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT COUNT(*) FROM crawldb.page WHERE url = ?")) {
+            ps.setString(1, "https://example.com/tp-a");
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(0, rs.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void ingestDiscoveredUrls_budgetDropped_whenNoFrontierVictimAtTotalCap() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(2, 20_000);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("example.com").orElseThrow();
+        long id1 = repo.insertFrontierIfAbsent("https://example.com/cap-html-1", siteId, 0.5).pageId();
+        long id2 = repo.insertFrontierIfAbsent("https://example.com/cap-html-2", siteId, 0.5).pageId();
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET page_type_code = 'HTML', html_content = '',"
+                                        + " http_status_code = 200, accessed_time = now() WHERE id = ?")) {
+            ps.setLong(1, id1);
+            ps.executeUpdate();
+            ps.setLong(1, id2);
+            ps.executeUpdate();
+        }
+        assertEquals(0L, countFrontierRows());
+        assertEquals(2L, countAllPages());
+
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://example.com/cap-new", siteId, id1, "", "", 0.99)));
+
+        assertTrue(r.acceptedPageIds().isEmpty());
+        assertEquals(1, r.rejections().size());
+        assertEquals("BUDGET_DROPPED", r.rejections().getFirst().reasonCode());
+    }
+
+    @Test
+    void ingestDiscoveredUrls_frontierFullLowScore_whenAtFrontierCapAndNotBetter() throws Exception {
+        final int frontierCap = 100;
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, frontierCap);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("example.com").orElseThrow();
+        long fromPage = repo.insertFrontierIfAbsent("https://example.com/ff-parent", siteId, 0.9).pageId();
+        repo.insertFrontierIfAbsent("https://example.com/ff-strong", siteId, 0.85);
+        for (int i = 0; i < frontierCap - 2; i++) {
+            repo.insertFrontierIfAbsent("https://example.com/ff-fill-" + i, siteId, 0.91);
+        }
+        assertEquals((long) frontierCap, countFrontierRows());
+
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://example.com/ff-weak", siteId, fromPage, "", "", 0.05)));
+
+        assertTrue(r.acceptedPageIds().isEmpty());
+        assertEquals(1, r.rejections().size());
+        assertEquals("FRONTIER_FULL_LOW_SCORE", r.rejections().getFirst().reasonCode());
+    }
+
+    private PageRepository policyRepository(RuntimeConfig cfg) {
+        return new PageRepository(
+                dataSource,
+                3,
+                Duration.ofMillis(10),
+                5,
+                new AllowAllPolitenessStub(),
+                cfg,
+                new EnqueueService(),
+                null,
+                null);
+    }
+
+    private static RuntimeConfig budgetRuntimeConfig(int maxTotalPages, int maxFrontierRows) throws Exception {
+        Properties p = new Properties();
+        Path kw = Paths.get(PageRepositoryIntegrationTest.class.getResource("/keywords-valid.json").toURI());
+        p.setProperty("crawler.scoring.keywordConfig", kw.toString());
+        p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
+        p.setProperty("crawler.db.user", "u");
+        p.setProperty("crawler.db.password", "p");
+        p.setProperty("crawler.db.expectedSchemaVersion", "7");
+        p.setProperty("crawler.seedUrls", "https://example.com/");
+        p.setProperty("crawler.budget.maxTotalPages", Integer.toString(maxTotalPages));
+        p.setProperty("crawler.budget.maxFrontierRows", Integer.toString(maxFrontierRows));
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        return cfg;
+    }
+
+    private long countFrontierRows() throws SQLException {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'FRONTIER'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    private long countAllPages() throws SQLException {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM crawldb.page")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
         }
     }
 
