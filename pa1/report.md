@@ -65,6 +65,14 @@ Relevance is computed at discovery time based on repository metadata (name, desc
 
 **Seed URLs** are assigned a **fixed relevance score** from `crawler.scoring.seedRelevanceScore` when they are inserted into the frontier at crawl startup. Startup validation requires this value to be **strictly greater** than the maximum possible keyword-based score (so operator-chosen seeds stay ahead of any discovered link). Seeds are not scored with the keyword-based scorer, and we **do not** HTTP-fetch seed pages during bootstrap: fetching would have to respect **robots.txt** (including crawl-delay / politeness, e.g. on the order of **5 seconds** between requests per host), which would make seeding unnecessarily slow before normal worker fetching begins. Discovered URLs use keyword-based scoring from configuration (uncapped sum of per-hit weights).
 
+### Keyword list size and crawl skew
+
+A **very large** `keywords.json` (many primary and secondary terms, including generic machine-learning and tooling vocabulary) **skewed the set of GitHub repositories** stored in the database toward **broad ML and model-engineering** topics. Those pages accumulated relevance from **substring matches** in the combined **URL, anchor text, and surrounding HTML context**—not only from repository cards—so marketing and site-wide chrome could dominate the score. The result was **not generic enough** for **image segmentation**: high-priority URLs were often “anything ML,” not segmentation-focused projects.
+
+We **corrected the crawler’s search path** by **returning to a shorter, simpler keyword list** (`pa1/keywords.json`): core segmentation terms (for example `segmentation`, `mask`, `semantic`, `instance`, familiar model families), a modest set of framework keywords, and secondary terms aligned with vision pipelines rather than a long tail of architectures, datasets, and MLOps stack words.
+
+**Example of skew:** `github.com/pricing` could receive a **strong relevance score** despite having nothing to do with image segmentation, because GitHub’s pricing and product pages mention **Copilot**, **neural networks**, **machine learning**, and related wording in **large navigation and marketing blocks**. With many ML-oriented keywords and a wide DOM context window, those pages matched repeatedly and looked like excellent crawl targets. A tighter dictionary reduces that kind of **false-positive boosting** and keeps the frontier closer to segmentation-related repositories.
+
 ## Deduplication Strategy
 - **URL Deduplication**: Handled by the database unique constraint on the `url` column.
 - **Content Deduplication**: SHA-256 hash of the HTML body is compared against existing hashes in the database.
