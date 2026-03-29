@@ -112,7 +112,34 @@ Other CLI options:
 - On normal completion the process prints a **run summary** (counts, domains, rate-limit waits, etc.) and exits with code **0**.
 - **SIGINT / SIGTERM** should stop the scheduler gracefully.
 
-To inspect data, use **pgAdmin** or `psql` against `crawldb` (see below).
+To inspect data, use **pgAdmin** or `psql` against `crawldb` (see below), or run the **live terminal dashboard** in [Live crawl status (terminal)](#live-crawl-status-terminal).
+
+---
+
+## Live crawl status (terminal)
+
+[`scripts/db-crawl-status.sh`](scripts/db-crawl-status.sh) polls PostgreSQL and redraws a **colorized** dashboard (budget bar vs `crawler.budget.maxTotalPages`, separate bars for fetched / frontier / processing, totals, and a rough **ETA** from queue depth using **5 seconds per URL** in the queue by default). The screen **clears** before each update; default refresh is **every 5 seconds**. Press **Ctrl+C** to exit.
+
+**You need:** Bash, and either **`psql`** on your `PATH` with credentials matching `application.properties` (`localhost:5432`, database `crawldb`, user `user`, password `SecretPassword`, unless you override `PG*`), **or** Docker with the **`postgresql-wier`** container up—then pass **`--docker`** so the script runs `psql` inside the container.
+
+From the **repository root**:
+
+```bash
+chmod +x pa1/scripts/db-crawl-status.sh   # once, if needed
+./pa1/scripts/db-crawl-status.sh
+```
+
+Without a local client:
+
+```bash
+./pa1/scripts/db-crawl-status.sh --docker
+```
+
+Use **`--interval SECONDS`** (or `CRAWLER_STATUS_REFRESH_SEC`) to change how often the display refreshes. Other overrides (budget cap for the bar, ETA seconds per queued URL, container name) are documented in:
+
+```bash
+./pa1/scripts/db-crawl-status.sh --help
+```
 
 ---
 
