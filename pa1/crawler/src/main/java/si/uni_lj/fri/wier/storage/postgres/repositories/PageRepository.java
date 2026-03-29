@@ -625,6 +625,9 @@ public final class PageRepository {
     }
 
     public LinkInsertResult insertLink(long fromPageId, long toPageId) {
+        if (fromPageId == toPageId) {
+            return new LinkInsertResult(false);
+        }
         final String sql =
                 """
                 INSERT INTO crawldb.link(from_page, to_page)
@@ -1025,6 +1028,9 @@ public final class PageRepository {
     }
 
     private void insertLink(Connection connection, long fromPageId, long toPageId) throws SQLException {
+        if (fromPageId == toPageId) {
+            return;
+        }
         final String sql =
                 """
                 INSERT INTO crawldb.link(from_page, to_page)

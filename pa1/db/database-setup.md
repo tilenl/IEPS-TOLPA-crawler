@@ -73,6 +73,8 @@ Use this manual path when:
 - You reused an old data directory.
 - You intentionally want to reapply schema in an existing database.
 
+**Upgrading an existing database from schema v4 → v5:** remove any self-loop link rows (optional if none exist), then apply `pa1/db/migrations/V005__link_no_self_loop_schema_v5.sql`, and set `crawler.db.expectedSchemaVersion=5`. For cleanup only (no constraint yet), you can run `pa1/db/cleanup_self_loop_links.sql`.
+
 ## Expected End State
 
 After successful setup, all of the following should be true:

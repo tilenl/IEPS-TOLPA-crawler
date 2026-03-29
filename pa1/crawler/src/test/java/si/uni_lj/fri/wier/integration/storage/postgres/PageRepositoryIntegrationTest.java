@@ -321,6 +321,30 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void persistFetchOutcomeWithLinks_discoveredUrlSameAsSourcePage_doesNotInsertSelfLink() throws Exception {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        String pageUrl = "https://example.com/home";
+        long pageId = repository.insertFrontierIfAbsent(pageUrl, siteId, 0.7).pageId();
+
+        repository.persistFetchOutcomeWithLinks(
+                new FetchContext(pageId, pageUrl, siteId, 0, Instant.now()),
+                new FetchResult(200, "text/html", "<html>home</html>", Instant.now()),
+                ParseResult.empty(),
+                List.of(new DiscoveredUrl(pageUrl, siteId, pageId, "Home", "nav", 0.5)));
+
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT COUNT(*) FROM crawldb.link WHERE from_page = ? AND to_page = ?")) {
+            ps.setLong(1, pageId);
+            ps.setLong(2, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(0, rs.getInt(1), "self-loop link must not be stored");
+            }
+        }
+    }
+
+    @Test
     void persistFetchOutcomeWithLinks_serialSameHash_twoDisjointBatches() throws Exception {
         int n = 4;
         long siteId = repository.ensureSite("example.com").orElseThrow();

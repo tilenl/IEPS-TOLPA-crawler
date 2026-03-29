@@ -113,7 +113,8 @@ CREATE INDEX "idx_image_page_id" ON crawldb.image ( page_id );
 CREATE TABLE crawldb.link ( 
 	from_page            integer  NOT NULL,
 	to_page              integer  NOT NULL,
-	CONSTRAINT _0 PRIMARY KEY ( from_page, to_page )
+	CONSTRAINT _0 PRIMARY KEY ( from_page, to_page ),
+	CONSTRAINT ck_link_no_self_loop CHECK (from_page <> to_page)
  );
 
 CREATE INDEX "idx_link_from_page" ON crawldb.link ( from_page );
@@ -179,4 +180,4 @@ INSERT INTO crawldb.page_type VALUES
 	('PROCESSING'),
 	('ERROR');
 
-INSERT INTO crawldb.schema_version (id, version) VALUES (1, 4);
+INSERT INTO crawldb.schema_version (id, version) VALUES (1, 5);
