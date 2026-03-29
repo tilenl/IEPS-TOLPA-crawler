@@ -63,6 +63,7 @@ public final class CrawlerEnvironmentNames {
         "crawler.scoring.keywordConfig",
         "crawler.scoring.primaryWeight",
         "crawler.scoring.secondaryWeight",
+        "crawler.scoring.maxOccurrencesPerKeyword",
         "crawler.scoring.seedRelevanceScore",
         "crawler.db.url",
         "crawler.db.user",

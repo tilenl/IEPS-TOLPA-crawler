@@ -64,6 +64,7 @@ public record RuntimeConfig(
         Path scoringKeywordConfig,
         double scoringPrimaryWeight,
         double scoringSecondaryWeight,
+        int scoringMaxOccurrencesPerKeyword,
         double scoringSeedRelevanceScore,
         String dbUrl,
         String dbUser,
@@ -117,6 +118,10 @@ public record RuntimeConfig(
                 Path.of(Objects.requireNonNull(p.getProperty("crawler.scoring.keywordConfig"), "crawler.scoring.keywordConfig")),
                 parseDouble(p, "crawler.scoring.primaryWeight", KeywordRelevanceScorer.DEFAULT_PRIMARY_WEIGHT),
                 parseDouble(p, "crawler.scoring.secondaryWeight", KeywordRelevanceScorer.DEFAULT_SECONDARY_WEIGHT),
+                parseInt(
+                        p,
+                        "crawler.scoring.maxOccurrencesPerKeyword",
+                        KeywordRelevanceScorer.DEFAULT_MAX_OCCURRENCES_PER_KEYWORD),
                 parseDouble(p, "crawler.scoring.seedRelevanceScore", 1000.0),
                 Objects.requireNonNull(p.getProperty("crawler.db.url"), "crawler.db.url"),
                 Objects.requireNonNull(p.getProperty("crawler.db.user"), "crawler.db.user"),
@@ -259,17 +264,25 @@ public record RuntimeConfig(
                 scoringSecondaryWeight > 0.0 && scoringSecondaryWeight <= 10.0,
                 "crawler.scoring.secondaryWeight",
                 "(0, 10]");
+        require(
+                scoringMaxOccurrencesPerKeyword >= 1 && scoringMaxOccurrencesPerKeyword <= 4096,
+                "crawler.scoring.maxOccurrencesPerKeyword",
+                "1..4096");
         require(scoringSeedRelevanceScore > 0.0, "crawler.scoring.seedRelevanceScore", "> 0");
         try {
             KeywordRelevanceScorer.KeywordTierCounts tiers = KeywordRelevanceScorer.readTierCounts(scoringKeywordConfig);
-            double maxKeyword = tiers.maxKeywordScore(scoringPrimaryWeight, scoringSecondaryWeight);
-            // Strictly greater so no discovered URL that matches every configured keyword ties or beats seeds.
+            double maxKeyword =
+                    tiers.maxKeywordScore(
+                            scoringPrimaryWeight,
+                            scoringSecondaryWeight,
+                            scoringMaxOccurrencesPerKeyword);
+            // Strictly greater so no discovered URL ties or beats seeds under capped occurrence scoring.
             if (!(scoringSeedRelevanceScore > maxKeyword)) {
                 throw new IllegalArgumentException(
                         "Invalid configuration: crawler.scoring.seedRelevanceScore must be strictly greater than "
                                 + "the maximum possible keyword score ("
                                 + maxKeyword
-                                + " = "
+                                + " = ("
                                 + tiers.primaryCount()
                                 + " primary * "
                                 + scoringPrimaryWeight
@@ -277,8 +290,11 @@ public record RuntimeConfig(
                                 + tiers.secondaryCount()
                                 + " secondary * "
                                 + scoringSecondaryWeight
+                                + ") * crawler.scoring.maxOccurrencesPerKeyword="
+                                + scoringMaxOccurrencesPerKeyword
                                 + "). remediationHint=Raise crawler.scoring.seedRelevanceScore, or reduce weights / "
-                                + "keyword list size per crawler.scoring.keywordConfig.");
+                                + "keyword list size / crawler.scoring.maxOccurrencesPerKeyword per "
+                                + "crawler.scoring.keywordConfig.");
             }
         } catch (IOException e) {
             throw new IllegalArgumentException(

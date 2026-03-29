@@ -104,7 +104,8 @@ public final class PreferentialCrawler {
                 "effectiveConfig robotsBucketsHealthScoring robotsCacheTtlHours={} robotsCacheMaxEntries={}"
                         + " temporaryDenyMaxMinutes={} temporaryDenyRetryMinutes={} bucketsCacheTtlHours={}"
                         + " bucketsCacheMaxEntries={} healthHeartbeatIntervalMs={} scoringKeywordConfigPath={}"
-                        + " scoringPrimaryWeight={} scoringSecondaryWeight={} scoringSeedRelevanceScore={}",
+                        + " scoringPrimaryWeight={} scoringSecondaryWeight={} scoringMaxOccurrencesPerKeyword={}"
+                        + " scoringSeedRelevanceScore={}",
                 config.robotsCacheTtlHours(),
                 config.robotsCacheMaxEntries(),
                 config.robotsTemporaryDenyMaxMinutes(),
@@ -115,6 +116,7 @@ public final class PreferentialCrawler {
                 config.scoringKeywordConfig(),
                 config.scoringPrimaryWeight(),
                 config.scoringSecondaryWeight(),
+                config.scoringMaxOccurrencesPerKeyword(),
                 config.scoringSeedRelevanceScore());
     }
 
@@ -230,7 +232,8 @@ public final class PreferentialCrawler {
                 new KeywordRelevanceScorer(
                         config.scoringKeywordConfig(),
                         config.scoringPrimaryWeight(),
-                        config.scoringSecondaryWeight());
+                        config.scoringSecondaryWeight(),
+                        config.scoringMaxOccurrencesPerKeyword());
         HtmlParser parser =
                 new HtmlParser(
                         canonicalizer,

@@ -23,46 +23,74 @@ import org.json.JSONObject;
 import si.uni_lj.fri.wier.contracts.RelevanceScorer;
 
 /**
- * Keyword overlap scorer: each matching primary or secondary keyword adds a configurable weight. Scores are
- * non-negative and not capped; sum all hits so highly relevant text ranks above sparse matches.
+ * Keyword overlap scorer: each primary or secondary keyword adds its tier weight per non-overlapping substring
+ * occurrence in the normalized haystack (URL + anchor + context), capped per keyword by {@link
+ * #maxOccurrencesPerKeyword}. Scores are non-negative; the sum is not globally capped.
  */
 public final class KeywordRelevanceScorer implements RelevanceScorer {
 
-    /** Default increment when a primary keyword substring is found (TS-13 default). */
+    /** Default increment when a primary keyword substring matches (TS-13 default), per counted occurrence. */
     public static final double DEFAULT_PRIMARY_WEIGHT = 0.18;
 
-    /** Default increment when a secondary keyword substring is found (TS-13 default). */
+    /** Default increment when a secondary keyword substring matches (TS-13 default), per counted occurrence. */
     public static final double DEFAULT_SECONDARY_WEIGHT = 0.09;
+
+    /**
+     * Default cap on counted occurrences per keyword per {@link #compute} call. Chosen so default {@code
+     * crawler.scoring.seedRelevanceScore} stays above the worst-case keyword score for the repo keyword list at default
+     * weights (see {@link si.uni_lj.fri.wier.config.RuntimeConfig#validate()}).
+     */
+    public static final int DEFAULT_MAX_OCCURRENCES_PER_KEYWORD = 128;
 
     private final List<String> primary;
     private final List<String> secondary;
     private final double primaryWeight;
     private final double secondaryWeight;
+    private final int maxOccurrencesPerKeyword;
 
     /**
-     * Loads keywords with {@link #DEFAULT_PRIMARY_WEIGHT} and {@link #DEFAULT_SECONDARY_WEIGHT}.
+     * Loads keywords with {@link #DEFAULT_PRIMARY_WEIGHT}, {@link #DEFAULT_SECONDARY_WEIGHT}, and {@link
+     * #DEFAULT_MAX_OCCURRENCES_PER_KEYWORD}.
      *
      * @param keywordConfigPath path validated at startup by {@link si.uni_lj.fri.wier.config.RuntimeConfig#validate()}
      */
     public KeywordRelevanceScorer(Path keywordConfigPath) throws IOException {
-        this(keywordConfigPath, DEFAULT_PRIMARY_WEIGHT, DEFAULT_SECONDARY_WEIGHT);
+        this(keywordConfigPath, DEFAULT_PRIMARY_WEIGHT, DEFAULT_SECONDARY_WEIGHT, DEFAULT_MAX_OCCURRENCES_PER_KEYWORD);
+    }
+
+    /**
+     * Loads keywords with the given weights and {@link #DEFAULT_MAX_OCCURRENCES_PER_KEYWORD}.
+     *
+     * @param keywordConfigPath path validated at startup
+     * @param primaryWeight strictly positive per primary occurrence (before cap)
+     * @param secondaryWeight strictly positive per secondary occurrence (before cap)
+     */
+    public KeywordRelevanceScorer(Path keywordConfigPath, double primaryWeight, double secondaryWeight)
+            throws IOException {
+        this(keywordConfigPath, primaryWeight, secondaryWeight, DEFAULT_MAX_OCCURRENCES_PER_KEYWORD);
     }
 
     /**
      * Loads and normalizes keywords (trim, lower case, dedupe preserving first-seen order) from a UTF-8 JSON file.
      *
      * @param keywordConfigPath path validated at startup
-     * @param primaryWeight strictly positive per primary hit
-     * @param secondaryWeight strictly positive per secondary hit
+     * @param primaryWeight strictly positive per primary occurrence (before cap)
+     * @param secondaryWeight strictly positive per secondary occurrence (before cap)
+     * @param maxOccurrencesPerKeyword maximum non-overlapping occurrences counted per keyword (must be {@code >= 1})
      */
-    public KeywordRelevanceScorer(Path keywordConfigPath, double primaryWeight, double secondaryWeight)
+    public KeywordRelevanceScorer(
+            Path keywordConfigPath, double primaryWeight, double secondaryWeight, int maxOccurrencesPerKeyword)
             throws IOException {
         Objects.requireNonNull(keywordConfigPath, "keywordConfigPath");
         if (!(primaryWeight > 0.0) || !(secondaryWeight > 0.0)) {
             throw new IllegalArgumentException("primaryWeight and secondaryWeight must be > 0");
         }
+        if (maxOccurrencesPerKeyword < 1) {
+            throw new IllegalArgumentException("maxOccurrencesPerKeyword must be >= 1");
+        }
         this.primaryWeight = primaryWeight;
         this.secondaryWeight = secondaryWeight;
+        this.maxOccurrencesPerKeyword = maxOccurrencesPerKeyword;
         String text = Files.readString(keywordConfigPath, StandardCharsets.UTF_8);
         JSONObject root = new JSONObject(text);
         this.primary = readDedupedKeywordList(keywordConfigPath, "primary", root);
@@ -71,12 +99,17 @@ public final class KeywordRelevanceScorer implements RelevanceScorer {
 
     /**
      * Deduped tier sizes from the same file normalization as the scorer (for startup validation: seed score must
-     * exceed {@code primaryCount * primaryWeight + secondaryCount * secondaryWeight}).
+     * exceed worst-case capped occurrence sum).
      */
     public record KeywordTierCounts(int primaryCount, int secondaryCount) {
-        /** Maximum possible {@link #compute} result for the given per-hit weights (every keyword matches). */
-        public double maxKeywordScore(double primaryWeight, double secondaryWeight) {
-            return primaryCount * primaryWeight + secondaryCount * secondaryWeight;
+        /**
+         * Upper bound on {@link KeywordRelevanceScorer#compute} for the given weights if every keyword appears {@code
+         * maxOccurrencesPerKeyword} times.
+         */
+        public double maxKeywordScore(
+                double primaryWeight, double secondaryWeight, int maxOccurrencesPerKeyword) {
+            return primaryCount * primaryWeight * maxOccurrencesPerKeyword
+                    + secondaryCount * secondaryWeight * maxOccurrencesPerKeyword;
         }
     }
 
@@ -121,23 +154,33 @@ public final class KeywordRelevanceScorer implements RelevanceScorer {
 
         double score = 0.0;
         for (String kw : primary) {
-            if (containsKeyword(haystack, kw)) {
-                score += primaryWeight;
-            }
+            int n = Math.min(countNonOverlapping(haystack, kw), maxOccurrencesPerKeyword);
+            score += primaryWeight * n;
         }
         for (String kw : secondary) {
-            if (containsKeyword(haystack, kw)) {
-                score += secondaryWeight;
-            }
+            int n = Math.min(countNonOverlapping(haystack, kw), maxOccurrencesPerKeyword);
+            score += secondaryWeight * n;
         }
         return score;
     }
 
     /**
-     * Substring match: phrases from JSON are contiguous substrings in the normalized haystack (singletons match inside
-     * hyphenated or compound tokens).
+     * Non-overlapping substring occurrences: after each match, search resumes at {@code index + keyword.length()}.
      */
-    private static boolean containsKeyword(String haystack, String keyword) {
-        return haystack.contains(keyword);
+    public static int countNonOverlapping(String haystack, String keyword) {
+        if (keyword.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        int from = 0;
+        while (true) {
+            int idx = haystack.indexOf(keyword, from);
+            if (idx < 0) {
+                break;
+            }
+            count++;
+            from = idx + keyword.length();
+        }
+        return count;
     }
 }

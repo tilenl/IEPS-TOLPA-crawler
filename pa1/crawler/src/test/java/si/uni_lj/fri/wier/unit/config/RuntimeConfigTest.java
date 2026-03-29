@@ -112,10 +112,29 @@ class RuntimeConfigTest {
         p.setProperty("crawler.scoring.keywordConfig", good.toString());
         p.setProperty("crawler.scoring.primaryWeight", "0.18");
         p.setProperty("crawler.scoring.secondaryWeight", "0.09");
-        // max = 0.18 + 0.09 = 0.27 — equal is invalid
+        p.setProperty("crawler.scoring.maxOccurrencesPerKeyword", "128");
+        // max = (0.18 + 0.09) * 128 = 34.56 — seed below that is invalid
         p.setProperty("crawler.scoring.seedRelevanceScore", "0.27");
         RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
         assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
+    @Test
+    void validate_rejectsMaxOccurrencesPerKeywordOutOfRange(@TempDir Path dir) throws Exception {
+        Path good = dir.resolve("good.json");
+        Files.writeString(
+                good,
+                """
+                {"primary":["x"],"secondary":["y"]}
+                """);
+        Properties p = baseProps();
+        p.setProperty("crawler.scoring.keywordConfig", good.toString());
+        p.setProperty("crawler.scoring.maxOccurrencesPerKeyword", "0");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+        p.setProperty("crawler.scoring.maxOccurrencesPerKeyword", "4097");
+        RuntimeConfig cfg2 = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg2::validate);
     }
 
     @Test

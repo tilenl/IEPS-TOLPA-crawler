@@ -81,9 +81,10 @@ Parameters are grouped by subsystem. Each row lists the **crawler impact**: what
 | Key | Default | Validation | Crawler impact |
 | --- | --- | --- | --- |
 | `crawler.scoring.keywordConfig` | path | must exist | Path to JSON keyword lists used by `RelevanceScorer` at Stage A; drives frontier priority ordering. |
-| `crawler.scoring.primaryWeight` | `0.18` | `(0, 10]` | Per-hit increment when a primary keyword substring matches URL + anchor + context (uncapped sum). |
-| `crawler.scoring.secondaryWeight` | `0.09` | `(0, 10]` | Per-hit increment when a secondary keyword substring matches. |
-| `crawler.scoring.seedRelevanceScore` | `1000` | `> 0` and **strictly greater** than `nPrimary * primaryWeight + nSecondary * secondaryWeight` for deduped keyword counts from `keywordConfig` | Fixed `relevance_score` for TS-02 seed bootstrap rows so seeds always outrank keyword-scored discoveries. |
+| `crawler.scoring.primaryWeight` | `0.18` | `(0, 10]` | Per **non-overlapping substring occurrence** of a primary keyword in URL + anchor + context, before cap. |
+| `crawler.scoring.secondaryWeight` | `0.09` | `(0, 10]` | Per **non-overlapping substring occurrence** of a secondary keyword in URL + anchor + context, before cap. |
+| `crawler.scoring.maxOccurrencesPerKeyword` | `128` | `1..4096` | Maximum counted occurrences **per keyword per tier** toward the score (each primary and each secondary keyword is capped independently). |
+| `crawler.scoring.seedRelevanceScore` | `1000` | `> 0` and **strictly greater** than `(nPrimary * primaryWeight + nSecondary * secondaryWeight) * maxOccurrencesPerKeyword` for deduped keyword counts from `keywordConfig` | Fixed `relevance_score` for TS-02 seed bootstrap rows so seeds always outrank keyword-scored discoveries under capped occurrence scoring. |
 
 ### Database
 
@@ -180,7 +181,7 @@ When the crawler hits a **config-defined limit, retry ceiling, or validation bou
 - startup MUST validate robots temporary-deny bounds and retry cadence consistency.
 - startup MUST validate robots/bucket cache size bounds (`crawler.robots.cacheMaxEntries`, `crawler.buckets.cacheMaxEntries`).
 - startup MUST parse and validate `crawler.scoring.keywordConfig` structure (not just path existence).
-- startup MUST validate `crawler.scoring.primaryWeight` and `crawler.scoring.secondaryWeight` in `(0, 10]` and `crawler.scoring.seedRelevanceScore > 0`, and MUST require `crawler.scoring.seedRelevanceScore` to be **strictly greater** than the maximum possible keyword overlap score derived from deduped keyword counts in `crawler.scoring.keywordConfig` (so seed URLs always outrank keyword-scored discoveries).
+- startup MUST validate `crawler.scoring.primaryWeight` and `crawler.scoring.secondaryWeight` in `(0, 10]`, `crawler.scoring.maxOccurrencesPerKeyword` in `1..4096`, and `crawler.scoring.seedRelevanceScore > 0`, and MUST require `crawler.scoring.seedRelevanceScore` to be **strictly greater** than `(nPrimary * primaryWeight + nSecondary * secondaryWeight) * maxOccurrencesPerKeyword` from deduped keyword counts in `crawler.scoring.keywordConfig` (so seed URLs always outrank capped occurrence keyword scoring).
 
 ## Runtime Enforcement Rules
 
