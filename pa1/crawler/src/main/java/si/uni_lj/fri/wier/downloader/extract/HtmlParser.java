@@ -7,6 +7,9 @@
  *
  * Created: 2026-03. Major revision: full TS-04 implementation (replaces empty stub). Outlinks use {@code body}
  * descendants only ({@code body a[href]}, {@code body [onclick]}) per TS-04.
+ *
+ * Link relevance context merges: optional GitHub topic-card tags (A2), anchor-centered neighborhood (A), page title
+ * and meta description last (B), then one global cap — see preferential-crawling plan.
  */
 
 package si.uni_lj.fri.wier.downloader.extract;
@@ -14,6 +17,7 @@ package si.uni_lj.fri.wier.downloader.extract;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
@@ -50,8 +54,26 @@ public final class HtmlParser implements Parser {
                     "(?:location\\.href|document\\.location)\\s*=\\s*['\"]([^'\"]+)['\"]",
                     Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
-    /** Bound surrounding text so scoring stays stable on huge DOMs. */
-    private static final int MAX_SURROUNDING_CHARS = 400;
+    /**
+     * After joining A2 + A + B, cap stored context for stable scoring and DB size (preferential plan: single global
+     * cap).
+     */
+    private static final int MAX_LINK_CONTEXT_CHARS = 800;
+
+    /** Half-width of anchor-centered window on the neighborhood source string (notebook cell 9 style). */
+    private static final int ANCHOR_CONTEXT_RADIUS = 120;
+
+    /** Max characters read from the neighborhood scope element before slicing around the anchor. */
+    private static final int MAX_NEIGHBORHOOD_WIDE_CHARS = 3000;
+
+    /** Max characters for the topic-card tag + description fragment (A2). */
+    private static final int MAX_TOPIC_CARD_FRAGMENT_CHARS = 400;
+
+    /** Max description snippet appended from a topic card. */
+    private static final int MAX_TOPIC_CARD_DESC_CHARS = 200;
+
+    /** Walk this many parents when not inside a GitHub-style topic {@code article} card. */
+    private static final int DEFAULT_NEIGHBORHOOD_ANCESTOR_HOPS = 4;
 
     /** Placeholder until the worker injects the real source page id (see class Javadoc). */
     private static final long PLACEHOLDER_FROM_PAGE_ID = 0L;
@@ -92,17 +114,18 @@ public final class HtmlParser implements Parser {
             return ParseResult.empty();
         }
         Document doc = Jsoup.parse(html, canonicalUrl);
+        Optional<ExtractedPageMetadata> pageMeta = extractMetadata(doc);
         List<DiscoveredUrl> discovered = new ArrayList<>();
-        discovered.addAll(extractHrefLinks(doc, canonicalUrl));
-        discovered.addAll(extractOnclickLinks(doc, canonicalUrl));
+        discovered.addAll(extractHrefLinks(doc, canonicalUrl, pageMeta));
+        discovered.addAll(extractOnclickLinks(doc, canonicalUrl, pageMeta));
 
         List<ExtractedImage> images = extractImages(doc, canonicalUrl);
-        java.util.Optional<ExtractedPageMetadata> meta = extractMetadata(doc);
 
-        return new ParseResult(discovered, images, meta);
+        return new ParseResult(discovered, images, pageMeta);
     }
 
-    private List<DiscoveredUrl> extractHrefLinks(Document doc, String baseCanonical) {
+    private List<DiscoveredUrl> extractHrefLinks(
+            Document doc, String baseCanonical, Optional<ExtractedPageMetadata> pageMeta) {
         List<DiscoveredUrl> out = new ArrayList<>();
         Elements links = doc.select("body a[href]");
         for (Element link : links) {
@@ -125,7 +148,7 @@ public final class HtmlParser implements Parser {
                 }
                 long siteId = siteIdForDomain.apply(targetHost);
                 String anchorText = link.text().trim();
-                String context = surroundingText(link);
+                String context = linkScoringContext(link, anchorText, pageMeta);
                 double score = relevanceScorer.compute(canonical, anchorText, context);
                 out.add(
                         new DiscoveredUrl(
@@ -139,7 +162,8 @@ public final class HtmlParser implements Parser {
         return out;
     }
 
-    private List<DiscoveredUrl> extractOnclickLinks(Document doc, String baseCanonical) {
+    private List<DiscoveredUrl> extractOnclickLinks(
+            Document doc, String baseCanonical, Optional<ExtractedPageMetadata> pageMeta) {
         List<DiscoveredUrl> out = new ArrayList<>();
         Elements nodes = doc.select("body [onclick]");
         for (Element el : nodes) {
@@ -170,7 +194,7 @@ public final class HtmlParser implements Parser {
                 }
                 long siteId = siteIdForDomain.apply(targetHost);
                 String anchorText = el.text().trim();
-                String context = surroundingText(el);
+                String context = linkScoringContext(el, anchorText, pageMeta);
                 double score = relevanceScorer.compute(canonical, anchorText, context);
                 out.add(
                         new DiscoveredUrl(
@@ -208,7 +232,7 @@ public final class HtmlParser implements Parser {
         return out;
     }
 
-    private static java.util.Optional<ExtractedPageMetadata> extractMetadata(Document doc) {
+    private static Optional<ExtractedPageMetadata> extractMetadata(Document doc) {
         String title = doc.title();
         if (title != null) {
             title = title.trim();
@@ -228,33 +252,141 @@ public final class HtmlParser implements Parser {
             }
         }
         if (title == null && desc == null) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
-        return java.util.Optional.of(new ExtractedPageMetadata(title, desc));
+        return Optional.of(new ExtractedPageMetadata(title, desc));
     }
 
     /**
-     * Compact parent chain text so anchor keywords still influence scoring without dumping the whole document.
+     * Context for {@link RelevanceScorer}: A2 (topic card tags if DOM matches) + A (anchor-centered) + B (title, meta),
+     * single cap.
      */
-    private static String surroundingText(Element el) {
+    private static String linkScoringContext(
+            Element el, String anchorText, Optional<ExtractedPageMetadata> pageMeta) {
+        String a2 = topicCardTagFragment(el);
+        String a = anchorCenteredNeighborhood(el, anchorText);
+        String b = pageMetadataContext(pageMeta);
+        return mergeScoringContext(a2, a, b);
+    }
+
+    /**
+     * GitHub topic-repo cards: {@code article} with {@code a.topic-tag.topic-tag-link} siblings; no URL-path gate.
+     */
+    private static String topicCardTagFragment(Element el) {
+        Element card = el.closest("article");
+        if (card == null) {
+            return "";
+        }
+        Elements tags = card.select("a.topic-tag.topic-tag-link");
+        if (tags.isEmpty()) {
+            return "";
+        }
         StringBuilder sb = new StringBuilder();
-        Element p = el.parent();
-        int hops = 0;
-        while (p != null && hops < 3 && sb.length() < MAX_SURROUNDING_CHARS) {
-            String t = p.ownText();
-            if (t != null && !t.isBlank()) {
+        for (Element t : tags) {
+            String txt = t.text().trim();
+            if (!txt.isEmpty()) {
                 if (sb.length() > 0) {
                     sb.append(' ');
                 }
-                sb.append(t.trim());
+                sb.append(txt);
             }
+        }
+        Element desc = card.selectFirst("p");
+        if (desc != null) {
+            String d = desc.text().trim().replaceAll("\\s+", " ");
+            if (!d.isEmpty()) {
+                if (sb.length() > 0) {
+                    sb.append(' ');
+                }
+                if (d.length() > MAX_TOPIC_CARD_DESC_CHARS) {
+                    d = d.substring(0, MAX_TOPIC_CARD_DESC_CHARS);
+                }
+                sb.append(d);
+            }
+        }
+        String out = sb.toString().trim();
+        if (out.length() > MAX_TOPIC_CARD_FRAGMENT_CHARS) {
+            return out.substring(0, MAX_TOPIC_CARD_FRAGMENT_CHARS);
+        }
+        return out;
+    }
+
+    private static String anchorCenteredNeighborhood(Element el, String anchorText) {
+        Element article = el.closest("article");
+        Element scope;
+        if (article != null && article.selectFirst("a.topic-tag.topic-tag-link") != null) {
+            scope = article;
+        } else {
+            scope = ancestorAtDepth(el, DEFAULT_NEIGHBORHOOD_ANCESTOR_HOPS);
+            if (scope == null) {
+                Element p = el.parent();
+                scope = p != null ? p : el;
+            }
+        }
+        String wide = scope.text().replace('\n', ' ').replaceAll("\\s+", " ").trim();
+        if (wide.length() > MAX_NEIGHBORHOOD_WIDE_CHARS) {
+            wide = wide.substring(0, MAX_NEIGHBORHOOD_WIDE_CHARS);
+        }
+        String needle = anchorText == null ? "" : anchorText.trim();
+        int idx = -1;
+        if (!needle.isEmpty()) {
+            idx = wide.indexOf(needle);
+            if (idx < 0) {
+                int sp = needle.indexOf(' ');
+                if (sp > 1) {
+                    idx = wide.indexOf(needle.substring(0, sp));
+                }
+            }
+        }
+        if (idx < 0) {
+            idx = 0;
+        }
+        int start = Math.max(0, idx - ANCHOR_CONTEXT_RADIUS);
+        int end =
+                Math.min(
+                        wide.length(),
+                        idx + Math.max(needle.length(), 1) + ANCHOR_CONTEXT_RADIUS);
+        return wide.substring(start, end).trim();
+    }
+
+    private static Element ancestorAtDepth(Element el, int depth) {
+        Element p = el;
+        for (int i = 0; i < depth && p != null; i++) {
             p = p.parent();
-            hops++;
         }
-        if (sb.length() > MAX_SURROUNDING_CHARS) {
-            return sb.substring(0, MAX_SURROUNDING_CHARS);
+        return p;
+    }
+
+    private static String pageMetadataContext(Optional<ExtractedPageMetadata> metaOpt) {
+        if (metaOpt.isEmpty()) {
+            return "";
         }
-        return sb.toString();
+        ExtractedPageMetadata m = metaOpt.get();
+        String t = m.title() != null ? m.title().trim() : "";
+        String d = m.metaDescription() != null ? m.metaDescription().trim() : "";
+        if (t.isEmpty()) {
+            return d;
+        }
+        if (d.isEmpty()) {
+            return t;
+        }
+        return t + " " + d;
+    }
+
+    private static String mergeScoringContext(String a2, String a, String b) {
+        StringBuilder sb = new StringBuilder();
+        if (a2 != null && !a2.isBlank()) {
+            sb.append(a2.trim());
+            sb.append(' ');
+        }
+        sb.append(a != null ? a.trim() : "");
+        sb.append(' ');
+        sb.append(b != null ? b.trim() : "");
+        String collapsed = sb.toString().trim().replaceAll("\\s+", " ");
+        if (collapsed.length() > MAX_LINK_CONTEXT_CHARS) {
+            return collapsed.substring(0, MAX_LINK_CONTEXT_CHARS);
+        }
+        return collapsed;
     }
 
     private static String filenameFromUrl(String canonicalUrl) {

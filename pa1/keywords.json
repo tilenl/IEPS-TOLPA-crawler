@@ -3,17 +3,37 @@
     "image segmentation",
     "semantic segmentation",
     "instance segmentation",
+    "image-segmentation",
+    "semantic-segmentation",
+    "instance-segmentation",
     "mask",
     "u-net",
     "deeplab",
     "segment anything",
+    "segmentanything",
     "computer vision",
     "image classification"
   ],
   "secondary": [
     "object detection",
+    "object-detection",
     "image recognition",
     "feature extraction",
-    "image processing"
+    "image processing",
+    "image-processing",
+    "machine-learning",
+    "deep-learning",
+    "image-classification",
+    "image-augmentation",
+    "augmentation",
+    "fast-augmentations",
+    "segmentation",
+    "detection",
+    "checkpoint",
+    "checkpoints",
+    "inference",
+    "notebook",
+    "notebooks",
+    "segment anything 2"
   ]
 }

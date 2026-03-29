@@ -8,8 +8,19 @@ Se pravi ko kliče fetchNextFrontier, interno ta funkcija pokliče za domeno git
 
 1. Kok anchor texta upošteva crawler? Kje se to nastavi?
 2. Dopiši še ogromno več besed za preference scoring, da bo Boljše scoral linke! V crawler/src/resources/keywords.json se to vpiše!
-3. Dodej mu notebook, kjer smo še neke Naprednejše preference scoring tehnike pogledali in naj pogleda in evalvira, katero bi lahko implementirali, da bi Naš crawler boljše delal?
-4. Dovoljena domena je SAMO github.com. Nobene njegove podbomene. Ali?? Nah, tudi njegove poddomene, ker so vseeno znotraj domene github.com
-5. Spremeni dodajanje linkov v frontier tako, da če je že max število linkov notri, vržeš vn frontier link z najmanjšim preferential scorom, če ima novi link višji score kot 0. Tako skrbiš, da se ne dodajo popolnoma vsi linki v database in poskrbiš, da se novi link z višjim sporom vseeno doda notri v frontier.
-6. Pod site tabelo so vsi siti, tudi tisti, ki niso znotraj naše domene. NE shraniti sitov, ki niso znotraj naše domene, ker do njih ne bomo nikoli dostopali ali uporabili.
+3. Spremeni dodajanje linkov v frontier tako, da če je že max število linkov notri, vržeš vn frontier link z najmanjšim preferential scorom, če ima novi link višji score kot 0. Tako skrbiš, da se ne dodajo popolnoma vsi linki v database in poskrbiš, da se novi link z višjim sporom vseeno doda notri v frontier.
+
+
+
+
+
+KO BO PREFERENTIAL SCORING DELOVAL:
+
+### E. Optional “notebook level 3” (heavier)
+
+- Add a second scoring mode: **cosine similarity** between a configurable **target description** string (notebook cell 20) and link neighborhood (requires a small vectorization dependency or a minimal hand-rolled tokenizer + dot product). Use only if the course allows extra dependencies/CPU.
+
+### F. Frontier strategy (notebook N-best)
+
+- Notebook cell 13–14: **N-best first** reduces “burying” good links. That is largely **frontier policy** ([TS-07](ARCHITECTURE-AND-TECHNICAL-SPECIFICATION/technical-specifications/TS-07-frontier-and-priority-dequeue.md) area), not scoring alone—treat as a follow-up if the queue always expands one hyper-relevant branch first.
 

@@ -263,7 +263,7 @@ public final class HttpFetcher implements Fetcher {
                             FetchMode.PLAIN_HTTP,
                             currentUrl.equals(canonicalUrl) ? null : currentUrl);
 
-            if (shouldEscalateHeadless(domain, plain) && !headlessPool.isCircuitOpen()) {
+            if (shouldEscalateHeadless(plain) && !headlessPool.isCircuitOpen()) {
                 log.info(
                         "event=FETCH_INCOMPLETE_SHELL result=ESCALATE_HEADLESS url={} domain={} workerId={} hop={}",
                         canonicalUrl,
@@ -368,17 +368,21 @@ public final class HttpFetcher implements Fetcher {
         }
     }
 
-    private boolean shouldEscalateHeadless(String domain, FetchResult plain) {
-        if (HostKeys.isGitHubHost(domain)) {
-            return false;
-        }
-        String ct = plain.contentType() == null ? "" : plain.contentType().toLowerCase(Locale.ROOT);
+    /**
+     * Plain HTML responses that look like JS shells (short body or no links) are escalated to headless rendering.
+     * Same criteria apply to all hosts, including GitHub, so preferential scoring can see real anchors and card markup.
+     */
+    public static boolean isIncompleteHtmlShell(String contentType, String body) {
+        String ct = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
         if (!ct.contains("text/html")) {
             return false;
         }
-        String body = plain.body() == null ? "" : plain.body();
-        String b = body.trim();
+        String b = body == null ? "" : body.trim();
         return b.length() < 400 || !b.toLowerCase(Locale.ROOT).contains("<a ");
+    }
+
+    private boolean shouldEscalateHeadless(FetchResult plain) {
+        return isIncompleteHtmlShell(plain.contentType(), plain.body());
     }
 
     private FetchResult headlessFetch(

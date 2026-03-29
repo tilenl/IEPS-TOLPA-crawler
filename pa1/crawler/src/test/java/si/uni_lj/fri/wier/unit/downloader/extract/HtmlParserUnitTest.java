@@ -2,6 +2,7 @@ package si.uni_lj.fri.wier.unit.downloader.extract;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -122,5 +123,75 @@ class HtmlParserUnitTest {
     void emptyHtml_returnsEmptyParseResult() {
         ParseResult r = parser.parse("https://example.com/", "");
         assertTrue(r.discoveredUrls().isEmpty());
+    }
+
+    @Test
+    void topicCard_includesSiblingTopicTagsInContext() {
+        String html =
+                """
+                <html><head><title>Topic page</title></head><body>
+                <article class="card">
+                <a href="https://github.com/org/repo">repo</a>
+                <a href="/topics/keyword-one" class="topic-tag topic-tag-link">keyword one</a>
+                <a href="/topics/foo" class="topic-tag topic-tag-link">foo</a>
+                <p>Short description for the repository card.</p>
+                </article>
+                </body></html>
+                """;
+        ParseResult r = parser.parse("https://github.com/topics/image-segmentation", html);
+        assertEquals(3, r.discoveredUrls().size());
+        var repoLink =
+                r.discoveredUrls().stream()
+                        .filter(u -> u.canonicalUrl().contains("/org/repo"))
+                        .findFirst()
+                        .orElseThrow();
+        String ctx = repoLink.contextText().toLowerCase();
+        assertTrue(ctx.contains("keyword one"), "A2 topic tag text: " + ctx);
+        assertTrue(ctx.contains("topic page"), "B title appended: " + ctx);
+    }
+
+    @Test
+    void pageTitle_andMeta_appendedToLinkContext() {
+        String html =
+                """
+                <html><head>
+                <title>Seg topic</title>
+                <meta name="description" content="About segmentation">
+                </head><body>
+                <a href="https://github.com/topics/seg">go</a>
+                </body></html>
+                """;
+        ParseResult r = parser.parse("https://github.com/org/r", html);
+        assertEquals(1, r.discoveredUrls().size());
+        String ctx = r.discoveredUrls().get(0).contextText().toLowerCase();
+        assertTrue(ctx.contains("seg topic"));
+        assertTrue(ctx.contains("about segmentation"));
+    }
+
+    @Test
+    void anchorCenteredWindow_excludesDistantKeywordInSameArticle() {
+        String pad = "padding ".repeat(200);
+        String html =
+                """
+                <html><body>
+                <article>
+                <a href="/topics/keyword-one" class="topic-tag topic-tag-link">keyword one</a>
+                <p>card summary text</p>
+                <a href="https://github.com/org/hub">hub link</a>
+                <div>%s</div>
+                <p>keyword two is mentioned only far from the hub link anchor in this card body text.</p>
+                </article>
+                </body></html>
+                """
+                        .formatted(pad);
+        ParseResult r = parser.parse("https://github.com/topics/t", html);
+        var hub =
+                r.discoveredUrls().stream()
+                        .filter(u -> u.canonicalUrl().contains("/org/hub"))
+                        .findFirst()
+                        .orElseThrow();
+        String ctx = hub.contextText().toLowerCase();
+        assertTrue(ctx.contains("keyword one"));
+        assertFalse(ctx.contains("keyword two"), "distant keyword should not fall inside anchor window: " + ctx);
     }
 }

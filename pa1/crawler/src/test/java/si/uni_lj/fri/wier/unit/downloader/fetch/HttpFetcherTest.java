@@ -1,6 +1,8 @@
 package si.uni_lj.fri.wier.unit.downloader.fetch;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -27,6 +29,36 @@ class HttpFetcherTest {
         cfg.validate();
         HttpFetcher f = new HttpFetcher(cfg, new AllowAllPolitenessStub(), new AllowAllPolitenessStub());
         assertEquals(7, f.maxRedirects());
+    }
+
+    @Test
+    void isIncompleteHtmlShell_trueForShortHtml_githubSameAsOtherHosts() {
+        assertTrue(
+                HttpFetcher.isIncompleteHtmlShell(
+                        "text/html", "<html><body>tiny</body></html>"));
+    }
+
+    @Test
+    void isIncompleteHtmlShell_trueWhenNoAnchorTag() {
+        assertTrue(
+                HttpFetcher.isIncompleteHtmlShell(
+                        "text/html",
+                        "<html><body><div>no links here</div></body></html>".repeat(30)));
+    }
+
+    @Test
+    void isIncompleteHtmlShell_falseForSubstantialHtmlWithLinks() {
+        assertFalse(
+                HttpFetcher.isIncompleteHtmlShell(
+                        "text/html",
+                        "<html><body><a href=\"/x\">x</a>"
+                                + "y".repeat(500)
+                                + "</body></html>"));
+    }
+
+    @Test
+    void isIncompleteHtmlShell_falseForNonHtml() {
+        assertFalse(HttpFetcher.isIncompleteHtmlShell("application/json", "{}"));
     }
 
     @Test

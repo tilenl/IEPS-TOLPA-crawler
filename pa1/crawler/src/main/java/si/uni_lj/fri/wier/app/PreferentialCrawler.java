@@ -139,7 +139,10 @@ public final class PreferentialCrawler {
 
     /**
      * Inserts configured seed URLs as {@code FRONTIER} rows when {@code crawldb.page} is empty (TS-02); otherwise
-     * returns a skip snapshot. Each seed is canonicalized (TS-05); relevance uses a temporary fixed score (see below).
+     * returns a skip snapshot. Each seed is canonicalized (TS-05) and inserted with {@code relevance_score = 1.0}.
+     *
+     * <p>Seeds are not scored with {@link KeywordRelevanceScorer}: the operator explicitly chose them. We do not
+     * HTTP-fetch seed URLs during bootstrap (robots crawl-delay / politeness would slow startup).
      */
     public SeedBootstrapStats bootstrapSeedsIfEmpty(PageRepository pageRepository, Storage storage) throws IOException {
         int configuredNonEmpty = 0;
@@ -172,8 +175,6 @@ public final class PreferentialCrawler {
                     storage.ensureSite(domain)
                             .orElseThrow(
                                     () -> new IllegalStateException("ensureSite returned empty for seed domain=" + domain));
-            // TODO: Revert to full seed scoring via RelevanceScorer (e.g. new KeywordRelevanceScorer(...).compute(
-            // canonical, "", "")) once keyword relevance scoring is fixed for URL-only / empty-context inputs.
             double score = 1.0;
             InsertFrontierResult ins = storage.insertFrontierIfAbsent(canonical, siteId, score);
             if (ins.inserted()) {
