@@ -112,7 +112,7 @@ Other CLI options:
 - On normal completion the process prints a **run summary** (counts, domains, rate-limit waits, etc.) and exits with code **0**.
 - **SIGINT / SIGTERM** should stop the scheduler gracefully.
 
-To inspect data, use **pgAdmin** or `psql` against `crawldb` (see below), or run the **live terminal dashboard** in [Live crawl status (terminal)](#live-crawl-status-terminal).
+To inspect data, use **pgAdmin** or `psql` against `crawldb` (see below), run the **live terminal dashboard** in [Live crawl status (terminal)](#live-crawl-status-terminal), or open the **link graph** in [Link graph visualization (browser)](#link-graph-visualization-browser).
 
 ---
 
@@ -140,6 +140,41 @@ Use **`--interval SECONDS`** (or `CRAWLER_STATUS_REFRESH_SEC`) to change how oft
 ```bash
 ./pa1/scripts/db-crawl-status.sh --help
 ```
+
+---
+
+## Link graph visualization (browser)
+
+The repository includes a small **Node/Express** app under [`../visualization/`](../visualization/) that reads `crawldb.link`, `crawldb.page`, and `crawldb.site` and draws an interactive graph (pages or aggregated domains). Use it to explore how discovered URLs link to each other after a crawl.
+
+**You need:** **Node.js** (current LTS is fine) and **npm**, with shell cwd at the **repository root** (`IEPS-TOLPA-crawler/`) or inside `visualization/`.
+
+1. **Configure the database profile**  
+   Copy the template and point the **real** profile at the same PostgreSQL instance the crawler uses (same host, port, database, user, and password as in [`crawler/src/main/resources/application.properties`](crawler/src/main/resources/application.properties) and the [Step 1](#step-1--start-postgresql-and-apply-the-schema) table above):
+
+   ```bash
+   cd visualization
+   cp .env.example .env
+   ```
+
+   Edit `REAL_VIZ_DB_*` in `.env` if your JDBC URL or credentials differ from the defaults.
+
+2. **Install and run the server**
+
+   ```bash
+   cd visualization
+   npm install
+   npm run dev
+   ```
+
+   The app loads `.env` automatically. It listens on **port 3001** by default (`VIZ_PORT` in `.env`).
+
+3. **Open the UI**  
+   In a browser, go to [http://localhost:3001](http://localhost:3001). The UI defaults to the **real** profile (crawler database) and remembers **mock** vs **real** in the browser. Use **Load** to fetch the graph; tune **maxNodes**, **domains**, and **onlyTypes** if the graph is too large or noisy.
+
+**Do not** run `npm run seed` against a database that holds real crawl data: the seed script **truncates** crawl tables.
+
+For **mock data** (optional, for UI development), start the stack in [`../visualization/docker-compose.yml`](../visualization/docker-compose.yml), run `npm run seed`, then choose profile **mock** in the UI. Full options (TLS, API query parameters) are documented in [`../visualization/README.md`](../visualization/README.md).
 
 ---
 
@@ -189,4 +224,5 @@ For unit and integration tests (Testcontainers, Docker socket on macOS/Colima, J
 - Domain and seeds: `ARCHITECTURE-AND-TECHNICAL-SPECIFICATION/04-domain-and-scope-definition.md`
 - Database setup and reset SQL: `[db/database-setup.md](db/database-setup.md)`
 - Schema source: `[db/crawldb.sql](db/crawldb.sql)`
+- Link graph UI (install, env, API): [`../visualization/README.md`](../visualization/README.md)
 
