@@ -75,10 +75,11 @@ Optional: any `crawler.*` property can be overridden via environment variables u
    `cp crawler/src/main/resources/keywords.json keywords.json`
   - If your shell is in the **repository root** (`IEPS-TOLPA-crawler/`):  
   `cp pa1/crawler/src/main/resources/keywords.json pa1/keywords.json`
-2. Edit `**pa1/keywords.json`**: keep the JSON shape `{"primary":[...],"secondary":[...]}` and fill in your real keyword phrases. You may omit the `_note` field in this copy if you like.
-3. The file under `crawler/src/main/resources/keywords.json` is intended as a **small classpath fixture for tests** (it may include a `_note`); production-like runs should rely on `**pa1/keywords.json`**.
+2. Edit `**pa1/keywords.json`**: keep the JSON shape `{"primary":[...],"secondary":[...]}`. Use **discriminative singletons** (or short phrases) and avoid **overlapping entries** where one keyword is a substring of another in the same tier — otherwise the same anchor text can increment the score multiple times for one conceptual hit. Matching is **case-insensitive substring** over the canonical URL plus anchor text plus surrounding context (so `semantic` matches `semantic-segmentation`, `semanticsegmentation`, etc.).
+3. **Scoring weights and seeds (TS-13):** `crawler.scoring.primaryWeight` and `crawler.scoring.secondaryWeight` (defaults `0.18` / `0.09`) add to the relevance score for each matching keyword; the sum is **not capped** above, so very rich snippets rank higher. `crawler.scoring.seedRelevanceScore` (default `1000`) is the fixed score for bootstrap seed URLs; startup requires it to be **strictly greater** than the maximum possible keyword sum for your file (`nPrimary × primaryWeight + nSecondary × secondaryWeight` after trim/lowercase/dedupe), so seeds always stay ahead of keyword-scored discoveries in the frontier.
+4. The file under `crawler/src/main/resources/keywords.json` is intended as a **small classpath fixture for tests** (it may include a `_note`); production-like runs should rely on `**pa1/keywords.json`**.
 
-If startup fails with “must refer to an existing file” for the keyword config, the process is not seeing `pa1/keywords.json` — confirm you launched Gradle from `**pa1/**` and the filename matches `crawler.scoring.keywordConfig`.
+If startup fails with “must refer to an existing file” for the keyword config, the process is not seeing `pa1/keywords.json` — confirm you launched Gradle from `**pa1/**` and the filename matches `crawler.scoring.keywordConfig`. If validation fails on `crawler.scoring.seedRelevanceScore`, raise that property or reduce weights / keyword list size so the seed score stays above the theoretical maximum keyword sum.
 
 ### Step 4 — Build
 

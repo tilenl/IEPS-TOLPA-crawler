@@ -1,6 +1,9 @@
 package si.uni_lj.fri.wier.contracts;
 
-/** Computes deterministic relevance score bounded to the [0.0, 1.0] range. */
+/**
+ * Computes a deterministic, non-negative relevance score for frontier prioritization. Implementations are not required
+ * to cap the upper bound (keyword overlap may exceed 1.0 when many terms match).
+ */
 public interface RelevanceScorer {
     double compute(String canonicalUrl, String anchorText, String contextText);
 }

@@ -107,7 +107,7 @@ Ownership clarification:
 
 `RelevanceScorer` contract detail:
 - inputs are canonical URL + normalized text context (`anchorText`, `contextText`);
-- output MUST be bounded to `[0.0, 1.0]`;
+- output MUST be non-negative; implementations MAY exceed `1.0` when keyword overlap is high (uncapped sum of per-hit weights);
 - on missing text inputs, scorer must still return deterministic value (often URL-only heuristic);
 - on scoring failure, fallback score is `0.0` (no exception leak to worker loop).
 
@@ -126,7 +126,7 @@ Ownership clarification:
 ## Required Unit Tests
 
 - contract tests for null/empty input handling;
-- score range tests (`0.0` to `1.0`);
+- score tests: non-negative, deterministic for same inputs, and (for keyword scorer) unbounded above when many keywords match;
 - idempotence tests for ingestion contracts;
 - error mapping tests for interface exceptions.
 - ownership contract tests:

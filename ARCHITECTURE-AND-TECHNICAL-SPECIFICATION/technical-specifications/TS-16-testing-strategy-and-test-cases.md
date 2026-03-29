@@ -33,7 +33,7 @@
 - preferential ordering check:
   - populate frontier with mixed `relevance_score` values and verify descending dequeue order.
 - scorer contract check:
-  - output always in `[0.0, 1.0]` and deterministic for same normalized inputs.
+  - output non-negative, deterministic for same normalized inputs; keyword-based scorer MAY exceed `1.0` when many configured terms match.
 - delayed eligibility check:
   - rows with `next_attempt_at > now()` are not claimable.
 - retry durability check:

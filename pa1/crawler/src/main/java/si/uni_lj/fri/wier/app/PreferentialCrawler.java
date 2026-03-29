@@ -103,7 +103,8 @@ public final class PreferentialCrawler {
         log.info(
                 "effectiveConfig robotsBucketsHealthScoring robotsCacheTtlHours={} robotsCacheMaxEntries={}"
                         + " temporaryDenyMaxMinutes={} temporaryDenyRetryMinutes={} bucketsCacheTtlHours={}"
-                        + " bucketsCacheMaxEntries={} healthHeartbeatIntervalMs={} scoringKeywordConfigPath={}",
+                        + " bucketsCacheMaxEntries={} healthHeartbeatIntervalMs={} scoringKeywordConfigPath={}"
+                        + " scoringPrimaryWeight={} scoringSecondaryWeight={} scoringSeedRelevanceScore={}",
                 config.robotsCacheTtlHours(),
                 config.robotsCacheMaxEntries(),
                 config.robotsTemporaryDenyMaxMinutes(),
@@ -111,7 +112,10 @@ public final class PreferentialCrawler {
                 config.bucketsCacheTtlHours(),
                 config.bucketsCacheMaxEntries(),
                 config.healthHeartbeatIntervalMs(),
-                config.scoringKeywordConfig());
+                config.scoringKeywordConfig(),
+                config.scoringPrimaryWeight(),
+                config.scoringSecondaryWeight(),
+                config.scoringSeedRelevanceScore());
     }
 
     /**
@@ -140,7 +144,8 @@ public final class PreferentialCrawler {
 
     /**
      * Inserts configured seed URLs as {@code FRONTIER} rows when {@code crawldb.page} is empty (TS-02); otherwise
-     * returns a skip snapshot. Each seed is canonicalized (TS-05) and inserted with {@code relevance_score = 1.0}.
+     * returns a skip snapshot. Each seed is canonicalized (TS-05) and inserted with {@code relevance_score} from
+     * {@code crawler.scoring.seedRelevanceScore} (validated at startup to exceed any possible keyword-based score).
      *
      * <p>Seeds are not scored with {@link KeywordRelevanceScorer}: the operator explicitly chose them. We do not
      * HTTP-fetch seed URLs during bootstrap (robots crawl-delay / politeness would slow startup).
@@ -176,7 +181,7 @@ public final class PreferentialCrawler {
                     storage.ensureSite(domain)
                             .orElseThrow(
                                     () -> new IllegalStateException("ensureSite returned empty for seed domain=" + domain));
-            double score = 1.0;
+            double score = config.scoringSeedRelevanceScore();
             InsertFrontierResult ins = storage.insertFrontierIfAbsent(canonical, siteId, score);
             if (ins.inserted()) {
                 inserted++;
@@ -221,7 +226,11 @@ public final class PreferentialCrawler {
             seedStatsSink.set(seeds);
         }
         UrlCanonicalizer canonicalizer = new UrlCanonicalizer();
-        RelevanceScorer scorer = new KeywordRelevanceScorer(config.scoringKeywordConfig());
+        RelevanceScorer scorer =
+                new KeywordRelevanceScorer(
+                        config.scoringKeywordConfig(),
+                        config.scoringPrimaryWeight(),
+                        config.scoringSecondaryWeight());
         HtmlParser parser =
                 new HtmlParser(
                         canonicalizer,

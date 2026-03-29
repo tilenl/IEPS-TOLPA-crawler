@@ -63,7 +63,7 @@ The frontier remains authoritative in PostgreSQL (`FRONTIER` → `PROCESSING` le
 ## Preferential Crawling Strategy
 Relevance is computed at discovery time based on repository metadata (name, description, topic tags) and anchor text. Higher relevance scores correspond to higher crawl priority in the frontier.
 
-**Seed URLs** are assigned a **fixed relevance score of `1.0`** when they are inserted into the frontier at crawl startup. They are not scored with the keyword-based scorer, and we **do not** HTTP-fetch seed pages during bootstrap: fetching would have to respect **robots.txt** (including crawl-delay / politeness, e.g. on the order of **5 seconds** between requests per host), which would make seeding unnecessarily slow before normal worker fetching begins. Discovered URLs continue to use keyword-based scoring from configuration.
+**Seed URLs** are assigned a **fixed relevance score** from `crawler.scoring.seedRelevanceScore` when they are inserted into the frontier at crawl startup. Startup validation requires this value to be **strictly greater** than the maximum possible keyword-based score (so operator-chosen seeds stay ahead of any discovered link). Seeds are not scored with the keyword-based scorer, and we **do not** HTTP-fetch seed pages during bootstrap: fetching would have to respect **robots.txt** (including crawl-delay / politeness, e.g. on the order of **5 seconds** between requests per host), which would make seeding unnecessarily slow before normal worker fetching begins. Discovered URLs use keyword-based scoring from configuration (uncapped sum of per-hit weights).
 
 ## Deduplication Strategy
 - **URL Deduplication**: Handled by the database unique constraint on the `url` column.

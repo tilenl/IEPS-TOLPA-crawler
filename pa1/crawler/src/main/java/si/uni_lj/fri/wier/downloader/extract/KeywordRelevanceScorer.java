@@ -2,7 +2,8 @@
  * TS-04 relevance scoring from {@code crawler.scoring.keywordConfig} JSON (same shape as
  * {@link si.uni_lj.fri.wier.config.ScoringKeywordConfigValidator}).
  *
- * Callers: {@link HtmlParser}, seed bootstrap in {@link si.uni_lj.fri.wier.app.PreferentialCrawler}.
+ * Callers: {@link HtmlParser} (per-link scoring); {@link si.uni_lj.fri.wier.app.PreferentialCrawler} constructs the
+ * scorer for the crawl pipeline.
  *
  * Created: 2026-03.
  */
@@ -13,7 +14,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -22,48 +23,92 @@ import org.json.JSONObject;
 import si.uni_lj.fri.wier.contracts.RelevanceScorer;
 
 /**
- * Keyword overlap scorer: primary keywords weigh more than secondary; result clamped to {@code [0.0, 1.0]}.
+ * Keyword overlap scorer: each matching primary or secondary keyword adds a configurable weight. Scores are
+ * non-negative and not capped; sum all hits so highly relevant text ranks above sparse matches.
  */
 public final class KeywordRelevanceScorer implements RelevanceScorer {
 
-    private static final double PRIMARY_WEIGHT = 0.18;
-    private static final double SECONDARY_WEIGHT = 0.09;
-    private static final double SCORE_CAP = 1.0;
+    /** Default increment when a primary keyword substring is found (TS-13 default). */
+    public static final double DEFAULT_PRIMARY_WEIGHT = 0.18;
+
+    /** Default increment when a secondary keyword substring is found (TS-13 default). */
+    public static final double DEFAULT_SECONDARY_WEIGHT = 0.09;
 
     private final List<String> primary;
     private final List<String> secondary;
+    private final double primaryWeight;
+    private final double secondaryWeight;
 
     /**
-     * Loads and normalizes keywords (trim, lower case) from a UTF-8 JSON file.
+     * Loads keywords with {@link #DEFAULT_PRIMARY_WEIGHT} and {@link #DEFAULT_SECONDARY_WEIGHT}.
      *
      * @param keywordConfigPath path validated at startup by {@link si.uni_lj.fri.wier.config.RuntimeConfig#validate()}
-     * @throws IOException if the file cannot be read
-     * @throws IllegalArgumentException if JSON structure is invalid
      */
     public KeywordRelevanceScorer(Path keywordConfigPath) throws IOException {
+        this(keywordConfigPath, DEFAULT_PRIMARY_WEIGHT, DEFAULT_SECONDARY_WEIGHT);
+    }
+
+    /**
+     * Loads and normalizes keywords (trim, lower case, dedupe preserving first-seen order) from a UTF-8 JSON file.
+     *
+     * @param keywordConfigPath path validated at startup
+     * @param primaryWeight strictly positive per primary hit
+     * @param secondaryWeight strictly positive per secondary hit
+     */
+    public KeywordRelevanceScorer(Path keywordConfigPath, double primaryWeight, double secondaryWeight)
+            throws IOException {
+        Objects.requireNonNull(keywordConfigPath, "keywordConfigPath");
+        if (!(primaryWeight > 0.0) || !(secondaryWeight > 0.0)) {
+            throw new IllegalArgumentException("primaryWeight and secondaryWeight must be > 0");
+        }
+        this.primaryWeight = primaryWeight;
+        this.secondaryWeight = secondaryWeight;
+        String text = Files.readString(keywordConfigPath, StandardCharsets.UTF_8);
+        JSONObject root = new JSONObject(text);
+        this.primary = readDedupedKeywordList(keywordConfigPath, "primary", root);
+        this.secondary = readDedupedKeywordList(keywordConfigPath, "secondary", root);
+    }
+
+    /**
+     * Deduped tier sizes from the same file normalization as the scorer (for startup validation: seed score must
+     * exceed {@code primaryCount * primaryWeight + secondaryCount * secondaryWeight}).
+     */
+    public record KeywordTierCounts(int primaryCount, int secondaryCount) {
+        /** Maximum possible {@link #compute} result for the given per-hit weights (every keyword matches). */
+        public double maxKeywordScore(double primaryWeight, double secondaryWeight) {
+            return primaryCount * primaryWeight + secondaryCount * secondaryWeight;
+        }
+    }
+
+    /**
+     * Reads {@code primary} and {@code secondary} array lengths after trim/lowercase/dedupe, without constructing a
+     * full scorer.
+     */
+    public static KeywordTierCounts readTierCounts(Path keywordConfigPath) throws IOException {
         Objects.requireNonNull(keywordConfigPath, "keywordConfigPath");
         String text = Files.readString(keywordConfigPath, StandardCharsets.UTF_8);
         JSONObject root = new JSONObject(text);
-        this.primary = readKeywordArray(keywordConfigPath, "primary", root);
-        this.secondary = readKeywordArray(keywordConfigPath, "secondary", root);
+        int np = readDedupedKeywordList(keywordConfigPath, "primary", root).size();
+        int ns = readDedupedKeywordList(keywordConfigPath, "secondary", root).size();
+        return new KeywordTierCounts(np, ns);
     }
 
-    private static List<String> readKeywordArray(Path path, String name, JSONObject root) {
+    private static List<String> readDedupedKeywordList(Path path, String name, JSONObject root) {
         if (!root.has(name)) {
             throw new IllegalArgumentException("crawler.scoring.keywordConfig missing " + name + " in " + path);
         }
         JSONArray arr = root.getJSONArray(name);
-        List<String> out = new ArrayList<>();
+        LinkedHashSet<String> dedup = new LinkedHashSet<>();
         for (int i = 0; i < arr.length(); i++) {
             String s = arr.getString(i).trim().toLowerCase(Locale.ROOT);
             if (!s.isEmpty()) {
-                out.add(s);
+                dedup.add(s);
             }
         }
-        if (out.isEmpty()) {
+        if (dedup.isEmpty()) {
             throw new IllegalArgumentException("crawler.scoring.keywordConfig " + name + " has no usable keywords");
         }
-        return List.copyOf(out);
+        return List.copyOf(dedup);
     }
 
     @Override
@@ -77,20 +122,20 @@ public final class KeywordRelevanceScorer implements RelevanceScorer {
         double score = 0.0;
         for (String kw : primary) {
             if (containsKeyword(haystack, kw)) {
-                score += PRIMARY_WEIGHT;
+                score += primaryWeight;
             }
         }
         for (String kw : secondary) {
             if (containsKeyword(haystack, kw)) {
-                score += SECONDARY_WEIGHT;
+                score += secondaryWeight;
             }
         }
-        return Math.min(SCORE_CAP, score);
+        return score;
     }
 
     /**
-     * Substring match is sufficient for assignment keywords (multi-word phrases from JSON are matched as
-     * contiguous substrings in the normalized haystack).
+     * Substring match: phrases from JSON are contiguous substrings in the normalized haystack (singletons match inside
+     * hyphenated or compound tokens).
      */
     private static boolean containsKeyword(String haystack, String keyword) {
         return haystack.contains(keyword);

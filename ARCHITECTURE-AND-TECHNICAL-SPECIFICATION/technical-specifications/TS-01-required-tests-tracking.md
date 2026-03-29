@@ -15,7 +15,7 @@ Current status: partially covered by existing contract tests under `pa1/crawler/
 
 ## Deferred coverage (open items)
 
-- relevance score range tests (`0.0` to `1.0`) for `RelevanceScorer` behavior
+- relevance score tests (non-negative, deterministic; keyword scorer may exceed `1.0`) for `RelevanceScorer` behavior
 - idempotence tests for ingestion contracts
 - error mapping tests for interface exceptions
 - ownership tests for SQL conflict/dedup operations via `Storage` boundary

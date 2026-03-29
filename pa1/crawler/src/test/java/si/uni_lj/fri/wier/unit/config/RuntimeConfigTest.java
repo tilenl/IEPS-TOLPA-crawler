@@ -101,6 +101,39 @@ class RuntimeConfigTest {
     }
 
     @Test
+    void validate_rejectsSeedRelevanceNotStrictlyAboveMaxKeywordScore(@TempDir Path dir) throws Exception {
+        Path good = dir.resolve("good.json");
+        Files.writeString(
+                good,
+                """
+                {"primary":["x"],"secondary":["y"]}
+                """);
+        Properties p = baseProps();
+        p.setProperty("crawler.scoring.keywordConfig", good.toString());
+        p.setProperty("crawler.scoring.primaryWeight", "0.18");
+        p.setProperty("crawler.scoring.secondaryWeight", "0.09");
+        // max = 0.18 + 0.09 = 0.27 — equal is invalid
+        p.setProperty("crawler.scoring.seedRelevanceScore", "0.27");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
+    @Test
+    void validate_rejectsScoringWeightAboveTen(@TempDir Path dir) throws Exception {
+        Path good = dir.resolve("good.json");
+        Files.writeString(
+                good,
+                """
+                {"primary":["x"],"secondary":["y"]}
+                """);
+        Properties p = baseProps();
+        p.setProperty("crawler.scoring.keywordConfig", good.toString());
+        p.setProperty("crawler.scoring.primaryWeight", "10.01");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
+    @Test
     void pageRepositoryRecoveryParams_matchRuntimeConfig() throws Exception {
         Properties p = baseProps();
         p.setProperty("crawler.recoveryPath.maxAttempts", "7");

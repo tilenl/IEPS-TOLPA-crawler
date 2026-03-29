@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Properties;
+import si.uni_lj.fri.wier.downloader.extract.KeywordRelevanceScorer;
 
 /**
  * Runtime configuration (TS-13). Single-domain crawl: no per-domain page cap — use {@code
@@ -61,6 +62,9 @@ public record RuntimeConfig(
         CrawlScope crawlScope,
         List<String> seedUrls,
         Path scoringKeywordConfig,
+        double scoringPrimaryWeight,
+        double scoringSecondaryWeight,
+        double scoringSeedRelevanceScore,
         String dbUrl,
         String dbUser,
         String dbPassword,
@@ -111,6 +115,9 @@ public record RuntimeConfig(
                 CrawlScopes.parseCrawlScope(p.getProperty("crawler.crawlScope")),
                 parseSeedUrls(Objects.requireNonNull(p.getProperty("crawler.seedUrls"), "crawler.seedUrls")),
                 Path.of(Objects.requireNonNull(p.getProperty("crawler.scoring.keywordConfig"), "crawler.scoring.keywordConfig")),
+                parseDouble(p, "crawler.scoring.primaryWeight", KeywordRelevanceScorer.DEFAULT_PRIMARY_WEIGHT),
+                parseDouble(p, "crawler.scoring.secondaryWeight", KeywordRelevanceScorer.DEFAULT_SECONDARY_WEIGHT),
+                parseDouble(p, "crawler.scoring.seedRelevanceScore", 1000.0),
                 Objects.requireNonNull(p.getProperty("crawler.db.url"), "crawler.db.url"),
                 Objects.requireNonNull(p.getProperty("crawler.db.user"), "crawler.db.user"),
                 Objects.requireNonNull(p.getProperty("crawler.db.password"), "crawler.db.password"),
@@ -126,6 +133,14 @@ public record RuntimeConfig(
             return defaultValue;
         }
         return Integer.parseInt(v.trim());
+    }
+
+    private static double parseDouble(Properties p, String key, double defaultValue) {
+        String v = p.getProperty(key);
+        if (v == null || v.isBlank()) {
+            return defaultValue;
+        }
+        return Double.parseDouble(v.trim());
     }
 
     /**
@@ -238,6 +253,38 @@ public record RuntimeConfig(
         } catch (IOException e) {
             throw new IllegalArgumentException(
                     "crawler.scoring.keywordConfig: cannot read " + scoringKeywordConfig.toAbsolutePath(), e);
+        }
+        require(scoringPrimaryWeight > 0.0 && scoringPrimaryWeight <= 10.0, "crawler.scoring.primaryWeight", "(0, 10]");
+        require(
+                scoringSecondaryWeight > 0.0 && scoringSecondaryWeight <= 10.0,
+                "crawler.scoring.secondaryWeight",
+                "(0, 10]");
+        require(scoringSeedRelevanceScore > 0.0, "crawler.scoring.seedRelevanceScore", "> 0");
+        try {
+            KeywordRelevanceScorer.KeywordTierCounts tiers = KeywordRelevanceScorer.readTierCounts(scoringKeywordConfig);
+            double maxKeyword = tiers.maxKeywordScore(scoringPrimaryWeight, scoringSecondaryWeight);
+            // Strictly greater so no discovered URL that matches every configured keyword ties or beats seeds.
+            if (!(scoringSeedRelevanceScore > maxKeyword)) {
+                throw new IllegalArgumentException(
+                        "Invalid configuration: crawler.scoring.seedRelevanceScore must be strictly greater than "
+                                + "the maximum possible keyword score ("
+                                + maxKeyword
+                                + " = "
+                                + tiers.primaryCount()
+                                + " primary * "
+                                + scoringPrimaryWeight
+                                + " + "
+                                + tiers.secondaryCount()
+                                + " secondary * "
+                                + scoringSecondaryWeight
+                                + "). remediationHint=Raise crawler.scoring.seedRelevanceScore, or reduce weights / "
+                                + "keyword list size per crawler.scoring.keywordConfig.");
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException(
+                    "crawler.scoring.keywordConfig: cannot read for tier counts "
+                            + scoringKeywordConfig.toAbsolutePath(),
+                    e);
         }
     }
 

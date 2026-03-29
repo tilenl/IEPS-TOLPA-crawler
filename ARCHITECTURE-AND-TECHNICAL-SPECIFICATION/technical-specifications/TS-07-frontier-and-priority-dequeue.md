@@ -97,7 +97,7 @@ WHERE p.id = s.id;
 
 Seed bootstrap behavior:
 - when frontier is empty at startup, configured seeds MUST be canonicalized (`TS-05`) before insertion;
-- each canonicalized seed MUST receive a relevance score before insertion (from configured seed score policy or `RelevanceScorer`);
+- each canonicalized seed MUST receive a relevance score before insertion from `crawler.scoring.seedRelevanceScore` (TS-13; not computed by `RelevanceScorer`);
 - when frontier is empty at startup, canonicalized seed URLs are inserted as `page_type_code='FRONTIER'`;
 - seeded rows MUST set `next_attempt_at = now()` and `attempt_count = 0`;
 - repeated bootstrap runs MUST remain idempotent by canonical URL uniqueness.
