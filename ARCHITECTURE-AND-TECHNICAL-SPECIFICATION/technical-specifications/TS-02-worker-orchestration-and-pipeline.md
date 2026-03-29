@@ -207,7 +207,7 @@ Startup sequence is normative and MUST execute in this order:
    - ensure `site` row exists per seed domain;
    - insert seed page rows as `FRONTIER` with `next_attempt_at=now()` and `attempt_count=0` idempotently;
 4. run startup lease recovery loop (`PROCESSING` with expired `claim_expires_at` -> `FRONTIER`) in bounded batches until no stale leases remain;
-5. start worker loops.
+5. start the scheduler: one virtual thread runs the **domain frontier pump** (priority wake queue); the same executor runs up to `crawler.nCrawlers` concurrent **pipeline** tasks (`WorkerLoop.runClaimedPipeline`). The pump performs **domain-scoped** `claim` then outer `tryAcquire` before handing a lease to a pipeline (see [TS-07](TS-07-frontier-and-priority-dequeue.md), [TS-08](TS-08-rate-limiting-and-backoff.md)).
 
 Bootstrap note:
 - startup does not prefetch robots for all seeds in bulk;
@@ -219,6 +219,7 @@ Bootstrap note:
 - primary folder(s): `pa1/crawler/src/main/java/si/uni_lj/fri/wier/app/`, `.../scheduler/`, `.../downloader/worker/`
 - key file(s):
   - `app/PreferentialCrawler.java` (startup sequence and lifecycle owner)
+  - `scheduler/VirtualThreadCrawlerScheduler.java`, `scheduler/DomainFrontierPump.java`
   - `scheduler/policies/SchedulingPolicy.java`
   - `downloader/worker/WorkerLoop.java`
 - test location(s): `pa1/crawler/src/test/java/si/uni_lj/fri/wier/unit/app/`, `.../unit/downloader/worker/`, `.../integration/pipeline/`

@@ -78,6 +78,19 @@ DROP INDEX IF EXISTS crawldb.idx_page_frontier_priority;
 CREATE INDEX "idx_page_frontier_priority"
 	ON crawldb.page ( page_type_code, relevance_score DESC, next_attempt_at ASC, accessed_time ASC, id ASC );
 
+CREATE INDEX IF NOT EXISTS idx_site_domain ON crawldb.site (domain);
+
+CREATE INDEX IF NOT EXISTS idx_page_frontier_site_priority
+	ON crawldb.page (
+		page_type_code,
+		site_id,
+		relevance_score DESC,
+		next_attempt_at ASC,
+		accessed_time ASC,
+		id ASC
+	)
+	WHERE page_type_code = 'FRONTIER';
+
 CREATE INDEX "idx_page_processing_lease"
 	ON crawldb.page ( page_type_code, claim_expires_at ASC );
 
@@ -178,4 +191,4 @@ INSERT INTO crawldb.page_type VALUES
 	('PROCESSING'),
 	('ERROR');
 
-INSERT INTO crawldb.schema_version (id, version) VALUES (1, 6);
+INSERT INTO crawldb.schema_version (id, version) VALUES (1, 7);

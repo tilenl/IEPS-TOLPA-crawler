@@ -145,11 +145,22 @@ public final class WorkerLoop implements Worker {
                 }
                 continue;
             }
-            processClaimedRow(rowOpt.get());
+            processClaimedRow(rowOpt.get(), false);
         }
     }
 
-    private void processClaimedRow(FrontierRow row) {
+    /**
+     * Runs Stage B for an already-leased row (TS-02). Used by the domain pump after it has performed a domain-scoped
+     * claim and consumed the outer politeness token for hop 0.
+     *
+     * @param outerPolitenessTokenConsumedForHop0 when true, skips the pre-fetch {@code tryAcquire} because the pump
+     *     already consumed the Bucket4j token for this URL’s crawl domain
+     */
+    public void runClaimedPipeline(FrontierRow row, boolean outerPolitenessTokenConsumedForHop0) {
+        processClaimedRow(row, outerPolitenessTokenConsumedForHop0);
+    }
+
+    private void processClaimedRow(FrontierRow row, boolean outerPolitenessTokenConsumedForHop0) {
         String url = row.url();
         String domain;
         try {
@@ -164,10 +175,23 @@ public final class WorkerLoop implements Worker {
             return;
         }
 
-        RateLimitDecision rl =
-                robotsTxtCache instanceof RateLimiterRegistry reg
-                        ? reg.tryAcquire(domain)
-                        : RateLimitDecision.allowed();
+        if (!outerPolitenessTokenConsumedForHop0) {
+            RateLimitDecision rl =
+                    robotsTxtCache instanceof RateLimiterRegistry reg
+                            ? reg.tryAcquire(domain)
+                            : RateLimitDecision.allowed();
+            if (applyRateLimitedRescheduleIfNeeded(row, rl)) {
+                return;
+            }
+        } else {
+            // Pump path: token was consumed immediately before claim; do not double-consume on hop 0 (TS-08 /
+            // FetchRequest.firstHopRateLimitSatisfied).
+        }
+
+        runAfterPolitenessGate(row, url, domain);
+    }
+
+    private boolean applyRateLimitedRescheduleIfNeeded(FrontierRow row, RateLimitDecision rl) {
         if (rl.delayed()) {
             if (observabilityMetrics != null) {
                 observabilityMetrics.recordRateLimitWait(
@@ -185,9 +209,12 @@ public final class WorkerLoop implements Worker {
                                     next,
                                     CrawlerErrorCategory.FETCH_HTTP_OVERLOAD.name(),
                                     "rate_limited"));
-            return;
+            return true;
         }
+        return false;
+    }
 
+    private void runAfterPolitenessGate(FrontierRow row, String url, String domain) {
         try {
             robotsTxtCache.ensureLoaded(domain);
         } catch (RuntimeException e) {
@@ -229,6 +256,8 @@ public final class WorkerLoop implements Worker {
             return;
         }
 
+        // Hop 0 skips in-fetcher politeness when the outer gate already consumed a token (pump path) or when the
+        // legacy worker loop passed tryAcquire above (both use firstHopRateLimitSatisfied=true).
         FetchRequest request =
                 new FetchRequest(url, workerId, row.claimExpiresAt(), true);
         FetchResult fetched;

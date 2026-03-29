@@ -172,7 +172,7 @@ class PolitenessGateRobotsRedirectLoopbackTest {
         p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
-        p.setProperty("crawler.db.expectedSchemaVersion", "6");
+        p.setProperty("crawler.db.expectedSchemaVersion", "7");
         p.setProperty("crawler.seedUrls", "https://example.com/");
         return p;
     }

@@ -1,6 +1,6 @@
 # IEPS-TOLPA Crawler (PA1)
 
-This project is a **preferential web crawler** aimed mainly at the `github.com` domain, with scoring biased toward **image segmentation**–related content. It respects `robots.txt`, rate limits per site, and stores the URL frontier and page metadata in **PostgreSQL**. Multiple **virtual-thread workers** claim work from the database, fetch pages (HTTP with optional headless fallback), parse links, and enqueue new URLs by relevance.
+This project is a **preferential web crawler** aimed mainly at the `github.com` domain, with scoring biased toward **image segmentation**–related content. It respects `robots.txt`, rate limits per site, and stores the URL frontier and page metadata in **PostgreSQL**. A **domain frontier pump** (virtual thread) schedules per-domain work; up to **`crawler.nCrawlers`** concurrent **pipeline** tasks fetch pages (HTTP with optional headless fallback), parse links, and enqueue new URLs by relevance.
 
 Configuration is driven by `[crawler/src/main/resources/application.properties](crawler/src/main/resources/application.properties)`, optional environment variables (`CRAWLER_*`, see `CrawlerEnvironmentNames`), and the CLI flag `--n-crawlers`.
 
@@ -47,7 +47,7 @@ The guide’s defaults are - used for pgAdmin program, to monitor the data insid
 | Password                 | `SecretPassword`                                                             |
 
 
-After the first successful init, `crawldb.schema_version` must report version `**6`**, matching `crawler.db.expectedSchemaVersion` in `application.properties`.
+After the first successful init, `crawldb.schema_version` must report version `**7`**, matching `crawler.db.expectedSchemaVersion` in `application.properties`.
 
 For **verification queries**, **troubleshooting**, and **resetting crawl data** without recreating Docker, keep using `[db/database-setup.md](db/database-setup.md)`.
 
@@ -57,7 +57,7 @@ Edit `[crawler/src/main/resources/application.properties](crawler/src/main/resou
 
 - `crawler.db.url` — typically `jdbc:postgresql://localhost:5432/crawldb` (adjust the port if you changed Docker’s publish mapping).
 - `crawler.db.user` / `crawler.db.password` — must match `POSTGRES_USER` / `POSTGRES_PASSWORD` from Docker (defaults above).
-- `crawler.db.expectedSchemaVersion` — must equal the value in `crawldb.schema_version` ( `**6`** for the current `crawldb.sql`).
+- `crawler.db.expectedSchemaVersion` — must equal the value in `crawldb.schema_version` ( `**7`** for the current `crawldb.sql`).
 
 Also set, according to your crawl plan:
 
@@ -97,7 +97,7 @@ export JAVA_HOME="$(/usr/libexec/java_home -v 21)"   # macOS example
 ./gradlew run --args="--n-crawlers 4"
 ```
 
-Replace `4` with the number of parallel worker loops you want. Worker count should stay consistent with DB pool size and headless limits (see TS-13 / `RuntimeConfig` validation).
+Replace `4` with the maximum number of **concurrent pipeline** tasks (global parallelism). Stay consistent with DB pool size and headless limits (see TS-13 / `RuntimeConfig` validation).
 
 Other CLI options:
 

@@ -13,6 +13,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import si.uni_lj.fri.wier.config.CrawlScopes;
@@ -198,6 +199,9 @@ public final class PreferentialCrawler {
      * @param seedStatsSink when non-null, receives bootstrap stats immediately for shutdown-hook summaries
      * @param onSchedulerStarted invoked immediately after {@link VirtualThreadCrawlerScheduler#start(int)} so
      *     heartbeats wait for a real {@code workerId} (TS-15 {@code claimed_by} alignment)
+     * @param frontierWakeRegistration set by the scheduler to {@link
+     *     si.uni_lj.fri.wier.scheduler.DomainFrontierPump#scheduleDomainForWork}; the
+     *     repository wake hook reads this reference so Stage A can notify after committed inserts
      */
     public SeedBootstrapStats runCrawlToCompletion(
             PageRepository pageRepository,
@@ -209,7 +213,8 @@ public final class PreferentialCrawler {
             AtomicReference<VirtualThreadCrawlerScheduler> schedulerRef,
             AtomicReference<String> heartbeatWorkerIdSink,
             AtomicReference<SeedBootstrapStats> seedStatsSink,
-            Runnable onSchedulerStarted)
+            Runnable onSchedulerStarted,
+            AtomicReference<Consumer<String>> frontierWakeRegistration)
             throws IOException, InterruptedException {
         SeedBootstrapStats seeds = bootstrapSeedsIfEmpty(pageRepository, storage);
         if (seedStatsSink != null) {
@@ -266,7 +271,15 @@ public final class PreferentialCrawler {
 
         VirtualThreadCrawlerScheduler scheduler =
                 new VirtualThreadCrawlerScheduler(
-                        config, pageRepository, factory, shutdown, heartbeatWorkerIdSink);
+                        config,
+                        pageRepository,
+                        frontierStore,
+                        politenessGate,
+                        factory,
+                        shutdown,
+                        heartbeatWorkerIdSink,
+                        frontierWakeRegistration,
+                        metrics);
         schedulerRef.set(scheduler);
         scheduler.start(config.nCrawlers());
         if (onSchedulerStarted != null) {

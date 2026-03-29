@@ -49,6 +49,7 @@ Standalone `SELECT ... FOR UPDATE SKIP LOCKED` without state mutation is NOT all
 - **`PROCESSING` lease invariant ([TS-11](TS-11-database-schema-and-migrations.md)):** whenever `page_type_code = 'PROCESSING'`, **`claimed_by`**, **`claimed_at`**, and **`claim_expires_at`** MUST all be **non-null** (`CHECK` constraint on `crawldb.page`). Otherwise `claim_expires_at < now()` recovery never matches **NULL**, orphaning rows. Non-`PROCESSING` rows keep lease columns **NULL**.
 - claim MUST set all three lease columns in the **same** `UPDATE` as `PROCESSING`; terminal/reschedule transitions MUST clear lease fields when leaving `PROCESSING` without violating the `CHECK` (typically one atomic `UPDATE` that changes `page_type_code` and nulls lease columns together).
 - index `idx_page_frontier_priority` is required to keep claim performance stable.
+- **Domain-scoped claim (pump path):** the implementation MUST support an atomic claim whose candidate set is restricted to rows whose `site.domain` equals a given crawl-domain key, with the **same** ordering as the global claim (score, `next_attempt_at`, `accessed_time`, id). Index `idx_page_frontier_site_priority` (and `idx_site_domain`) supports this path. The **pump** is responsible for scheduling domains; Stage A MUST notify the pump after **committed** FRONTIER inserts (see `PageRepository` wake notifier + post-commit discovery ingest).
 
 Worker identity contract:
 - `claimed_by` MUST be a stable internal worker identity (recommended format: startup UUID + host/pid or equivalent);
@@ -126,6 +127,7 @@ Completion requires this count to be **zero** (plus the grace window in [TS-02](
 - schema / invariant test: `PROCESSING` row cannot be inserted or updated with null `claim_expires_at` (DB `CHECK`);
 - startup lease-recovery test proving stale lease backlog is reclaimed before first worker claim;
 - reschedule path correctness for delayed domains.
+- domain-scoped claim ordering and isolation from other domains’ FRONTIER rows.
 - termination grace-window test preventing premature completion when frontier/leases oscillate.
 - seed bootstrap canonicalization test (seed variants collapse to one canonical URL);
 - seed bootstrap scoring test (seed rows have deterministic non-null score at insertion).

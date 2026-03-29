@@ -75,7 +75,31 @@ Use this manual path when:
 
 **Upgrading an existing database from schema v4 → v5:** remove any self-loop link rows (optional if none exist), then apply `pa1/db/migrations/V005__link_no_self_loop_schema_v5.sql`, and set `crawler.db.expectedSchemaVersion=5`. For cleanup only (no constraint yet), you can run `pa1/db/cleanup_self_loop_links.sql`.
 
-**Upgrading from schema v5 → v6:** apply `pa1/db/migrations/V006__remove_page_data_title_meta_schema_v6.sql`, then set `crawler.db.expectedSchemaVersion=6` (matches current `pa1/db/crawldb.sql`).
+**Upgrading from schema v5 → v6:** apply `pa1/db/migrations/V006__remove_page_data_title_meta_schema_v6.sql`, then set `crawler.db.expectedSchemaVersion=6`.
+
+**Upgrading from schema v6 → v7:** apply `pa1/db/migrations/V007__frontier_domain_claim_indexes_schema_v7.sql`, then set `crawler.db.expectedSchemaVersion=7` (matches current `pa1/db/crawldb.sql`).
+
+### Full Docker reset to current schema (postgresql-wier + empty data dir)
+
+Use this when you want a **new** PostgreSQL cluster with the latest `crawldb.sql` (e.g. after pulling a new schema version). From the **repository root**:
+
+```bash
+docker stop postgresql-wier 2>/dev/null
+docker rm postgresql-wier 2>/dev/null
+rm -rf .docker/pgdata
+mkdir -p .docker/pgdata .docker/init-scripts
+cp pa1/db/crawldb.sql .docker/init-scripts/01-crawldb.sql
+docker run --name postgresql-wier \
+    -e POSTGRES_PASSWORD=SecretPassword \
+    -e POSTGRES_USER=user \
+    -e POSTGRES_DB=crawldb \
+    -v "$PWD/.docker/pgdata:/var/lib/postgresql/data" \
+    -v "$PWD/.docker/init-scripts:/docker-entrypoint-initdb.d" \
+    -p 5432:5432 \
+    -d pgvector/pgvector:pg17
+```
+
+Then wait a few seconds and confirm `crawldb.schema_version` is **7** (see verification queries below).
 
 ## Expected End State
 
@@ -87,6 +111,8 @@ After successful setup, all of the following should be true:
 - Seed values from the SQL script are present in `crawldb.page_type` and `crawldb.data_type`.
 - Extension column `crawldb.page.relevance_score` exists.
 - Index `idx_page_frontier_priority` exists for preferential frontier dequeue.
+- Indexes `idx_site_domain` and `idx_page_frontier_site_priority` exist (schema **v7**, domain-scoped frontier claims).
+- `crawldb.schema_version` reports version **7**, matching `crawler.db.expectedSchemaVersion` in `application.properties`.
 
 ## Reset crawl data (retain schema)
 
@@ -197,16 +223,25 @@ Expected result includes at least:
 - `crawldb.page_type`
 - `crawldb.data_type`
 
-### 4) Index and priority-column check
+### 4) Schema version check (must match crawler config)
+
+```bash
+docker exec postgresql-wier psql -U user -d crawldb -c "SELECT version FROM crawldb.schema_version WHERE id = 1;"
+```
+
+Expected result: one row with `version = 7` (current `pa1/db/crawldb.sql`).
+
+### 5) Index and priority-column check
 
 ```bash
 docker exec postgresql-wier psql -U user -d crawldb -c "SELECT indexname FROM pg_indexes WHERE schemaname='crawldb' AND indexname='idx_page_frontier_priority';"
+docker exec postgresql-wier psql -U user -d crawldb -c "SELECT indexname FROM pg_indexes WHERE schemaname='crawldb' AND indexname IN ('idx_site_domain','idx_page_frontier_site_priority') ORDER BY indexname;"
 docker exec postgresql-wier psql -U user -d crawldb -c "SELECT column_name FROM information_schema.columns WHERE table_schema='crawldb' AND table_name='page' AND column_name='relevance_score';"
 ```
 
-Expected result: both queries return one row.
+Expected result: `idx_page_frontier_priority` one row; domain-scoped frontier indexes two rows; `relevance_score` one row.
 
-### 5) Seed lookup data check
+### 6) Seed lookup data check
 
 ```bash
 docker exec postgresql-wier psql -U user -d crawldb -c "SELECT code FROM crawldb.page_type ORDER BY code;"
@@ -214,10 +249,10 @@ docker exec postgresql-wier psql -U user -d crawldb -c "SELECT code FROM crawldb
 ```
 
 Expected result:
-- `page_type`: `BINARY`, `DUPLICATE`, `FRONTIER`, `HTML`
+- `page_type`: `BINARY`, `DUPLICATE`, `ERROR`, `FRONTIER`, `HTML`, `PROCESSING`
 - `data_type`: `DOC`, `DOCX`, `PDF`, `PPT`, `PPTX`
 
-### 6) Write/read smoke test (plus cleanup)
+### 7) Write/read smoke test (plus cleanup)
 
 Insert minimal test records, read them back, then remove them:
 

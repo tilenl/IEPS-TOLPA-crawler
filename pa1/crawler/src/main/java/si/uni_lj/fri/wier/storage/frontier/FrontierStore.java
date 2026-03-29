@@ -58,6 +58,24 @@ public final class FrontierStore {
         pageRepository.recoverExpiredLeases(
                 Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId);
         Optional<FrontierRow> claimed = pageRepository.claimNextEligibleFrontier(workerId, leaseDuration);
+        return finishClaim(workerId, claimed);
+    }
+
+    /**
+     * Per-domain atomic claim (same recovery batch as {@link #claimNextEligibleFrontier}) with TS-07 ordering scoped
+     * to {@code crawlDomain}.
+     */
+    public Optional<FrontierRow> claimNextEligibleFrontierForDomain(
+            String workerId, Duration leaseDuration, String crawlDomain, int leaseRecoveryBatchSize) {
+        log.debug("pre-claim stale lease recovery batch workerId={} domain={}", workerId, crawlDomain);
+        pageRepository.recoverExpiredLeases(
+                Math.max(1, leaseRecoveryBatchSize), PRE_CLAIM_RECOVERY_REASON, workerId);
+        Optional<FrontierRow> claimed =
+                pageRepository.claimNextEligibleFrontierForDomain(workerId, leaseDuration, crawlDomain);
+        return finishClaim(workerId, claimed);
+    }
+
+    private Optional<FrontierRow> finishClaim(String workerId, Optional<FrontierRow> claimed) {
         if (claimed.isPresent()) {
             // TS-15 queue-state: one structured line per successful claim (recovery batches log inside PageRepository).
             QueueStateStructuredLog.logFrontierClaim(log, workerId, claimed.get());

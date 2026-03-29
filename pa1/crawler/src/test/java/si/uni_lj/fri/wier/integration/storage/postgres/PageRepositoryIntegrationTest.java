@@ -903,6 +903,52 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void claimNextEligibleFrontierForDomain_ignoresOtherDomains() {
+        long ex = repository.ensureSite("example.com").orElseThrow();
+        long other = repository.ensureSite("other.org").orElseThrow();
+        repository.insertFrontierIfAbsent("https://example.com/a", ex, 0.3);
+        repository.insertFrontierIfAbsent("https://other.org/b", other, 0.99);
+        Optional<FrontierRow> claimed =
+                repository.claimNextEligibleFrontierForDomain("w1", Duration.ofSeconds(60), "example.com");
+        assertTrue(claimed.isPresent());
+        assertEquals("https://example.com/a", claimed.get().url());
+    }
+
+    @Test
+    void claimNextEligibleFrontierForDomain_prefersHigherScoreWithinDomain() {
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://example.com/low", siteId, 0.2);
+        repository.insertFrontierIfAbsent("https://example.com/high", siteId, 0.9);
+        Optional<FrontierRow> claimed =
+                repository.claimNextEligibleFrontierForDomain("w1", Duration.ofSeconds(60), "example.com");
+        assertTrue(claimed.isPresent());
+        assertEquals("https://example.com/high", claimed.get().url());
+    }
+
+    @Test
+    void listDistinctFrontierCrawlDomains_returnsAllSitesWithFrontier() {
+        long ex = repository.ensureSite("example.com").orElseThrow();
+        long other = repository.ensureSite("other.org").orElseThrow();
+        repository.insertFrontierIfAbsent("https://example.com/z", ex, 0.5);
+        repository.insertFrontierIfAbsent("https://other.org/z", other, 0.5);
+        List<String> domains = repository.listDistinctFrontierCrawlDomains();
+        assertTrue(domains.contains("example.com"));
+        assertTrue(domains.contains("other.org"));
+    }
+
+    @Test
+    void insertFrontierIfAbsent_invokesFrontierWakeNotifier() {
+        List<String> wakes = new ArrayList<>();
+        PageRepository repo =
+                new PageRepository(
+                        dataSource, 3, Duration.ofMillis(10), 5, null, null, null, null, wakes::add);
+        long siteId = repo.ensureSite("example.com").orElseThrow();
+        repo.insertFrontierIfAbsent("https://example.com/wake", siteId, 0.5);
+        assertEquals(1, wakes.size());
+        assertEquals("example.com", wakes.get(0));
+    }
+
+    @Test
     void claimNextEligibleFrontier_skipsNotYetDueRow() throws Exception {
         long siteId = repository.ensureSite("example.com").orElseThrow();
         long delayedId = repository.insertFrontierIfAbsent("https://example.com/delayed", siteId, 0.99).pageId();

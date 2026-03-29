@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import javax.sql.DataSource;
 import org.postgresql.ds.PGSimpleDataSource;
 import si.uni_lj.fri.wier.app.PreferentialCrawler;
@@ -95,6 +96,7 @@ public final class Main {
                         crawlMetrics,
                         null);
         sharedPolitenessGate = politenessGate;
+        AtomicReference<Consumer<String>> frontierWakeSink = new AtomicReference<>();
         PageRepository pageRepository =
                 new PageRepository(
                         dataSource,
@@ -104,7 +106,13 @@ public final class Main {
                         politenessGate,
                         config,
                         enqueueService,
-                        crawlMetrics);
+                        crawlMetrics,
+                        domain -> {
+                            Consumer<String> sink = frontierWakeSink.get();
+                            if (sink != null) {
+                                sink.accept(domain);
+                            }
+                        });
         PostgresStorage postgresStorage = new PostgresStorage(pageRepository);
         sharedEnqueueCoordinator =
                 new EnqueueCoordinator(
@@ -173,7 +181,8 @@ public final class Main {
                         schedulerRef,
                         heartbeatWorkerIdRef,
                         seedStatsForHook,
-                        heartbeat::start);
+                        heartbeat::start,
+                        frontierWakeSink);
         seedStatsForHook.set(seeds);
         emitRunSummaryOnce.run();
         heartbeat.close();

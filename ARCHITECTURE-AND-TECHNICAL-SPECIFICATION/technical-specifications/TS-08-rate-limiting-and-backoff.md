@@ -14,7 +14,7 @@ Prevent excessive requests to same domain/server and handle overload responses.
 ## Bucket Contract
 
 - `tryConsumeAndReturnRemaining(1)` MUST be used for exact wait time;
-- **Worker loop (before `fetcher.fetch`):** when `tryAcquire` indicates delay for the **claimed URL’s domain**, the worker MUST **`frontier.reschedule`** — **no busy-wait** on that outer gate ([TS-02](TS-02-worker-orchestration-and-pipeline.md)).
+- **Outer gate (before `fetcher.fetch`):** when `tryAcquire` indicates delay for the **claimed URL’s domain**, the orchestration MUST **`frontier.reschedule`** — **no busy-wait** on that outer gate ([TS-02](TS-02-worker-orchestration-and-pipeline.md)). In the **pump** implementation, `tryAcquire` runs **after** a domain-scoped claim when a token is required for the fetch; if delayed, the leased row is rescheduled and the domain is re-queued after `waitNs`. The **pipeline** (`WorkerLoop`) MUST NOT consume a second hop-0 token when the pump already consumed one (`FetchRequest.firstHopRateLimitSatisfied` / `runClaimedPipeline(..., true)`).
 - **Redirect-chain exception ([TS-03](TS-03-fetcher-specification.md)):** during **hop-by-hop** content fetch **inside** `Fetcher`, after a `3xx` targets another host (or same host), if `tryAcquire` for **that hop’s** domain returns a delay, the implementation **MAY block** the calling thread for the wait **only while** remaining **`claim_expires_at`** margin is sufficient to finish fetch + persist; otherwise the fetch MUST end so the worker can **`frontier.reschedule`** and restart from the **claimed URL** on the next claim.
 - robots fetch (`/robots.txt`) MUST use the same domain bucket and consume a token exactly like content-page fetches.
 - limiter bypass for robots fetch is forbidden.

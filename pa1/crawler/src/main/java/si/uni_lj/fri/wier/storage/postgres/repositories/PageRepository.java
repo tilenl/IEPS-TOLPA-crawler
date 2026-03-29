@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Consumer;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +39,7 @@ import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
+import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 
 /**
@@ -105,18 +107,22 @@ public final class PageRepository {
     private final RuntimeConfig discoveredIngestConfig;
     private final EnqueueService discoveredIngestLog;
     private final CrawlerMetrics crawlMetrics;
+    /**
+     * Optional hook: after a FRONTIER row is inserted (Stage A or bootstrap), notifies the domain-scoped dequeue pump
+     * so it can schedule work without polling. Null disables notifications (tests, standalone repository use).
+     */
+    private final Consumer<String> frontierDomainWakeNotifier;
 
     public PageRepository(DataSource dataSource) {
-        this(dataSource, 3, Duration.ofMillis(100), 250, null, null, null, null);
+        this(dataSource, 3, Duration.ofMillis(100), 250, null, null, null, null, null);
     }
-
 
     public PageRepository(
             DataSource dataSource,
             int maxSerializableRetries,
             Duration serializableBaseBackoff,
             int retryJitterMs) {
-        this(dataSource, maxSerializableRetries, serializableBaseBackoff, retryJitterMs, null, null, null, null);
+        this(dataSource, maxSerializableRetries, serializableBaseBackoff, retryJitterMs, null, null, null, null, null);
     }
 
     /**
@@ -139,6 +145,7 @@ public final class PageRepository {
                 discoveredIngestRobots,
                 discoveredIngestConfig,
                 discoveredIngestLog,
+                null,
                 null);
     }
 
@@ -154,6 +161,32 @@ public final class PageRepository {
             RuntimeConfig discoveredIngestConfig,
             EnqueueService discoveredIngestLog,
             CrawlerMetrics crawlMetrics) {
+        this(
+                dataSource,
+                maxSerializableRetries,
+                serializableBaseBackoff,
+                retryJitterMs,
+                discoveredIngestRobots,
+                discoveredIngestConfig,
+                discoveredIngestLog,
+                crawlMetrics,
+                null);
+    }
+
+    /**
+     * @param frontierDomainWakeNotifier when non-null, invoked with crawl-domain key after FRONTIER inserts (bootstrap,
+     *     Stage A, discovery ingest) so the scheduler pump can wake that domain
+     */
+    public PageRepository(
+            DataSource dataSource,
+            int maxSerializableRetries,
+            Duration serializableBaseBackoff,
+            int retryJitterMs,
+            RobotsTxtCache discoveredIngestRobots,
+            RuntimeConfig discoveredIngestConfig,
+            EnqueueService discoveredIngestLog,
+            CrawlerMetrics crawlMetrics,
+            Consumer<String> frontierDomainWakeNotifier) {
         this.dataSource = dataSource;
         this.maxSerializableRetries = Math.max(1, maxSerializableRetries);
         this.serializableBaseBackoff = serializableBaseBackoff;
@@ -163,6 +196,7 @@ public final class PageRepository {
         this.discoveredIngestConfig = discoveredIngestConfig;
         this.discoveredIngestLog = discoveredIngestLog;
         this.crawlMetrics = crawlMetrics;
+        this.frontierDomainWakeNotifier = frontierDomainWakeNotifier;
     }
 
     private boolean isDiscoveredIngestPolicyEnabled() {
@@ -260,6 +294,118 @@ public final class PageRepository {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to claim next frontier row", e);
+        }
+    }
+
+    /**
+     * Same atomic claim as {@link #claimNextEligibleFrontier(String, Duration)} but restricted to pages whose
+     * {@code site.domain} equals {@code crawlDomain} (per-domain pump dequeue). Ordering is TS-07 within that domain.
+     *
+     * @param crawlDomain value stored in {@code crawldb.site.domain} for the target rows (must match enqueue keys)
+     */
+    public Optional<FrontierRow> claimNextEligibleFrontierForDomain(
+            String workerId, Duration leaseDuration, String crawlDomain) {
+        Objects.requireNonNull(crawlDomain, "crawlDomain");
+        final String sql =
+                """
+                WITH candidate AS (
+                  SELECT p.id
+                  FROM crawldb.page p
+                  INNER JOIN crawldb.site s ON s.id = p.site_id
+                  WHERE p.page_type_code = 'FRONTIER'
+                    AND p.next_attempt_at <= now()
+                    AND s.domain = ?
+                  ORDER BY p.relevance_score DESC, p.next_attempt_at ASC, p.accessed_time ASC, p.id ASC
+                  FOR UPDATE SKIP LOCKED
+                  LIMIT 1
+                )
+                UPDATE crawldb.page p
+                SET page_type_code = 'PROCESSING',
+                    claimed_by = ?,
+                    claimed_at = now(),
+                    claim_expires_at = now() + (? * interval '1 second')
+                FROM candidate c
+                WHERE p.id = c.id
+                RETURNING p.id, p.url, p.site_id, p.relevance_score, p.attempt_count, p.parser_retry_count,
+                          p.next_attempt_at, p.claimed_at, p.claim_expires_at
+                """;
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, crawlDomain);
+            statement.setString(2, workerId);
+            statement.setLong(3, Math.max(1L, leaseDuration.toSeconds()));
+            try (ResultSet rs = statement.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                Timestamp nextAttemptTs = rs.getTimestamp("next_attempt_at");
+                Timestamp claimedTs = rs.getTimestamp("claimed_at");
+                Timestamp claimExpiresTs = rs.getTimestamp("claim_expires_at");
+                return Optional.of(
+                        new FrontierRow(
+                                rs.getLong("id"),
+                                rs.getString("url"),
+                                rs.getLong("site_id"),
+                                rs.getDouble("relevance_score"),
+                                rs.getInt("attempt_count"),
+                                rs.getInt("parser_retry_count"),
+                                Objects.requireNonNull(nextAttemptTs, "next_attempt_at must not be null for claimed row")
+                                        .toInstant(),
+                                Objects.requireNonNull(claimedTs, "claimed_at must not be null for claimed row")
+                                        .toInstant(),
+                                Objects.requireNonNull(claimExpiresTs, "claim_expires_at must not be null for claimed row")
+                                        .toInstant()));
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to claim next frontier row for domain=" + crawlDomain, e);
+        }
+    }
+
+    /**
+     * Distinct crawl domains that currently have at least one {@code FRONTIER} row (any {@code next_attempt_at}).
+     * Used at pump startup to schedule wakes without scanning the full page table repeatedly.
+     */
+    public List<String> listDistinctFrontierCrawlDomains() {
+        final String sql =
+                """
+                SELECT DISTINCT s.domain
+                FROM crawldb.page p
+                INNER JOIN crawldb.site s ON s.id = p.site_id
+                WHERE p.page_type_code = 'FRONTIER'
+                  AND s.domain IS NOT NULL
+                  AND s.domain <> ''
+                ORDER BY s.domain ASC
+                """;
+        List<String> out = new ArrayList<>();
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            while (rs.next()) {
+                String d = rs.getString(1);
+                if (d != null && !d.isBlank()) {
+                    out.add(d);
+                }
+            }
+            return out;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to list frontier crawl domains", e);
+        }
+    }
+
+    private void notifyFrontierDomainWake(String canonicalUrl) {
+        if (frontierDomainWakeNotifier == null
+                || canonicalUrl == null
+                || canonicalUrl.isBlank()) {
+            return;
+        }
+        try {
+            frontierDomainWakeNotifier.accept(HostKeys.domainKey(canonicalUrl));
+        } catch (RuntimeException e) {
+            // Pump must never break persistence; log at debug for operator diagnosis.
+            log.debug(
+                    "frontierDomainWakeNotifier failed canonicalUrl={} msg={}",
+                    canonicalUrl,
+                    e.getMessage());
         }
     }
 
@@ -615,7 +761,10 @@ public final class PageRepository {
             String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt) {
         Objects.requireNonNull(nextAttemptAt, "nextAttemptAt");
         try (Connection connection = dataSource.getConnection()) {
-            return insertFrontierIfAbsent(connection, canonicalUrl, siteId, relevanceScore, nextAttemptAt);
+            InsertFrontierResult r =
+                    insertFrontierIfAbsent(connection, canonicalUrl, siteId, relevanceScore, nextAttemptAt);
+            notifyFrontierDomainWake(canonicalUrl);
+            return r;
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to insert frontier url=" + canonicalUrl, e);
         }
@@ -725,6 +874,13 @@ public final class PageRepository {
             }
 
             connection.commit();
+            // Stage A inserts run inside this SERIALIZABLE transaction; wake the pump only after commit so claims
+            // observe committed FRONTIER rows from other connections.
+            for (DiscoveredUrl d : merged) {
+                if (d != null && d.canonicalUrl() != null && !d.canonicalUrl().isBlank()) {
+                    notifyFrontierDomainWake(d.canonicalUrl());
+                }
+            }
             return new PersistOutcome(context.pageId(), outcomeType, ownerPageId, ingestResult);
         } catch (SQLException e) {
             connection.rollback();
