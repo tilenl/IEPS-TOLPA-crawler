@@ -531,16 +531,16 @@ public final class PolitenessGate implements RobotsTxtCache, RateLimiterRegistry
         return evaluatePathAllowance(rules, canonicalUrl);
     }
 
+    /**
+     * Pass the full canonical URL to {@link BaseRobotRules#isAllowed(String)}: crawler-commons parses it as a URL;
+     * a path-only string breaks GitHub-style wildcard {@code Disallow} rules.
+     */
     private static RobotDecision evaluatePathAllowance(BaseRobotRules rules, String canonicalUrl) {
-        URI u = URI.create(canonicalUrl.trim());
-        String path = u.getPath();
-        if (path == null || path.isEmpty()) {
-            path = "/";
-        }
+        String url = canonicalUrl.trim();
         if (rules.isAllowNone()) {
             return RobotDecision.disallowed("ROBOTS_DISALLOW_ALL");
         }
-        if (!rules.isAllowed(path)) {
+        if (!rules.isAllowed(url)) {
             return RobotDecision.disallowed("ROBOTS_DISALLOWED");
         }
         return RobotDecision.allowed();

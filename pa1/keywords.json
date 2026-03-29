@@ -12,7 +12,13 @@
     "segment anything",
     "segmentanything",
     "computer vision",
-    "image classification"
+    "image classification",
+    "pytorch",
+    "torchvision",
+    "transformers",
+    "onnx",
+    "huggingface",
+    "model zoo"
   ],
   "secondary": [
     "object detection",
@@ -34,6 +40,13 @@
     "inference",
     "notebook",
     "notebooks",
-    "segment anything 2"
+    "segment anything 2",
+    "timm",
+    "turnkeyml",
+    "neural-compressor",
+    "neural compressor",
+    "quantization",
+    "pre-trained",
+    "pretrained"
   ]
 }

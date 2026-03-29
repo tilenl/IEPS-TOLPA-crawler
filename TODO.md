@@ -9,10 +9,7 @@ Se pravi ko kliče fetchNextFrontier, interno ta funkcija pokliče za domeno git
 1. Kok anchor texta upošteva crawler? Kje se to nastavi?
 2. Dopiši še ogromno več besed za preference scoring, da bo Boljše scoral linke! V crawler/src/resources/keywords.json se to vpiše!
 3. Spremeni dodajanje linkov v frontier tako, da če je že max število linkov notri, vržeš vn frontier link z najmanjšim preferential scorom, če ima novi link višji score kot 0. Tako skrbiš, da se ne dodajo popolnoma vsi linki v database in poskrbiš, da se novi link z višjim sporom vseeno doda notri v frontier.
-
-
-
-
+4. Do not store page meta and page title in the page_data, as this info is already available in the html_content in the page table of the database. 
 
 KO BO PREFERENTIAL SCORING DELOVAL:
 

@@ -7,6 +7,8 @@
 package si.uni_lj.fri.wier.unit.downloader.politeness;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
 import crawlercommons.robots.SimpleRobotRulesParser;
@@ -34,9 +36,9 @@ class PolitenessGateEvaluatePathsUnitTest {
                         robots.getBytes(StandardCharsets.UTF_8),
                         StandardCharsets.UTF_8.name(),
                         CrawlerUserAgents.FETCHER);
-        org.junit.jupiter.api.Assertions.assertFalse(
-                parsed.isAllowed("/topics/page"),
-                "sanity: site-wide Disallow:/ should block arbitrary paths under crawler-commons");
+        assertFalse(
+                parsed.isAllowed("http://127.0.0.1/topics/page"),
+                "sanity: site-wide Disallow:/ blocks full-URL paths (crawler-commons URL parsing)");
 
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         int port = server.getAddress().getPort();
@@ -61,6 +63,63 @@ class PolitenessGateEvaluatePathsUnitTest {
             assertEquals(
                     RobotDecisionType.DISALLOWED,
                     gate.evaluate("http://127.0.0.1/topics/page").type());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void evaluate_githubStyleWildcardDisallow_blocksTreeAndPulsePaths() throws Exception {
+        String robots =
+                "User-agent: "
+                        + CrawlerUserAgents.FETCHER
+                        + "\nDisallow: /*/tree/\nDisallow: /*/*/pulse\n";
+        var parser = new SimpleRobotRulesParser();
+        var parsed =
+                parser.parseContent(
+                        "https://github.com/robots.txt",
+                        robots.getBytes(StandardCharsets.UTF_8),
+                        StandardCharsets.UTF_8.name(),
+                        CrawlerUserAgents.FETCHER);
+        String httpsBase = "https://github.com";
+        assertFalse(
+                parsed.isAllowed(httpsBase + "/onnx/models/tree/main/Generative_AI"),
+                "GitHub-style /*/tree/ should block tree URLs when isAllowed gets a full https URL");
+        assertFalse(
+                parsed.isAllowed(httpsBase + "/onnx/models/pulse"),
+                "GitHub-style /*/*/pulse should block pulse when isAllowed gets a full https URL");
+        assertTrue(parsed.isAllowed(httpsBase + "/onnx/models"), "repo root stays allowed");
+        assertTrue(
+                parsed.isAllowed(httpsBase + "/onnx/models/issues"),
+                "issues list is not covered by tree/pulse disallows");
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        int port = server.getAddress().getPort();
+        byte[] body = robots.getBytes(StandardCharsets.UTF_8);
+        server.createContext(
+                "/robots.txt",
+                ex -> {
+                    ex.sendResponseHeaders(200, body.length);
+                    ex.getResponseBody().write(body);
+                    ex.close();
+                });
+        server.start();
+        try {
+            RuntimeConfig cfg = baseConfig();
+            HttpClient client =
+                    HttpClient.newBuilder()
+                            .connectTimeout(java.time.Duration.ofMillis(cfg.fetchConnectTimeoutMs()))
+                            .followRedirects(HttpClient.Redirect.NEVER)
+                            .build();
+            String origin = "http://127.0.0.1:" + port;
+            PolitenessGate gate = new PolitenessGate(cfg, client, origin);
+            gate.ensureLoaded("127.0.0.1");
+            assertEquals(
+                    RobotDecisionType.DISALLOWED,
+                    gate.evaluate(origin + "/onnx/models/tree/main/Generative_AI").type());
+            assertEquals(RobotDecisionType.DISALLOWED, gate.evaluate(origin + "/onnx/models/pulse").type());
+            assertEquals(RobotDecisionType.ALLOWED, gate.evaluate(origin + "/onnx/models").type());
+            assertEquals(RobotDecisionType.ALLOWED, gate.evaluate(origin + "/onnx/models/issues").type());
         } finally {
             server.stop(0);
         }
