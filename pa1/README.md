@@ -151,14 +151,4 @@ TRUNCATE TABLE
 RESTART IDENTITY CASCADE;
 ```
 
----
-
-## Optional tooling
-
-
-| Tool                    | Location                     | Purpose                                                                         |
-| ----------------------- | ---------------------------- | ------------------------------------------------------------------------------- |
-| Live terminal dashboard | `scripts/db-crawl-status.sh` | Colorized crawl progress with ETA. Run with `--docker` if no local `psql`.      |
-| Link graph UI           | `../visualization/`          | Interactive browser graph of crawled pages and links (Node/Express, port 3001). |
-
 
