@@ -18,13 +18,49 @@ Hosts such as **`github.io`** (GitHub Pages), **`githubusercontent.com`** / **`r
 
 ---
 
-## Crawler Architecture
-The crawler consists of five main components as specified in the assignment:
-1. **HTTP Downloader and Renderer**: Uses Selenium (headless Chromium) for rendering and Java 21 `HttpClient` for optimized fetching.
-2. **Data Extractor**: Extracts hyperlinks (including `onclick` events) and image references.
-3. **Duplicate Detector**: Implements SHA-256 content hashing for detecting duplicate pages.
-4. **URL Frontier**: A database-backed priority queue using PostgreSQL `FOR UPDATE SKIP LOCKED` for safe concurrent claims; dequeue is **domain-scoped** in the live crawler (see Scheduling below).
-5. **Datastore**: A PostgreSQL database following the `crawldb.sql` schema.
+## Crawler architecture (technical specification overview)
+
+The architecture in `ARCHITECTURE-AND-TECHNICAL-SPECIFICATION` describes a **preferential web crawler** for segmentation-related material on `github.com`, respecting assignment constraints, `robots.txt`, and per-domain rate limits.
+
+### Overall pattern and layers
+
+The design is a **producer–consumer** system: the **frontier** is a persistent, database-backed buffer between **link discovery** (producers) and **page processing** (consumers). Two views are used in the docs:
+
+- **Assignment view (five components):** HTTP downloader/renderer, data extractor, duplicate detector, URL frontier, datastore (PostgreSQL, `crawldb.sql`).
+- **Engineering view:** `Scheduler`, `Worker`/`WorkerLoop`, `Frontier`/`FrontierStore`, `Fetcher`, `Parser`, `Canonicalizer`, `RobotsTxtCache`, `RateLimiterRegistry`, `RelevanceScorer`, `ContentHasher`, `Storage` (and related queue/claim/enqueue services). Cross-cutting concerns live under `config/`, `error/`, and `observability/`. The **only CLI entrypoint** is `cli/Main.java`; lifecycle and composition are owned by `app/PreferentialCrawler.java`. Components depend on **interfaces** defined in `TS-01` rather than on concrete types.
+
+### Dataflow: Stage A and Stage B
+
+Work is split into two stages:
+
+- **Stage A (ingestion):** each discovered URL is **canonicalized**, checked against **robots** (before frontier insert), **deduplicated** at the URL level, **scored** for relevance, then written to the frontier (with link rows). Robots metadata is loaded through a shared **`RobotsTxtCache`** with per-domain single-flight; `/robots.txt` fetches share the same domain limiter budget as content fetches.
+- **Stage B (fetch):** a worker **atomically claims** the next eligible frontier row, passes a **rate-limit / politeness gate**, **fetches** the page, **parses** it, **hashes** content for duplicate detection, and **persists** the outcome plus newly discovered links (which feed Stage A again).
+
+Preferential behaviour is explicit: **scoring runs at ingestion**, before frontier insertion; the queue orders by **`relevance_score` descending**, with age-based tie-breaking.
+
+### Major components and how they connect
+
+Conceptually, the loop is: **seeds → frontier (PostgreSQL) → scheduler/worker → politeness + robots → fetcher → parser → canonicalizer + scorer → storage → frontier**. The fetcher uses **`HttpClient`** where sufficient and **Selenium (headless Chromium)** where JavaScript rendering is required (TS-03). The parser extracts **`href` and `onclick` links** and **image references** (TS-04). **URL deduplication** is **database-authoritative** (`page.url` uniqueness and atomic frontier insert semantics per TS-10); **content deduplication** uses **SHA-256** of HTML and may mark a page as `DUPLICATE` (TS-09). **Canonical URLs** are the sole form on the storage boundary (TS-05).
+
+### Page lifecycle and termination
+
+Rows move through **`FRONTIER` → `PROCESSING` →** a terminal type: **`HTML`**, **`BINARY`**, **`DUPLICATE`**, or **`ERROR`**. Rate-limit and retry paths reschedule work via **`next_attempt_at`**; stale leases can be reclaimed to `FRONTIER`. Crawl completion is defined when **no** `FRONTIER` or `PROCESSING` rows remain, subject to a configured **termination grace** window ([TS-02], [TS-07]).
+
+### Budgets and bounded growth
+
+The specification caps **concurrent** stored pages (e.g. **5,000** total `page` rows) and frontier size. When admitting a new URL would exceed a cap, **score-based replacement** may **evict the lowest-scoring `FRONTIER`** row (and its link edges) if the newcomer’s score is **strictly higher**; terminal and in-flight rows are not removed this way ([TS-13], domain/scope doc). This keeps the frontier and database from growing without bound while preserving the most relevant candidates.
+
+### Deployment and politeness invariant
+
+**Politeness** (e.g. Bucket4j per domain, **5-second floor** unless `robots.txt` specifies otherwise) and **robots caching** are **in-process**. **Exactly one crawler JVM** must run against a given database for a crawl: two processes would **double** effective request rate and break robots single-flight ([TS-08], [TS-06]).
+
+### Assignment-aligned component summary
+
+1. **HTTP Downloader and Renderer**: Selenium for JS-heavy pages, Java 21 `HttpClient` for efficient fetching when HTML is already sufficient.
+2. **Data Extractor**: Hyperlinks (including `onclick`) and image references.
+3. **Duplicate Detector**: SHA-256 over HTML for content-level duplicates.
+4. **URL Frontier**: PostgreSQL-backed priority queue with safe concurrent claims; the live crawler uses **domain-scoped** dequeue coordinated with politeness (see Scheduling below).
+5. **Datastore**: PostgreSQL following `crawldb.sql`.
 
 ## Scheduling and work orchestration
 
@@ -78,6 +114,30 @@ We **corrected the crawler’s search path** by **returning to a shorter, simple
 ## Deduplication Strategy
 - **URL Deduplication**: Handled by the database unique constraint on the `url` column.
 - **Content Deduplication**: SHA-256 hash of the HTML body is compared against existing hashes in the database.
+
+## Implementation and tuning notes
+
+The following observations were recorded while developing and running the crawler:
+
+- **Crawl-delay and subdomains:** The **5-second crawl-delay rule per domain** was respected, as seen from access timestamps. Each **subdomain** under `github.com` had its **own** timer; the crawler soon **stopped expanding** those subdomains when they yielded no useful links.
+
+- **`maxOccurrencesPerKeyword`:** When this was set **too high**, the crawler **filled the database with `/topics` pages**, because those pages are dense in the primary keywords. During tuning it was **capped at 3**, which balanced **topics pages vs. repositories**. It was kept **above 1** so repositories mentioned **more than once** got a **higher score** (stronger relevance). At **128**, topics pages **flooded** the database.
+
+- **Two-phase collection (topics vs. repos):** The crawler was still **converging on topics-only** results. The workaround: set a **high** occurrence limit (**128**), run with a **30-page** cap so the crawl converged on **highly relevant topics pages**, **seed** those URLs, **block further crawling of `/topics`**, and **re-run** with a large page limit (**5,000**). That **stopped topics from dominating** while still rewarding **multiple keyword hits** (including on topics, via seeds). **Phase 1:** 30-page run to lock in topics. **Phase 2:** seeds + **5,000-page** run with **`/topics` denied**—this produced the **best repository mix**.
+
+- **`github.com` and `www.github.com`:** Both were restricted because GitHub **redirects** `www.github.com/robots.txt` to `github.com/robots.txt`, so they share one **robots / fetch bucket**; since `www` redirects to the apex host anyway, treating both consistently was appropriate.
+
+- **Near-duplicate URLs:** Test runs hit duplicates such as `.../search` vs. `.../search/en`. The translated `/en` variant was treated as a **duplicate**, with a **canonical** relationship to the original.
+
+- **Subdomain noise (pre-restriction):** Before scope was tightened, the DB contained many **`*.github.com`** hosts (`api`, `cli`, `help`, …) with **no useful content** (`relevance_score = 0`). Crawling was therefore **limited to the main `github.com` scope** (aligned with the allowlist described above).
+
+- **Headless rendering:** **GitHub does not require** headless browsing for the pages we cared about—`/topics`, `/readme.md`, and similar **server-rendered** HTML were verified. **Headless** remains in the stack and is used when a page has **no links** or when a **“JavaScript is not enabled”** message appears.
+
+- **`.py` and extension URLs on GitHub:** Many file URLs are **HTML views**, not raw bytes, so **binary bodies** are uncommon on `github.com` itself; true binaries usually **link off-site**. Such external cases are **out of scope** for following as crawl targets.
+
+- **Binary rows in testing:** Binaries observed in DB tests **pointed outside** `github.com` (e.g. **PDFs** not hosted on GitHub). They **do not** dominate the production crawl set. Many would-be binary paths also sit under **`robots.txt`**-disallowed areas (e.g. deep `blob/` paths).
+
+- **5,000-page cap and eviction:** The crawler is designed around a **5,000-page** budget. If a **new** page scores **higher** than the **worst** page currently admitted under the cap, the **lowest-scoring frontier** candidate can be **dropped** and replaced—**in-place** control so neither frontier nor DB grows without bound (see Budgets above).
 
 ## Statistics
 (To be populated after crawling)
