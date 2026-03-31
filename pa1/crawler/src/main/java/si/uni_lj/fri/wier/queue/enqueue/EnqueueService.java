@@ -98,4 +98,56 @@ public final class EnqueueService {
                 r.configKey(),
                 r.remediationHint());
     }
+
+    public void logHubBudgetDropped(String url, String domain) {
+        if (metrics != null) {
+            metrics.recordHubBudgetDropped();
+        }
+        ConfigRemediation.Remediation r = ConfigRemediation.hubBudgetDropped();
+        log.warn(
+                "event=HUB_BUDGET_DROPPED result=REJECTED workerId=ingestion pageId=0 url={} domain={} configKey={}"
+                        + " remediationHint={}",
+                url,
+                domain,
+                r.configKey(),
+                r.remediationHint());
+    }
+
+    public void logHubBudgetLowScore(String url, String domain) {
+        if (metrics != null) {
+            metrics.recordHubBudgetLowScore();
+        }
+        ConfigRemediation.Remediation r = ConfigRemediation.hubBudgetLowScore();
+        log.warn(
+                "event=HUB_BUDGET_LOW_SCORE result=REJECTED workerId=ingestion pageId=0 url={} domain={} configKey={}"
+                        + " remediationHint={}",
+                url,
+                domain,
+                r.configKey(),
+                r.remediationHint());
+    }
+
+    /** Score-based eviction of a hub FRONTIER row under {@code crawler.budget.maxHubPages}. */
+    public void logHubFrontierEvictedForScore(
+            String victimUrl,
+            double victimScore,
+            String newUrl,
+            double newScore,
+            String domain) {
+        if (metrics != null) {
+            metrics.recordHubFrontierEvictedForScore();
+        }
+        ConfigRemediation.Remediation r = ConfigRemediation.hubBudgetDropped();
+        log.info(
+                "event=HUB_FRONTIER_EVICTED_FOR_SCORE result=SWAPPED workerId=ingestion pageId=0 victimUrl={}"
+                        + " victimScore={} newUrl={} newScore={} triggerConfigKeys=crawler.budget.maxHubPages domain={}"
+                        + " configKey={} remediationHint={}",
+                victimUrl,
+                victimScore,
+                newUrl,
+                newScore,
+                domain,
+                r.configKey(),
+                r.remediationHint());
+    }
 }

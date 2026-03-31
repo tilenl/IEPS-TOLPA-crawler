@@ -88,7 +88,8 @@ public final class PreferentialCrawler {
         log.info(
                 "effectiveConfig retryBudget jitterMs={} recoveryPathMaxAttempts={} recoveryPathBaseBackoffMs={}"
                         + " retryFetchTimeout={} retryFetchOverload={} retryFetchCapacity={} retryDbTransient={}"
-                        + " budgetMaxTotalPages={} budgetMaxFrontierRows={} seedUrlCount={} crawlScope={}",
+                        + " budgetMaxTotalPages={} budgetMaxFrontierRows={} budgetMaxHubPages={} seedUrlCount={}"
+                        + " crawlScope={}",
                 config.retryJitterMs(),
                 config.recoveryPathMaxAttempts(),
                 config.recoveryPathBaseBackoffMs(),
@@ -98,6 +99,7 @@ public final class PreferentialCrawler {
                 config.retryMaxAttemptsDbTransient(),
                 config.budgetMaxTotalPages(),
                 config.budgetMaxFrontierRows(),
+                config.budgetMaxHubPages(),
                 config.seedUrls().size(),
                 config.crawlScope());
         log.info(

@@ -25,7 +25,8 @@ import si.uni_lj.fri.wier.downloader.fetch.UrlPathSuffixHtmlPolicy;
  * budgetMaxTotalPages} as the max count of {@code HTML} rows in {@code crawldb.page} for discovery admission
  * (score-based FRONTIER replacement when that HTML budget is reached) and for cooperative crawl termination in
  * {@link si.uni_lj.fri.wier.scheduler.VirtualThreadCrawlerScheduler}; it does not count FRONTIER, PROCESSING, or
- * non-HTML terminal rows.
+ * non-HTML terminal rows. {@code budgetMaxHubPages} limits GitHub hub-shaped URLs ({@code github_hub_page},
+ * {@code FRONTIER}+{@code PROCESSING}+terminal {@code HUB}) so topic/profile pages cannot flood the frontier.
  *
  * <p>{@link #validate()} must run before database access that depends on bounded frontier/recovery settings;
  * it also validates {@code crawler.scoring.keywordConfig} JSON on the filesystem (relative paths use the JVM
@@ -65,6 +66,7 @@ public record RuntimeConfig(
         int retryMaxAttemptsDbTransient,
         int budgetMaxTotalPages,
         int budgetMaxFrontierRows,
+        int budgetMaxHubPages,
         boolean discoveryBlockGithubTopicsPaths,
         Set<String> discoveryDenyGithubRepoSubpaths,
         CrawlScope crawlScope,
@@ -126,6 +128,7 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.retry.maxAttempts.dbTransient", 5),
                 parseInt(p, "crawler.budget.maxTotalPages", 5000),
                 parseInt(p, "crawler.budget.maxFrontierRows", 20_000),
+                parseInt(p, "crawler.budget.maxHubPages", 32),
                 parseBoolean(p, "crawler.discovery.blockGithubTopicsPaths", false),
                 parseDiscoveryDenyGithubRepoSubpaths(p),
                 CrawlScopes.parseCrawlScope(p.getProperty("crawler.crawlScope")),
@@ -355,6 +358,7 @@ public record RuntimeConfig(
                 "0..20");
         require(budgetMaxTotalPages >= 1, "crawler.budget.maxTotalPages", ">= 1");
         require(budgetMaxFrontierRows >= 100, "crawler.budget.maxFrontierRows", ">= 100");
+        require(budgetMaxHubPages >= 0, "crawler.budget.maxHubPages", ">= 0");
         Objects.requireNonNull(crawlScope, "crawlScope");
         require(!seedUrls.isEmpty(), "crawler.seedUrls", "at least one non-blank URL after comma-split");
         for (String u : seedUrls) {

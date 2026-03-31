@@ -47,6 +47,21 @@ public final class ConfigRemediation {
                         + " or wait until the queue drains.");
     }
 
+    public static Remediation hubBudgetDropped() {
+        return new Remediation(
+                "crawler.budget.maxHubPages",
+                "GitHub hub URL admission is at cap (github_hub_page rows in FRONTIER, PROCESSING, or terminal HUB)."
+                        + " Increase crawler.budget.maxHubPages, or ensure at least one hub FRONTIER row exists to"
+                        + " evict under score-based replacement; set to 0 to reject all new hub discoveries.");
+    }
+
+    public static Remediation hubBudgetLowScore() {
+        return new Remediation(
+                "crawler.budget.maxHubPages",
+                "The hub-page budget is full and this URL does not outrank the lowest-scoring queued hub candidate."
+                        + " Increase crawler.budget.maxHubPages or improve hub discovery relevance.");
+    }
+
     public static Remediation fetchTimeoutExhausted() {
         return new Remediation(
                 "crawler.retry.maxAttempts.fetchTimeout",

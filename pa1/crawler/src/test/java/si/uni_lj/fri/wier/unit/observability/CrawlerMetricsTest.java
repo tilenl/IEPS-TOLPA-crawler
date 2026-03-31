@@ -54,6 +54,19 @@ class CrawlerMetricsTest {
     }
 
     @Test
+    void hubBudgetAndTerminalCounters_increment() {
+        CrawlerMetrics m = new CrawlerMetrics();
+        m.recordHubBudgetDropped();
+        m.recordHubBudgetLowScore();
+        m.recordHubFrontierEvictedForScore();
+        m.recordTerminalHubPersisted();
+        assertEquals(1L, m.hubBudgetDroppedTotal());
+        assertEquals(1L, m.hubBudgetLowScoreTotal());
+        assertEquals(1L, m.hubFrontierEvictedForScoreTotal());
+        assertEquals(1L, m.terminalHubPages());
+    }
+
+    @Test
     void dbPoolUtilization_permilleReflectsCheckoutsAndCapsAt1000() {
         CrawlerMetrics m = new CrawlerMetrics();
         m.setDbPoolCapacity(4);

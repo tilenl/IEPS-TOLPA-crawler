@@ -64,6 +64,10 @@ public final class CrawlerMetrics {
     private final AtomicLong frontierEvictedForScoreTotal = new AtomicLong();
     private final AtomicLong frontierFullLowScoreTotal = new AtomicLong();
 
+    private final AtomicLong hubBudgetDroppedTotal = new AtomicLong();
+    private final AtomicLong hubBudgetLowScoreTotal = new AtomicLong();
+    private final AtomicLong hubFrontierEvictedForScoreTotal = new AtomicLong();
+
     private final AtomicLong leaseRecoveryRowsTotal = new AtomicLong();
     private final AtomicLong leaseRecoveryBatchesTotal = new AtomicLong();
     private final AtomicLong maxObservedLeaseAgeMs = new AtomicLong();
@@ -72,6 +76,7 @@ public final class CrawlerMetrics {
     private final AtomicLong contentDedupHits = new AtomicLong();
 
     private final AtomicLong terminalHtmlPages = new AtomicLong();
+    private final AtomicLong terminalHubPages = new AtomicLong();
     private final AtomicLong terminalBinaryPages = new AtomicLong();
 
     private final AtomicLong headlessAcquireTimeouts = new AtomicLong();
@@ -203,6 +208,30 @@ public final class CrawlerMetrics {
         return frontierFullLowScoreTotal.get();
     }
 
+    public void recordHubBudgetDropped() {
+        hubBudgetDroppedTotal.incrementAndGet();
+    }
+
+    public void recordHubBudgetLowScore() {
+        hubBudgetLowScoreTotal.incrementAndGet();
+    }
+
+    public void recordHubFrontierEvictedForScore() {
+        hubFrontierEvictedForScoreTotal.incrementAndGet();
+    }
+
+    public long hubBudgetDroppedTotal() {
+        return hubBudgetDroppedTotal.get();
+    }
+
+    public long hubBudgetLowScoreTotal() {
+        return hubBudgetLowScoreTotal.get();
+    }
+
+    public long hubFrontierEvictedForScoreTotal() {
+        return hubFrontierEvictedForScoreTotal.get();
+    }
+
     /**
      * Stale-lease recovery: {@code rows} is the UPDATE row count for one batch; increments batch counter when {@code
      * rows > 0}.
@@ -257,12 +286,20 @@ public final class CrawlerMetrics {
         terminalHtmlPages.incrementAndGet();
     }
 
+    public void recordTerminalHubPersisted() {
+        terminalHubPages.incrementAndGet();
+    }
+
     public void recordTerminalBinaryPersisted() {
         terminalBinaryPages.incrementAndGet();
     }
 
     public long terminalHtmlPages() {
         return terminalHtmlPages.get();
+    }
+
+    public long terminalHubPages() {
+        return terminalHubPages.get();
     }
 
     public long terminalBinaryPages() {

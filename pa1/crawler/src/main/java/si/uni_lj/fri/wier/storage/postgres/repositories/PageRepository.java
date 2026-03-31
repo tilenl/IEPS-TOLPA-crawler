@@ -39,6 +39,7 @@ import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
+import si.uni_lj.fri.wier.downloader.fetch.GithubHubPageClassifier;
 import si.uni_lj.fri.wier.downloader.fetch.GithubRepoSubpathDiscoveryBlock;
 import si.uni_lj.fri.wier.downloader.fetch.GithubTopicsDiscoveryBlock;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
@@ -80,7 +81,7 @@ public final class PageRepository {
 
     /**
      * TS-15 {@code CRAWLER_HEARTBEAT}: one round-trip counts for {@code FRONTIER}, {@code PROCESSING}, and terminal
-     * types ({@code HTML}, {@code BINARY}, {@code DUPLICATE}, {@code ERROR}).
+     * types ({@code HTML}, {@code HUB}, {@code BINARY}, {@code DUPLICATE}, {@code ERROR}).
      */
     /**
      * Heartbeat snapshot (TS-15): queue depths, terminal throughput coarse count, and optional oldest active lease
@@ -493,7 +494,7 @@ public final class PageRepository {
                 """
                 SELECT COUNT(*) FILTER (WHERE page_type_code = 'FRONTIER'),
                        COUNT(*) FILTER (WHERE page_type_code = 'PROCESSING'),
-                       COUNT(*) FILTER (WHERE page_type_code IN ('HTML', 'BINARY', 'DUPLICATE', 'ERROR')),
+                       COUNT(*) FILTER (WHERE page_type_code IN ('HTML', 'HUB', 'BINARY', 'DUPLICATE', 'ERROR')),
                        COALESCE(
                            (SELECT MAX(
                                    (EXTRACT(EPOCH FROM (now() - p2.claimed_at)) * 1000)::bigint)
@@ -529,6 +530,7 @@ public final class PageRepository {
             long frontierCount,
             long processingCount,
             long htmlCount,
+            long hubCount,
             long binaryCount,
             long duplicateCount,
             long errorCount) {}
@@ -544,6 +546,7 @@ public final class PageRepository {
                        COUNT(*) FILTER (WHERE page_type_code = 'FRONTIER')::bigint,
                        COUNT(*) FILTER (WHERE page_type_code = 'PROCESSING')::bigint,
                        COUNT(*) FILTER (WHERE page_type_code = 'HTML')::bigint,
+                       COUNT(*) FILTER (WHERE page_type_code = 'HUB')::bigint,
                        COUNT(*) FILTER (WHERE page_type_code = 'BINARY')::bigint,
                        COUNT(*) FILTER (WHERE page_type_code = 'DUPLICATE')::bigint,
                        COUNT(*) FILTER (WHERE page_type_code = 'ERROR')::bigint
@@ -553,7 +556,7 @@ public final class PageRepository {
                 PreparedStatement statement = connection.prepareStatement(sql);
                 ResultSet rs = statement.executeQuery()) {
             if (!rs.next()) {
-                return new RunSummaryPageTypeSnapshot(0L, 0L, 0L, 0L, 0L, 0L, 0L);
+                return new RunSummaryPageTypeSnapshot(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
             }
             return new RunSummaryPageTypeSnapshot(
                     rs.getLong(1),
@@ -562,7 +565,8 @@ public final class PageRepository {
                     rs.getLong(4),
                     rs.getLong(5),
                     rs.getLong(6),
-                    rs.getLong(7));
+                    rs.getLong(7),
+                    rs.getLong(8));
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to query run summary page type snapshot", e);
         }
@@ -597,7 +601,7 @@ public final class PageRepository {
                 SELECT s.domain, COUNT(*)::bigint AS c
                 FROM crawldb.page p
                 JOIN crawldb.site s ON s.id = p.site_id
-                WHERE p.page_type_code IN ('HTML', 'BINARY', 'DUPLICATE', 'ERROR')
+                WHERE p.page_type_code IN ('HTML', 'HUB', 'BINARY', 'DUPLICATE', 'ERROR')
                 GROUP BY s.domain
                 ORDER BY c DESC
                 LIMIT ?
@@ -926,14 +930,21 @@ public final class PageRepository {
             Long ownerPageId = null;
             PageOutcomeType outcomeType;
             if (html) {
+                boolean hubTerminal = GithubHubPageClassifier.matches(effectiveUrl);
                 String contentHash = contentHasher.sha256(result.body());
                 ownerPageId = registerContentOwnership(connection, contentHash, context.pageId());
                 // A larger page_id may have committed HTML before LEAST chose a smaller owner; reconcile stale rows.
                 downgradeStaleHtmlOwnersForSameContentHash(
                         connection, contentHash, ownerPageId, result.statusCode(), result.fetchedAt());
                 if (ownerPageId == context.pageId()) {
-                    markPageHtml(connection, context.pageId(), result.statusCode(), result.fetchedAt(), result.body(), contentHash);
-                    outcomeType = PageOutcomeType.HTML;
+                    if (hubTerminal) {
+                        markPageHub(connection, context.pageId(), result.statusCode(), result.fetchedAt(), result.body(), contentHash);
+                        outcomeType = PageOutcomeType.HUB;
+                    } else {
+                        markPageHtml(
+                                connection, context.pageId(), result.statusCode(), result.fetchedAt(), result.body(), contentHash);
+                        outcomeType = PageOutcomeType.HTML;
+                    }
                 } else {
                     markPageDuplicate(connection, context.pageId(), result.statusCode(), result.fetchedAt(), contentHash);
                     // TS-09: same graph convention as URL dedup — edge from the current page to the canonical target.
@@ -965,6 +976,7 @@ public final class PageRepository {
             if (crawlMetrics != null) {
                 switch (outcomeType) {
                     case HTML -> crawlMetrics.recordTerminalHtmlPersisted();
+                    case HUB -> crawlMetrics.recordTerminalHubPersisted();
                     case BINARY -> crawlMetrics.recordTerminalBinaryPersisted();
                     case DUPLICATE -> crawlMetrics.recordContentDedupHit();
                 }
@@ -994,10 +1006,11 @@ public final class PageRepository {
             Connection connection, String canonicalUrl, long siteId, double relevanceScore, Instant nextAttemptAt)
             throws SQLException {
         // NOTE: DO UPDATE SET url = EXCLUDED.url is a no-op that still runs so xmax distinguishes insert vs conflict.
+        boolean hubPage = GithubHubPageClassifier.matches(canonicalUrl);
         final String sql =
                 """
-                INSERT INTO crawldb.page(site_id, page_type_code, url, relevance_score, next_attempt_at, attempt_count)
-                VALUES (?, 'FRONTIER', ?, ?, ?, 0)
+                INSERT INTO crawldb.page(site_id, page_type_code, url, relevance_score, next_attempt_at, attempt_count, github_hub_page)
+                VALUES (?, 'FRONTIER', ?, ?, ?, 0, ?)
                 ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url
                 RETURNING id, (xmax = 0) AS inserted
                 """;
@@ -1006,6 +1019,7 @@ public final class PageRepository {
             statement.setString(2, canonicalUrl);
             statement.setDouble(3, relevanceScore);
             statement.setTimestamp(4, Timestamp.from(nextAttemptAt));
+            statement.setBoolean(5, hubPage);
             try (ResultSet rs = statement.executeQuery()) {
                 if (!rs.next()) {
                     throw new SQLException("insertFrontierIfAbsent returned no rows");
@@ -1207,10 +1221,64 @@ public final class PageRepository {
 
             String domain = hostForBudgetLog(discovered.canonicalUrl());
             Optional<Long> existingPageId = findPageIdByUrl(connection, discovered.canonicalUrl());
+            boolean isHub = GithubHubPageClassifier.matches(discovered.canonicalUrl());
+
+            if (existingPageId.isEmpty() && isHub) {
+                if (cfg.budgetMaxHubPages() == 0) {
+                    rejected.add(new IngestRejection(discovered, "HUB_BUDGET_ZERO"));
+                    continue;
+                }
+                long hubBudgetCount = countHubBudgetPages(connection);
+                if (hubBudgetCount >= cfg.budgetMaxHubPages()) {
+                    double newHubScore = discovered.relevanceScore();
+                    Optional<FrontierVictimRow> initialHubVictim = selectLowestScoringHubFrontierVictim(connection);
+                    if (initialHubVictim.isEmpty()) {
+                        discoveredIngestLog.logHubBudgetDropped(discovered.canonicalUrl(), domain);
+                        rejected.add(new IngestRejection(discovered, "HUB_BUDGET_DROPPED"));
+                        continue;
+                    }
+                    if (Double.compare(newHubScore, initialHubVictim.get().relevanceScore()) <= 0) {
+                        discoveredIngestLog.logHubBudgetLowScore(discovered.canonicalUrl(), domain);
+                        rejected.add(new IngestRejection(discovered, "HUB_BUDGET_LOW_SCORE"));
+                        continue;
+                    }
+                    FrontierVictimRow evictedHubVictim = initialHubVictim.get();
+                    boolean evictedHubOk = false;
+                    for (int attempt = 0; attempt < 2; attempt++) {
+                        FrontierVictimRow target =
+                                attempt == 0
+                                        ? initialHubVictim.get()
+                                        : selectLowestScoringHubFrontierVictim(connection).orElse(null);
+                        if (target == null) {
+                            break;
+                        }
+                        if (Double.compare(newHubScore, target.relevanceScore()) <= 0) {
+                            break;
+                        }
+                        if (evictFrontierVictimById(connection, target.id())) {
+                            evictedHubVictim = target;
+                            evictedHubOk = true;
+                            break;
+                        }
+                    }
+                    if (!evictedHubOk) {
+                        discoveredIngestLog.logHubBudgetDropped(discovered.canonicalUrl(), domain);
+                        rejected.add(new IngestRejection(discovered, "HUB_BUDGET_DROPPED"));
+                        continue;
+                    }
+                    discoveredIngestLog.logHubFrontierEvictedForScore(
+                            evictedHubVictim.url(),
+                            evictedHubVictim.relevanceScore(),
+                            discovered.canonicalUrl(),
+                            newHubScore,
+                            domain);
+                }
+            }
+
             long htmlPages = countHtmlPages(connection);
             long frontierRows = countFrontierPages(connection);
             boolean needSwapForTotal =
-                    existingPageId.isEmpty() && htmlPages >= cfg.budgetMaxTotalPages();
+                    existingPageId.isEmpty() && !isHub && htmlPages >= cfg.budgetMaxTotalPages();
             boolean needSwapForFrontier =
                     existingPageId.isEmpty() && frontierRows >= cfg.budgetMaxFrontierRows();
 
@@ -1346,10 +1414,11 @@ public final class PageRepository {
      */
     private InsertFrontierResult insertFrontierIfAbsent(
             Connection connection, String canonicalUrl, long siteId, double relevanceScore) throws SQLException {
+        boolean hubPage = GithubHubPageClassifier.matches(canonicalUrl);
         final String sql =
                 """
-                INSERT INTO crawldb.page(site_id, page_type_code, url, relevance_score, next_attempt_at, attempt_count)
-                VALUES (?, 'FRONTIER', ?, ?, now(), 0)
+                INSERT INTO crawldb.page(site_id, page_type_code, url, relevance_score, next_attempt_at, attempt_count, github_hub_page)
+                VALUES (?, 'FRONTIER', ?, ?, now(), 0, ?)
                 ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url
                 RETURNING id, (xmax = 0) AS inserted
                 """;
@@ -1357,6 +1426,7 @@ public final class PageRepository {
             statement.setLong(1, siteId);
             statement.setString(2, canonicalUrl);
             statement.setDouble(3, relevanceScore);
+            statement.setBoolean(4, hubPage);
             try (ResultSet rs = statement.executeQuery()) {
                 if (!rs.next()) {
                     throw new SQLException("insertFrontierIfAbsent returned no rows");
@@ -1386,6 +1456,19 @@ public final class PageRepository {
         }
     }
 
+    private static long countHubBudgetPages(Connection connection) throws SQLException {
+        final String sql =
+                """
+                SELECT COUNT(*) FROM crawldb.page
+                WHERE github_hub_page
+                  AND page_type_code IN ('FRONTIER', 'PROCESSING', 'HUB')
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            return rs.next() ? rs.getLong(1) : 0L;
+        }
+    }
+
     private static Optional<Long> findPageIdByUrl(Connection connection, String canonicalUrl) throws SQLException {
         final String sql = "SELECT id FROM crawldb.page WHERE url = ? LIMIT 1";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -1406,6 +1489,25 @@ public final class PageRepository {
                 """
                 SELECT id, relevance_score, url FROM crawldb.page
                 WHERE page_type_code = 'FRONTIER'
+                ORDER BY relevance_score ASC, next_attempt_at DESC NULLS LAST, id DESC
+                LIMIT 1
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+                ResultSet rs = statement.executeQuery()) {
+            if (!rs.next()) {
+                return Optional.empty();
+            }
+            return Optional.of(
+                    new FrontierVictimRow(rs.getLong(1), rs.getDouble(2), rs.getString(3)));
+        }
+    }
+
+    private static Optional<FrontierVictimRow> selectLowestScoringHubFrontierVictim(Connection connection)
+            throws SQLException {
+        final String sql =
+                """
+                SELECT id, relevance_score, url FROM crawldb.page
+                WHERE page_type_code = 'FRONTIER' AND github_hub_page
                 ORDER BY relevance_score ASC, next_attempt_at DESC NULLS LAST, id DESC
                 LIMIT 1
                 """;
@@ -1513,8 +1615,8 @@ public final class PageRepository {
     }
 
     /**
-     * When a smaller {@code page.id} becomes canonical after a larger id already committed as {@code HTML}, those
-     * stale owner rows must become {@code DUPLICATE} in the same persist transaction (TS-09).
+     * When a smaller {@code page.id} becomes canonical after a larger id already committed as {@code HTML} or {@code
+     * HUB}, those stale owner rows must become {@code DUPLICATE} in the same persist transaction (TS-09).
      */
     private void downgradeStaleHtmlOwnersForSameContentHash(
             Connection connection,
@@ -1536,7 +1638,7 @@ public final class PageRepository {
                     claim_expires_at = NULL,
                     parser_retry_count = 0
                 WHERE content_hash = ?
-                  AND page_type_code = 'HTML'
+                  AND page_type_code IN ('HTML', 'HUB')
                   AND id <> ?
                 """;
         try (PreparedStatement statement = connection.prepareStatement(downgrade)) {
@@ -1577,6 +1679,41 @@ public final class PageRepository {
                 """
                 UPDATE crawldb.page
                 SET page_type_code = 'HTML',
+                    html_content = ?,
+                    content_hash = ?,
+                    http_status_code = ?,
+                    accessed_time = ?,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    claim_expires_at = NULL,
+                    parser_retry_count = 0,
+                    last_error_category = NULL,
+                    last_error_message = NULL,
+                    last_error_at = NULL
+                WHERE id = ?
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, htmlContent);
+            statement.setString(2, contentHash);
+            statement.setInt(3, statusCode);
+            statement.setTimestamp(4, Timestamp.from(nonNullInstant(fetchedAt)));
+            statement.setLong(5, pageId);
+            statement.executeUpdate();
+        }
+    }
+
+    private void markPageHub(
+            Connection connection,
+            long pageId,
+            int statusCode,
+            Instant fetchedAt,
+            String htmlContent,
+            String contentHash)
+            throws SQLException {
+        final String sql =
+                """
+                UPDATE crawldb.page
+                SET page_type_code = 'HUB',
                     html_content = ?,
                     content_hash = ?,
                     http_status_code = ?,

@@ -58,6 +58,7 @@ public final class CrawlerEnvironmentNames {
         "crawler.retry.maxAttempts.dbTransient",
         "crawler.budget.maxTotalPages",
         "crawler.budget.maxFrontierRows",
+        "crawler.budget.maxHubPages",
         "crawler.discovery.blockGithubTopicsPaths",
         "crawler.discovery.denyGithubRepoSubpaths",
         "crawler.crawlScope",

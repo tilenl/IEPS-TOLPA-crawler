@@ -24,6 +24,15 @@ class ConfigRemediationTest {
     }
 
     @Test
+    void hubBudgetRemediation_matchesMaxHubPagesKey() {
+        ConfigRemediation.Remediation dropped = ConfigRemediation.hubBudgetDropped();
+        assertEquals("crawler.budget.maxHubPages", dropped.configKey());
+        assertTrue(dropped.remediationHint().contains("crawler.budget.maxHubPages"));
+        ConfigRemediation.Remediation low = ConfigRemediation.hubBudgetLowScore();
+        assertEquals("crawler.budget.maxHubPages", low.configKey());
+    }
+
+    @Test
     void schemaVersionMismatch_includesExpectedKey() {
         ConfigRemediation.Remediation r = ConfigRemediation.schemaVersionMismatch();
         assertEquals("crawler.db.expectedSchemaVersion", r.configKey());

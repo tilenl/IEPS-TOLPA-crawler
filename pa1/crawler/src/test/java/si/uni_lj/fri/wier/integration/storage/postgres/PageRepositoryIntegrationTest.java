@@ -620,6 +620,108 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void persistFetchOutcomeWithLinks_githubHubProfile_isHub() throws Exception {
+        long siteId = repository.ensureSite("github.com").orElseThrow();
+        String url = "https://github.com/imgly";
+        long pageId = repository.insertFrontierIfAbsent(url, siteId, 0.5).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        PersistOutcome outcome =
+                repository.persistFetchOutcomeWithLinks(
+                        new FetchContext(pageId, url, siteId, 0, Instant.now()),
+                        new FetchResult(200, "text/html", "<html><body>org</body></html>", Instant.now()),
+                        ParseResult.empty(),
+                        List.of());
+        assertEquals(PageOutcomeType.HUB, outcome.outcomeType());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT page_type_code FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals("HUB", rs.getString(1));
+            }
+        }
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_githubTopicsUrl_isHub() throws Exception {
+        long siteId = repository.ensureSite("github.com").orElseThrow();
+        String url = "https://github.com/topics/machine-learning";
+        long pageId = repository.insertFrontierIfAbsent(url, siteId, 0.5).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        PersistOutcome outcome =
+                repository.persistFetchOutcomeWithLinks(
+                        new FetchContext(pageId, url, siteId, 0, Instant.now()),
+                        new FetchResult(200, "text/html", "<html><body>topics</body></html>", Instant.now()),
+                        ParseResult.empty(),
+                        List.of());
+        assertEquals(PageOutcomeType.HUB, outcome.outcomeType());
+    }
+
+    @Test
+    void insertFrontierIfAbsent_github_setsGithubHubPageColumn() throws Exception {
+        long siteId = repository.ensureSite("github.com").orElseThrow();
+        repository.insertFrontierIfAbsent("https://github.com/topics/python", siteId, 0.5);
+        repository.insertFrontierIfAbsent("https://github.com/org/some-repo", siteId, 0.5);
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT github_hub_page FROM crawldb.page WHERE url = ?")) {
+            ps.setString(1, "https://github.com/topics/python");
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertTrue(rs.getBoolean(1));
+            }
+            ps.setString(1, "https://github.com/org/some-repo");
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertFalse(rs.getBoolean(1));
+            }
+        }
+    }
+
+    @Test
+    void ingestDiscoveredUrls_hubBudget_atCap_evictsLowestScoringHubFrontier() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, 100, false, 2);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("github.com").orElseThrow();
+        long fromPage =
+                repo.insertFrontierIfAbsent("https://github.com/meta/segment-anything", siteId, 0.5).pageId();
+        repo.insertFrontierIfAbsent("https://github.com/hub-low", siteId, 0.1);
+        repo.insertFrontierIfAbsent("https://github.com/hub-high", siteId, 0.9);
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://github.com/hub-new", siteId, fromPage, "", "", 0.95)));
+        assertEquals(1, r.acceptedPageIds().size());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM crawldb.page WHERE url = ?")) {
+            ps.setString(1, "https://github.com/hub-low");
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(0L, rs.getLong(1));
+            }
+        }
+    }
+
+    @Test
+    void ingestDiscoveredUrls_hubBudgetZero_rejectsNewHub() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, 100, false, 0);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("github.com").orElseThrow();
+        long fromPage =
+                repo.insertFrontierIfAbsent("https://github.com/meta/segment-anything", siteId, 0.5).pageId();
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://github.com/newprofile", siteId, fromPage, "", "", 0.5)));
+        assertTrue(r.acceptedPageIds().isEmpty());
+        assertEquals(1, r.rejections().size());
+        assertEquals("HUB_BUDGET_ZERO", r.rejections().getFirst().reasonCode());
+    }
+
+    @Test
     void persistFetchOutcomeWithLinks_binarySkipsPageDataWhenTypeUnmapped() throws Exception {
         long siteId = repository.ensureSite("example.com").orElseThrow();
         long pageId = repository.insertFrontierIfAbsent("https://example.com/pic.png", siteId, 0.5).pageId();
@@ -1652,21 +1754,27 @@ class PageRepositoryIntegrationTest {
     }
 
     private static RuntimeConfig budgetRuntimeConfig(int maxTotalPages, int maxFrontierRows) throws Exception {
-        return budgetRuntimeConfig(maxTotalPages, maxFrontierRows, false);
+        return budgetRuntimeConfig(maxTotalPages, maxFrontierRows, false, 10_000);
     }
 
     private static RuntimeConfig budgetRuntimeConfig(int maxTotalPages, int maxFrontierRows, boolean blockGithubTopics)
             throws Exception {
+        return budgetRuntimeConfig(maxTotalPages, maxFrontierRows, blockGithubTopics, 10_000);
+    }
+
+    private static RuntimeConfig budgetRuntimeConfig(
+            int maxTotalPages, int maxFrontierRows, boolean blockGithubTopics, int maxHubPages) throws Exception {
         Properties p = new Properties();
         Path kw = Paths.get(PageRepositoryIntegrationTest.class.getResource("/keywords-valid.json").toURI());
         p.setProperty("crawler.scoring.keywordConfig", kw.toString());
         p.setProperty("crawler.db.url", "jdbc:postgresql://localhost:5432/crawldb");
         p.setProperty("crawler.db.user", "u");
         p.setProperty("crawler.db.password", "p");
-        p.setProperty("crawler.db.expectedSchemaVersion", "7");
+        p.setProperty("crawler.db.expectedSchemaVersion", "8");
         p.setProperty("crawler.seedUrls", "https://example.com/");
         p.setProperty("crawler.budget.maxTotalPages", Integer.toString(maxTotalPages));
         p.setProperty("crawler.budget.maxFrontierRows", Integer.toString(maxFrontierRows));
+        p.setProperty("crawler.budget.maxHubPages", Integer.toString(maxHubPages));
         p.setProperty("crawler.discovery.blockGithubTopicsPaths", Boolean.toString(blockGithubTopics));
         RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
         cfg.validate();

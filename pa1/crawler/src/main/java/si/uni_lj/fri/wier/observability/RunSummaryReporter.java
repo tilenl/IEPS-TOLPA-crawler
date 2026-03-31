@@ -54,12 +54,14 @@ public final class RunSummaryReporter {
             long fetchSamples =
                     latSnap.values().stream().mapToLong(arr -> java.util.Arrays.stream(arr).sum()).sum();
             log.info(
-                    "event={} totalUrls={} html={} binary={} duplicate={} error={} frontier={} processing={}"
+                    "event={} totalUrls={} html={} hub={} binary={} duplicate={} error={} frontier={} processing={}"
                             + " errorsByCategory=[{}] topDomains=[{}] rateLimitWaits={} rateLimitWaitMsTotal={}"
                             + " leaseRecoveryRows={} leaseRecoveryBatches={} maxObservedLeaseAgeMs={}"
-                            + " urlDedupHits={} contentDedupHits={} terminalHtmlPersisted={} terminalBinaryPersisted={}"
+                            + " urlDedupHits={} contentDedupHits={} terminalHtmlPersisted={} terminalHubPersisted={}"
+                            + " terminalBinaryPersisted={}"
                             + " budgetDropped={} frontierDeferred={} frontierEvictedForScore={}"
-                            + " frontierFullLowScore={} headlessAcquireTimeouts={}"
+                            + " frontierFullLowScore={} hubBudgetDropped={} hubBudgetLowScore={}"
+                            + " hubFrontierEvictedForScore={} headlessAcquireTimeouts={}"
                             + " headlessCircuitOpenEvents={} robotsTemporaryDenyDomains={} robotsFetchEventsTotal={}"
                             + " dbTimeoutLikeFailures={} fetchLatencySamples={} dbConnectionsCheckedOut={}"
                             + " dbPoolCapacity={} dbPoolUtilizationPermille={} headlessSlotsInUse={}"
@@ -68,6 +70,7 @@ public final class RunSummaryReporter {
                     StructuredCrawlerLog.EVENT_CRAWLER_RUN_SUMMARY,
                     types.totalUrls(),
                     types.htmlCount(),
+                    types.hubCount(),
                     types.binaryCount(),
                     types.duplicateCount(),
                     types.errorCount(),
@@ -83,11 +86,15 @@ public final class RunSummaryReporter {
                     metrics.urlDedupHits(),
                     metrics.contentDedupHits(),
                     metrics.terminalHtmlPages(),
+                    metrics.terminalHubPages(),
                     metrics.terminalBinaryPages(),
                     metrics.budgetDroppedTotal(),
                     metrics.frontierDeferredTotal(),
                     metrics.frontierEvictedForScoreTotal(),
                     metrics.frontierFullLowScoreTotal(),
+                    metrics.hubBudgetDroppedTotal(),
+                    metrics.hubBudgetLowScoreTotal(),
+                    metrics.hubFrontierEvictedForScoreTotal(),
                     metrics.headlessAcquireTimeouts(),
                     metrics.headlessCircuitOpenEvents(),
                     metrics.robotsTemporaryDenyDomains(),

@@ -103,12 +103,12 @@ class SchemaVersionValidatorIntegrationTest {
     @Test
     void validateExpectedVersion_rejectsMismatchedVersion() throws SQLException {
         try (Connection c = dataSource.getConnection();
-                PreparedStatement ps = c.prepareStatement("UPDATE crawldb.schema_version SET version = 7 WHERE id = 1")) {
+                PreparedStatement ps = c.prepareStatement("UPDATE crawldb.schema_version SET version = 8 WHERE id = 1")) {
             ps.executeUpdate();
         }
         IllegalStateException ex = assertThrows(IllegalStateException.class, () -> validator.validateExpectedVersion("3"));
         assertTrue(ex.getMessage().contains("expectedVersion=3"));
-        assertTrue(ex.getMessage().contains("dbVersion=7"));
+        assertTrue(ex.getMessage().contains("dbVersion=8"));
         assertTrue(ex.getMessage().contains("remediationHint="));
     }
 
