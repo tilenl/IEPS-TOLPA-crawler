@@ -263,6 +263,10 @@ public final class HttpFetcher implements Fetcher {
                             FetchMode.PLAIN_HTTP,
                             currentUrl.equals(canonicalUrl) ? null : currentUrl);
 
+            if (UrlPathSuffixHtmlPolicy.shouldForceBinary(currentUrl, config.fetchDenyPathPostfixes())) {
+                return plain;
+            }
+
             if (shouldEscalateHeadless(plain) && !headlessPool.isCircuitOpen()) {
                 log.info(
                         "event=FETCH_INCOMPLETE_SHELL result=ESCALATE_HEADLESS url={} domain={} workerId={} hop={}",

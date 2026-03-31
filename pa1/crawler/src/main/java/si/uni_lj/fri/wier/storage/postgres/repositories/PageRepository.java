@@ -41,6 +41,7 @@ import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
 import si.uni_lj.fri.wier.downloader.fetch.GithubTopicsDiscoveryBlock;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
+import si.uni_lj.fri.wier.downloader.fetch.UrlPathSuffixHtmlPolicy;
 import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
 
 /**
@@ -880,8 +881,21 @@ public final class PageRepository {
             connection.setAutoCommit(false);
 
             String contentType = result.contentType() == null ? "" : result.contentType().toLowerCase(Locale.ROOT);
+            String effectiveUrl =
+                    result.finalUrlAfterRedirects() != null && !result.finalUrlAfterRedirects().isBlank()
+                            ? result.finalUrlAfterRedirects()
+                            : context.canonicalUrl();
+            List<String> pathDenyPostfixes =
+                    discoveredIngestConfig != null
+                            ? discoveredIngestConfig.fetchDenyPathPostfixes()
+                            : UrlPathSuffixHtmlPolicy.DEFAULT_DENY_PATH_POSTFIXES;
+            boolean forceBinaryByPathSuffix =
+                    UrlPathSuffixHtmlPolicy.shouldForceBinary(effectiveUrl, pathDenyPostfixes);
             // Body must be present to persist HTML; missing body is treated as non-HTML even if type says html.
-            boolean html = contentType.contains("text/html") && result.body() != null;
+            boolean html =
+                    contentType.contains("text/html")
+                            && result.body() != null
+                            && !forceBinaryByPathSuffix;
 
             Long ownerPageId = null;
             PageOutcomeType outcomeType;

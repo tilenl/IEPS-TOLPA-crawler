@@ -41,6 +41,7 @@ import si.uni_lj.fri.wier.contracts.FetchException;
 import si.uni_lj.fri.wier.config.CrawlScopes;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
+import si.uni_lj.fri.wier.downloader.fetch.UrlPathSuffixHtmlPolicy;
 import si.uni_lj.fri.wier.error.CrawlerErrorCategory;
 import si.uni_lj.fri.wier.error.FailureContext;
 import si.uni_lj.fri.wier.error.ProcessingFailureHandler;
@@ -278,8 +279,16 @@ public final class WorkerLoop implements Worker {
 
         ParseResult parsed;
         try {
-            String html = fetched.body() == null ? "" : fetched.body();
-            parsed = parser.parse(url, html);
+            String effectiveUrl =
+                    fetched.finalUrlAfterRedirects() != null && !fetched.finalUrlAfterRedirects().isBlank()
+                            ? fetched.finalUrlAfterRedirects()
+                            : url;
+            if (UrlPathSuffixHtmlPolicy.shouldForceBinary(effectiveUrl, config.fetchDenyPathPostfixes())) {
+                parsed = ParseResult.empty();
+            } else {
+                String html = fetched.body() == null ? "" : fetched.body();
+                parsed = parser.parse(url, html);
+            }
         } catch (RuntimeException e) {
             handleFailure(row, domain, CrawlerErrorCategory.PARSER_FAILURE, e.getMessage(), e);
             return;

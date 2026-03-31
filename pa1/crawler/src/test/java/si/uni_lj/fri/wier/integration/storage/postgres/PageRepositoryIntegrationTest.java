@@ -542,6 +542,84 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void persistFetchOutcomeWithLinks_textHtmlOnDenyPathSuffix_py_isBinary() throws Exception {
+        long siteId = repository.ensureSite("github.com").orElseThrow();
+        String url =
+                "https://github.com/pytorch/fairseq/blob/master/fairseq/optim/adafactor.py";
+        long pageId = repository.insertFrontierIfAbsent(url, siteId, 0.5).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        PersistOutcome outcome =
+                repository.persistFetchOutcomeWithLinks(
+                        new FetchContext(pageId, url, siteId, 0, Instant.now()),
+                        new FetchResult(200, "text/html", "<html>wrapper</html>", Instant.now()),
+                        ParseResult.empty(),
+                        List.of());
+
+        assertEquals(PageOutcomeType.BINARY, outcome.outcomeType());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT page_type_code, html_content FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals("BINARY", rs.getString(1));
+                rs.getString(2);
+                assertTrue(rs.wasNull());
+            }
+        }
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_textHtmlOnMdSuffix_notOnDenylist_isHtml() throws Exception {
+        long siteId = repository.ensureSite("github.com").orElseThrow();
+        String url = "https://github.com/org/repo/blob/main/README.md";
+        long pageId = repository.insertFrontierIfAbsent(url, siteId, 0.5).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        PersistOutcome outcome =
+                repository.persistFetchOutcomeWithLinks(
+                        new FetchContext(pageId, url, siteId, 0, Instant.now()),
+                        new FetchResult(200, "text/html", "<html><title>x</title></html>", Instant.now()),
+                        ParseResult.empty(),
+                        List.of());
+
+        assertEquals(PageOutcomeType.HTML, outcome.outcomeType());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT page_type_code FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals("HTML", rs.getString(1));
+            }
+        }
+    }
+
+    @Test
+    void persistFetchOutcomeWithLinks_textHtmlOnRepoNameEndingInPytorch_isHtml() throws Exception {
+        long siteId = repository.ensureSite("github.com").orElseThrow();
+        String url = "https://github.com/qubvel-org/segmentation_models.pytorch";
+        long pageId = repository.insertFrontierIfAbsent(url, siteId, 0.5).pageId();
+        repository.claimNextEligibleFrontier("w1", Duration.ofSeconds(60));
+        PersistOutcome outcome =
+                repository.persistFetchOutcomeWithLinks(
+                        new FetchContext(pageId, url, siteId, 0, Instant.now()),
+                        new FetchResult(200, "text/html", "<html><title>repo</title></html>", Instant.now()),
+                        ParseResult.empty(),
+                        List.of());
+
+        assertEquals(PageOutcomeType.HTML, outcome.outcomeType());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT page_type_code FROM crawldb.page WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertTrue(rs.next());
+                assertEquals("HTML", rs.getString(1));
+            }
+        }
+    }
+
+    @Test
     void persistFetchOutcomeWithLinks_binarySkipsPageDataWhenTypeUnmapped() throws Exception {
         long siteId = repository.ensureSite("example.com").orElseThrow();
         long pageId = repository.insertFrontierIfAbsent("https://example.com/pic.png", siteId, 0.5).pageId();

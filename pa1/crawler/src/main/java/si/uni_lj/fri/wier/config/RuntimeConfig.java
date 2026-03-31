@@ -16,6 +16,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Properties;
 import si.uni_lj.fri.wier.downloader.extract.KeywordRelevanceScorer;
+import si.uni_lj.fri.wier.downloader.fetch.UrlPathSuffixHtmlPolicy;
 
 /**
  * Runtime configuration (TS-13). Single-domain crawl: no per-domain page cap — use {@code
@@ -71,10 +72,13 @@ public record RuntimeConfig(
         String dbUser,
         String dbPassword,
         int dbPoolSize,
-        String dbExpectedSchemaVersion) {
+        String dbExpectedSchemaVersion,
+        List<String> fetchDenyPathPostfixes) {
 
     public RuntimeConfig {
         seedUrls = seedUrls == null ? List.of() : List.copyOf(seedUrls);
+        fetchDenyPathPostfixes =
+                fetchDenyPathPostfixes == null ? List.of() : List.copyOf(fetchDenyPathPostfixes);
     }
 
     public static RuntimeConfig fromProperties(Properties p, int availableCpuCores) {
@@ -131,7 +135,8 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.db.poolSize", Math.min(n + 2, 20)),
                 Objects.requireNonNull(
                         p.getProperty("crawler.db.expectedSchemaVersion"),
-                        "crawler.db.expectedSchemaVersion"));
+                        "crawler.db.expectedSchemaVersion"),
+                parseFetchDenyPathPostfixes(p));
     }
 
     private static int parseInt(Properties p, String key, int defaultValue) {
@@ -181,6 +186,33 @@ public record RuntimeConfig(
     }
 
     /**
+     * Comma-separated last-segment suffixes (with or without leading dot) that force BINARY when Content-Type is
+     * {@code text/html}. Null/blank property defaults to {@link UrlPathSuffixHtmlPolicy#DEFAULT_DENY_PATH_POSTFIXES}.
+     * A non-blank value that parses to no tokens (e.g. only commas) yields an empty list and disables path-based
+     * forcing.
+     */
+    private static List<String> parseFetchDenyPathPostfixes(Properties p) {
+        String raw = p.getProperty("crawler.fetch.denyPathPostfixes");
+        if (raw == null || raw.isBlank()) {
+            return List.copyOf(UrlPathSuffixHtmlPolicy.DEFAULT_DENY_PATH_POSTFIXES);
+        }
+        List<String> out = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String t = part.trim().toLowerCase(Locale.ROOT);
+            if (t.startsWith(".")) {
+                t = t.substring(1);
+            }
+            if (!t.isEmpty()) {
+                out.add(t);
+            }
+        }
+        if (out.isEmpty()) {
+            return List.of();
+        }
+        return List.copyOf(out);
+    }
+
+    /**
      * Validates numeric ranges, relational constraints, and keyword JSON file shape (TS-13).
      *
      * @throws IllegalArgumentException if any check fails
@@ -203,6 +235,22 @@ public record RuntimeConfig(
                 "0..60000");
         require(fetchConnectTimeoutMs >= 100, "crawler.fetch.connectTimeoutMs", ">= 100");
         require(fetchReadTimeoutMs >= 1000, "crawler.fetch.readTimeoutMs", ">= 1000");
+        for (String sfx : fetchDenyPathPostfixes) {
+            require(
+                    sfx.length() >= 1 && sfx.length() <= 32,
+                    "crawler.fetch.denyPathPostfixes",
+                    "each suffix length 1..32");
+            boolean alphanumeric =
+                    sfx.chars()
+                            .allMatch(
+                                    c ->
+                                            (c >= 'a' && c <= 'z')
+                                                    || (c >= '0' && c <= '9'));
+            require(
+                    alphanumeric,
+                    "crawler.fetch.denyPathPostfixes",
+                    "each suffix must be [a-z0-9]+ only");
+        }
         require(fetchMaxHeadlessSessions >= 1, "crawler.fetch.maxHeadlessSessions", ">= 1");
         require(
                 fetchHeadlessAcquireTimeoutMs >= 100 && fetchHeadlessAcquireTimeoutMs <= 30_000,

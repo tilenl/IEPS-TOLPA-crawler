@@ -2,12 +2,14 @@ package si.uni_lj.fri.wier.unit.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Properties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,6 +31,40 @@ class RuntimeConfigTest {
         Properties p = baseProps();
         p.setProperty("crawler.nCrawlers", "2");
         p.setProperty("crawler.fetch.maxHeadlessSessions", "4");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
+    }
+
+    @Test
+    void fromProperties_fetchDenyPathPostfixes_defaultsToPyTxtYamlIpynb() throws Exception {
+        Properties p = baseProps();
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        assertIterableEquals(List.of("py", "txt", "yaml", "ipynb"), cfg.fetchDenyPathPostfixes());
+    }
+
+    @Test
+    void fromProperties_fetchDenyPathPostfixes_parsesCommaSeparated() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.fetch.denyPathPostfixes", " .py , MD ");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        assertIterableEquals(List.of("py", "md"), cfg.fetchDenyPathPostfixes());
+    }
+
+    @Test
+    void fromProperties_fetchDenyPathPostfixes_onlyCommas_yieldsEmptyList() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.fetch.denyPathPostfixes", " , , ");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        assertTrue(cfg.fetchDenyPathPostfixes().isEmpty());
+    }
+
+    @Test
+    void validate_rejectsFetchDenyPathPostfixesWithInvalidCharacters() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.fetch.denyPathPostfixes", "py,readme.py");
         RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
         assertThrows(IllegalArgumentException.class, cfg::validate);
     }
