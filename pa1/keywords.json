@@ -1,0 +1,40 @@
+{
+  "_note": "Classpath fixture for automated tests only. Do not treat as the operator crawl dictionary. For ./gradlew run, copy to pa1/keywords.json (see smoke-run plan) and set crawler.scoring.keywordConfig=keywords.json.",
+  "primary": [
+    "image-segmentation",
+    "semantic",
+    "instance",
+    "segmentation",
+    "image",
+    "mask",
+    "unet",
+    "deeplab",
+    "segmentanything",
+    "pytorch",
+    "torchvision",
+    "transformers",
+    "onnx",
+    "huggingface",
+    "classification",
+    "vision",
+    "modelzoo",
+    "panoptic"
+  ],
+  "secondary": [
+    "detection",
+    "recognition",
+    "extraction",
+    "processing",
+    "augmentation",
+    "inference",
+    "notebook",
+    "checkpoint",
+    "timm",
+    "turnkeyml",
+    "quantization",
+    "pretrained",
+    "neuralcompressor",
+    "labelme",
+    "cvat"
+  ]
+}

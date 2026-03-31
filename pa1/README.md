@@ -98,6 +98,24 @@ Replace `4` with the desired number of concurrent pipeline tasks. Use `--args="-
 
 A successful run logs schema validation, optional seed bootstrap, periodic heartbeats, and exits with code **0** after printing a run summary. Press **Ctrl+C** for a graceful stop.
 
+### 6. Live crawl status (optional)
+
+Terminal dashboard: page counts by state (frontier, processing, terminal), budget bar vs `crawler.budget.maxTotalPages`, and a rough ETA. Reads the same DB as the crawler.
+
+From the **repository root** (so paths to `application.properties` resolve):
+
+```bash
+./pa1/scripts/db-crawl-status.sh
+```
+
+If you use local `psql`, ensure `PGHOST` / `PGPORT` / `PGUSER` / `PGDATABASE` / `PGPASSWORD` match your DB (defaults match `application.properties`). If you do not have `psql` installed, query via Docker:
+
+```bash
+./pa1/scripts/db-crawl-status.sh --docker
+```
+
+Use `./pa1/scripts/db-crawl-status.sh --help` for `--interval SECONDS` and environment variables (`CRAWLER_BUDGET_MAX_TOTAL_PAGES`, `CRAWLER_DB_DOCKER_CONTAINER`, etc.). Stop with **Ctrl+C**.
+
 ---
 
 ## Import the database schema in pgAdmin
