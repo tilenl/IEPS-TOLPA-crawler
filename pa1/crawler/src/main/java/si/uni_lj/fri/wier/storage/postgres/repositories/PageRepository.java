@@ -39,6 +39,7 @@ import si.uni_lj.fri.wier.contracts.RobotsTxtCache;
 import si.uni_lj.fri.wier.downloader.dedup.ContentHasherImpl;
 import si.uni_lj.fri.wier.observability.CrawlerMetrics;
 import si.uni_lj.fri.wier.observability.QueueStateStructuredLog;
+import si.uni_lj.fri.wier.downloader.fetch.GithubRepoSubpathDiscoveryBlock;
 import si.uni_lj.fri.wier.downloader.fetch.GithubTopicsDiscoveryBlock;
 import si.uni_lj.fri.wier.downloader.fetch.HostKeys;
 import si.uni_lj.fri.wier.downloader.fetch.UrlPathSuffixHtmlPolicy;
@@ -1170,6 +1171,12 @@ public final class PageRepository {
             if (cfg.discoveryBlockGithubTopicsPaths()
                     && GithubTopicsDiscoveryBlock.isBlockedGithubTopicsDiscoveryUrl(discovered.canonicalUrl())) {
                 rejected.add(new IngestRejection(discovered, "GITHUB_TOPICS_PATH_BLOCKED"));
+                continue;
+            }
+            if (!cfg.discoveryDenyGithubRepoSubpaths().isEmpty()
+                    && GithubRepoSubpathDiscoveryBlock.isBlockedGithubRepoSubpathDiscoveryUrl(
+                            discovered.canonicalUrl(), cfg.discoveryDenyGithubRepoSubpaths())) {
+                rejected.add(new IngestRejection(discovered, "GITHUB_REPO_SUBPATH_BLOCKED"));
                 continue;
             }
 

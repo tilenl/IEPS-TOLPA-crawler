@@ -1504,6 +1504,28 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void ingestDiscoveredUrls_githubRepoSubpathsBlocked_blobAndIssues_treeAndRootAccepted() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(5000, 20_000, false);
+        PageRepository repo = policyRepository(cfg);
+        long gh = repo.ensureSite("github.com").orElseThrow();
+        long fromPage = repo.insertFrontierIfAbsent("https://github.com/org/seed-subpath", gh, 0.5).pageId();
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://github.com/org/repo/blob/main/README.md", gh, fromPage, "b", "c", 0.9),
+                                new DiscoveredUrl("https://github.com/org/repo/issues", gh, fromPage, "i", "c", 0.85),
+                                new DiscoveredUrl("https://github.com/org/repo/tree/main", gh, fromPage, "t", "c", 0.8),
+                                new DiscoveredUrl("https://github.com/org/repo", gh, fromPage, "r", "c", 0.75)));
+        assertEquals(2, r.acceptedPageIds().size());
+        assertEquals(2, r.rejections().size());
+        assertEquals(
+                "GITHUB_REPO_SUBPATH_BLOCKED", r.rejections().get(0).reasonCode());
+        assertEquals(
+                "GITHUB_REPO_SUBPATH_BLOCKED", r.rejections().get(1).reasonCode());
+    }
+
+    @Test
     void ingestDiscoveredUrls_frontierFullLowScore_whenAtFrontierCapAndNotBetter() throws Exception {
         final int frontierCap = 100;
         RuntimeConfig cfg = budgetRuntimeConfig(5000, frontierCap);

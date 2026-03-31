@@ -59,6 +59,7 @@ public final class CrawlerEnvironmentNames {
         "crawler.budget.maxTotalPages",
         "crawler.budget.maxFrontierRows",
         "crawler.discovery.blockGithubTopicsPaths",
+        "crawler.discovery.denyGithubRepoSubpaths",
         "crawler.crawlScope",
         "crawler.seedUrls",
         "crawler.scoring.keywordConfig",

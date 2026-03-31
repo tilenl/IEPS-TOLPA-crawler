@@ -36,6 +36,9 @@ class CrawlerEnvironmentNamesTest {
         assertEquals(
                 "CRAWLER_DISCOVERY_BLOCKGITHUBTOPICSPATHS",
                 CrawlerEnvironmentNames.propertyKeyToEnvName("crawler.discovery.blockGithubTopicsPaths"));
+        assertEquals(
+                "CRAWLER_DISCOVERY_DENYGITHUBREPOSUBPATHS",
+                CrawlerEnvironmentNames.propertyKeyToEnvName("crawler.discovery.denyGithubRepoSubpaths"));
         assertEquals("CRAWLER_CRAWLSCOPE", CrawlerEnvironmentNames.propertyKeyToEnvName("crawler.crawlScope"));
     }
 }

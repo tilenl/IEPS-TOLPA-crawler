@@ -15,7 +15,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import si.uni_lj.fri.wier.downloader.extract.KeywordRelevanceScorer;
+import si.uni_lj.fri.wier.downloader.fetch.GithubRepoSubpathDiscoveryBlock;
 import si.uni_lj.fri.wier.downloader.fetch.UrlPathSuffixHtmlPolicy;
 
 /**
@@ -61,6 +63,7 @@ public record RuntimeConfig(
         int budgetMaxTotalPages,
         int budgetMaxFrontierRows,
         boolean discoveryBlockGithubTopicsPaths,
+        Set<String> discoveryDenyGithubRepoSubpaths,
         CrawlScope crawlScope,
         List<String> seedUrls,
         Path scoringKeywordConfig,
@@ -79,6 +82,8 @@ public record RuntimeConfig(
         seedUrls = seedUrls == null ? List.of() : List.copyOf(seedUrls);
         fetchDenyPathPostfixes =
                 fetchDenyPathPostfixes == null ? List.of() : List.copyOf(fetchDenyPathPostfixes);
+        discoveryDenyGithubRepoSubpaths =
+                discoveryDenyGithubRepoSubpaths == null ? Set.of() : Set.copyOf(discoveryDenyGithubRepoSubpaths);
     }
 
     public static RuntimeConfig fromProperties(Properties p, int availableCpuCores) {
@@ -119,6 +124,7 @@ public record RuntimeConfig(
                 parseInt(p, "crawler.budget.maxTotalPages", 5000),
                 parseInt(p, "crawler.budget.maxFrontierRows", 20_000),
                 parseBoolean(p, "crawler.discovery.blockGithubTopicsPaths", false),
+                parseDiscoveryDenyGithubRepoSubpaths(p),
                 CrawlScopes.parseCrawlScope(p.getProperty("crawler.crawlScope")),
                 parseSeedUrls(Objects.requireNonNull(p.getProperty("crawler.seedUrls"), "crawler.seedUrls")),
                 Path.of(Objects.requireNonNull(p.getProperty("crawler.scoring.keywordConfig"), "crawler.scoring.keywordConfig")),
@@ -213,6 +219,29 @@ public record RuntimeConfig(
     }
 
     /**
+     * Comma-separated first path segments after {@code /owner/repo/} to skip at discovery ingest on GitHub web hosts.
+     * Null/blank defaults to {@link GithubRepoSubpathDiscoveryBlock#DEFAULT_DENY_REPO_SUBPATHS}. Only commas/whitespace
+     * yields an empty set and disables this filter.
+     */
+    private static Set<String> parseDiscoveryDenyGithubRepoSubpaths(Properties p) {
+        String raw = p.getProperty("crawler.discovery.denyGithubRepoSubpaths");
+        if (raw == null || raw.isBlank()) {
+            return Set.copyOf(GithubRepoSubpathDiscoveryBlock.DEFAULT_DENY_REPO_SUBPATHS);
+        }
+        List<String> out = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String t = part.trim().toLowerCase(Locale.ROOT);
+            if (!t.isEmpty()) {
+                out.add(t);
+            }
+        }
+        if (out.isEmpty()) {
+            return Set.of();
+        }
+        return Set.copyOf(out);
+    }
+
+    /**
      * Validates numeric ranges, relational constraints, and keyword JSON file shape (TS-13).
      *
      * @throws IllegalArgumentException if any check fails
@@ -250,6 +279,24 @@ public record RuntimeConfig(
                     alphanumeric,
                     "crawler.fetch.denyPathPostfixes",
                     "each suffix must be [a-z0-9]+ only");
+        }
+        for (String seg : discoveryDenyGithubRepoSubpaths) {
+            require(
+                    seg.length() >= 1 && seg.length() <= 64,
+                    "crawler.discovery.denyGithubRepoSubpaths",
+                    "each segment length 1..64");
+            boolean token =
+                    seg.chars()
+                            .allMatch(
+                                    c ->
+                                            (c >= 'a' && c <= 'z')
+                                                    || (c >= '0' && c <= '9')
+                                                    || c == '_'
+                                                    || c == '-');
+            require(
+                    token,
+                    "crawler.discovery.denyGithubRepoSubpaths",
+                    "each segment must be [a-z0-9_-]+ only");
         }
         require(fetchMaxHeadlessSessions >= 1, "crawler.fetch.maxHeadlessSessions", ">= 1");
         require(

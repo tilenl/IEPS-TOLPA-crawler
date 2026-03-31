@@ -11,10 +11,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import si.uni_lj.fri.wier.config.CrawlScope;
 import si.uni_lj.fri.wier.config.RuntimeConfig;
+import si.uni_lj.fri.wier.downloader.fetch.GithubRepoSubpathDiscoveryBlock;
 
 class RuntimeConfigTest {
 
@@ -81,6 +83,9 @@ class RuntimeConfigTest {
         assertEquals(45_000, cfg.healthHeartbeatIntervalMs());
         assertEquals(CrawlScope.GITHUB, cfg.crawlScope());
         assertFalse(cfg.discoveryBlockGithubTopicsPaths());
+        assertEquals(
+                Set.copyOf(GithubRepoSubpathDiscoveryBlock.DEFAULT_DENY_REPO_SUBPATHS),
+                cfg.discoveryDenyGithubRepoSubpaths());
     }
 
     @Test
@@ -97,6 +102,32 @@ class RuntimeConfigTest {
         Properties p = baseProps();
         p.setProperty("crawler.discovery.blockGithubTopicsPaths", "maybe");
         assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.fromProperties(p, 4));
+    }
+
+    @Test
+    void fromProperties_discoveryDenyGithubRepoSubpaths_parsesCommaSeparated() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.discovery.denyGithubRepoSubpaths", " wiki , ACTIONS ");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        assertEquals(Set.of("wiki", "actions"), cfg.discoveryDenyGithubRepoSubpaths());
+    }
+
+    @Test
+    void fromProperties_discoveryDenyGithubRepoSubpaths_onlyCommas_yieldsEmptySet() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.discovery.denyGithubRepoSubpaths", " , , ");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        cfg.validate();
+        assertTrue(cfg.discoveryDenyGithubRepoSubpaths().isEmpty());
+    }
+
+    @Test
+    void validate_rejectsDiscoveryDenyGithubRepoSubpaths_invalidCharacters() throws Exception {
+        Properties p = baseProps();
+        p.setProperty("crawler.discovery.denyGithubRepoSubpaths", "issues,bad.seg");
+        RuntimeConfig cfg = RuntimeConfig.fromProperties(p, 4);
+        assertThrows(IllegalArgumentException.class, cfg::validate);
     }
 
     @Test
