@@ -14,9 +14,10 @@ public final class ConfigRemediation {
     public static Remediation budgetTotalPagesDropped() {
         return new Remediation(
                 "crawler.budget.maxTotalPages",
-                "To store more concurrent pages without score-based replacement churn, increase"
-                        + " crawler.budget.maxTotalPages and ensure database and disk capacity are sufficient."
-                        + " If the table is full of terminal rows and no FRONTIER victim exists, replacement"
+                "To allow more stored HTML pages without score-based replacement churn, increase"
+                        + " crawler.budget.maxTotalPages (this cap counts only page_type_code=HTML rows, not"
+                        + " ERROR/BINARY/DUPLICATE or queue rows) and ensure database and disk capacity are sufficient."
+                        + " If the HTML budget is reached and no FRONTIER victim exists, replacement"
                         + " cannot run until the frontier is non-empty or the cap is raised.");
     }
 
@@ -33,7 +34,7 @@ public final class ConfigRemediation {
         return new Remediation(
                 "crawler.budget.maxTotalPages,crawler.budget.maxFrontierRows",
                 "A lower-scoring FRONTIER URL was removed to admit a better discovery under the active cap(s)."
-                        + " To reduce replacement churn, raise crawler.budget.maxTotalPages and/or"
+                        + " To reduce replacement churn, raise crawler.budget.maxTotalPages (HTML row budget) and/or"
                         + " crawler.budget.maxFrontierRows, or narrow discovery breadth.");
     }
 

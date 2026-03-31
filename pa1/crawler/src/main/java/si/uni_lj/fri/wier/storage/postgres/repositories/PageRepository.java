@@ -1182,14 +1182,14 @@ public final class PageRepository {
 
             String domain = hostForBudgetLog(discovered.canonicalUrl());
             Optional<Long> existingPageId = findPageIdByUrl(connection, discovered.canonicalUrl());
-            long totalPages = countAllPages(connection);
+            long htmlPages = countHtmlPages(connection);
             long frontierRows = countFrontierPages(connection);
             boolean needSwapForTotal =
-                    existingPageId.isEmpty() && totalPages >= cfg.budgetMaxTotalPages();
+                    existingPageId.isEmpty() && htmlPages >= cfg.budgetMaxTotalPages();
             boolean needSwapForFrontier =
                     existingPageId.isEmpty() && frontierRows >= cfg.budgetMaxFrontierRows();
 
-            // TS-02 / TS-13: a new distinct row would exceed a cap — evict the worst FRONTIER row if the newcomer
+            // TS-02 / TS-13: HTML budget or frontier row cap — evict the worst FRONTIER row if the newcomer
             // strictly outranks it; never evict non-FRONTIER rows.
             if (needSwapForTotal || needSwapForFrontier) {
                 double newScore = discovered.relevanceScore();
@@ -1309,8 +1309,8 @@ public final class PageRepository {
         return new IngestResult(accepted, rejected);
     }
 
-    private static long countAllPages(Connection connection) throws SQLException {
-        final String sql = "SELECT COUNT(*) FROM crawldb.page";
+    private static long countHtmlPages(Connection connection) throws SQLException {
+        final String sql = "SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'HTML'";
         try (PreparedStatement statement = connection.prepareStatement(sql);
                 ResultSet rs = statement.executeQuery()) {
             return rs.next() ? rs.getLong(1) : 0L;

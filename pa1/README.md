@@ -62,7 +62,7 @@ Edit `crawler/src/main/resources/application.properties` (paths relative to `pa1
 | `crawler.db.user`                  | `user`                                     | Must match `POSTGRES_USER`.                                              |
 | `crawler.db.password`              | `SecretPassword`                           | Must match `POSTGRES_PASSWORD`.                                          |
 | `crawler.db.expectedSchemaVersion` | `7`                                        | Must equal the value in `crawldb.schema_version`.                        |
-| `crawler.budget.maxTotalPages`     | `5000`                                     | Global page cap for the run.                                             |
+| `crawler.budget.maxTotalPages`     | `5000`                                     | Max **HTML** rows in `crawldb.page` for discovery admission (not total rows). |
 | `crawler.seedUrls`                 | *(see file)*                               | Comma-separated HTTPS seeds. Only inserted when `crawldb.page` is empty. |
 
 
@@ -100,7 +100,7 @@ A successful run logs schema validation, optional seed bootstrap, periodic heart
 
 ### 6. Live crawl status (optional)
 
-Terminal dashboard: page counts by state (frontier, processing, terminal), budget bar vs `crawler.budget.maxTotalPages`, and a rough ETA. Reads the same DB as the crawler.
+Terminal dashboard: page counts by state (frontier, processing, terminal), HTML progress bar vs `crawler.budget.maxTotalPages`, total row count, and a rough ETA. Reads the same DB as the crawler.
 
 From the **repository root** (so paths to `application.properties` resolve):
 

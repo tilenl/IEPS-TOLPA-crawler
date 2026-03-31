@@ -1400,10 +1400,17 @@ class PageRepositoryIntegrationTest {
         RuntimeConfig cfg = budgetRuntimeConfig(3, 20_000);
         PageRepository repo = policyRepository(cfg);
         long siteId = repo.ensureSite("example.com").orElseThrow();
+        long h1 = repo.insertFrontierIfAbsent("https://example.com/tp-html-1", siteId, 0.5).pageId();
+        long h2 = repo.insertFrontierIfAbsent("https://example.com/tp-html-2", siteId, 0.5).pageId();
+        long h3 = repo.insertFrontierIfAbsent("https://example.com/tp-html-3", siteId, 0.5).pageId();
+        promoteToHtmlTerminal(h1);
+        promoteToHtmlTerminal(h2);
+        promoteToHtmlTerminal(h3);
         long fromPage = repo.insertFrontierIfAbsent("https://example.com/tp-parent", siteId, 0.5).pageId();
         repo.insertFrontierIfAbsent("https://example.com/tp-a", siteId, 0.1);
         repo.insertFrontierIfAbsent("https://example.com/tp-b", siteId, 0.2);
-        assertEquals(3L, countAllPages());
+        assertEquals(3L, countHtmlPages());
+        assertEquals(6L, countAllPages());
         assertEquals(3L, countFrontierRows());
 
         IngestResult r =
@@ -1413,11 +1420,78 @@ class PageRepositoryIntegrationTest {
 
         assertEquals(1, r.acceptedPageIds().size());
         assertTrue(r.rejections().isEmpty());
-        assertEquals(3L, countAllPages());
+        assertEquals(3L, countHtmlPages());
+        assertEquals(6L, countAllPages());
         try (Connection c = dataSource.getConnection();
                 PreparedStatement ps =
                         c.prepareStatement("SELECT COUNT(*) FROM crawldb.page WHERE url = ?")) {
             ps.setString(1, "https://example.com/tp-a");
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                assertEquals(0, rs.getInt(1));
+            }
+        }
+    }
+
+    @Test
+    void ingestDiscoveredUrls_nonHtmlTerminals_doNotCountTowardMaxTotalPages() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(3, 20_000);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("example.com").orElseThrow();
+        for (int i = 0; i < 5; i++) {
+            long id =
+                    repo.insertFrontierIfAbsent("https://example.com/err-only-" + i, siteId, 0.5)
+                            .pageId();
+            promoteToErrorTerminal(id);
+        }
+        long fromPage = repo.insertFrontierIfAbsent("https://example.com/err-parent", siteId, 0.3).pageId();
+        assertEquals(0L, countHtmlPages());
+        assertEquals(6L, countAllPages());
+
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://example.com/err-new-high", siteId, fromPage, "", "", 0.99)));
+
+        assertEquals(1, r.acceptedPageIds().size());
+        assertTrue(r.rejections().isEmpty());
+        assertEquals(7L, countAllPages());
+        assertEquals(2L, countFrontierRows());
+    }
+
+    @Test
+    void ingestDiscoveredUrls_atHtmlCap_nonHtmlClutter_stillEvictsFrontierForBetterDiscovery() throws Exception {
+        RuntimeConfig cfg = budgetRuntimeConfig(1, 20_000);
+        PageRepository repo = policyRepository(cfg);
+        long siteId = repo.ensureSite("example.com").orElseThrow();
+        long htmlId = repo.insertFrontierIfAbsent("https://example.com/mix-html-1", siteId, 0.5).pageId();
+        promoteToHtmlTerminal(htmlId);
+        for (int i = 0; i < 3; i++) {
+            long id =
+                    repo.insertFrontierIfAbsent("https://example.com/mix-err-" + i, siteId, 0.5).pageId();
+            promoteToErrorTerminal(id);
+        }
+        long fromPage = repo.insertFrontierIfAbsent("https://example.com/mix-parent", siteId, 0.5).pageId();
+        repo.insertFrontierIfAbsent("https://example.com/mix-fe-low", siteId, 0.05);
+        assertEquals(1L, countHtmlPages());
+        assertEquals(6L, countAllPages());
+        assertEquals(2L, countFrontierRows());
+
+        IngestResult r =
+                repo.ingestDiscoveredUrls(
+                        List.of(
+                                new DiscoveredUrl(
+                                        "https://example.com/mix-new-high", siteId, fromPage, "", "", 0.95)));
+
+        assertEquals(1, r.acceptedPageIds().size());
+        assertTrue(r.rejections().isEmpty());
+        assertEquals(1L, countHtmlPages());
+        assertEquals(6L, countAllPages());
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement("SELECT COUNT(*) FROM crawldb.page WHERE url = ?")) {
+            ps.setString(1, "https://example.com/mix-fe-low");
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 assertEquals(0, rs.getInt(1));
@@ -1602,6 +1676,40 @@ class PageRepositoryIntegrationTest {
                 rs.next();
                 return rs.getLong(1);
             }
+        }
+    }
+
+    private long countHtmlPages() throws SQLException {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'HTML'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    private void promoteToHtmlTerminal(long pageId) throws SQLException {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET page_type_code = 'HTML', html_content = '',"
+                                        + " http_status_code = 200, accessed_time = now() WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            ps.executeUpdate();
+        }
+    }
+
+    private void promoteToErrorTerminal(long pageId) throws SQLException {
+        try (Connection c = dataSource.getConnection();
+                PreparedStatement ps =
+                        c.prepareStatement(
+                                "UPDATE crawldb.page SET page_type_code = 'ERROR', html_content = NULL,"
+                                        + " http_status_code = 500, accessed_time = now() WHERE id = ?")) {
+            ps.setLong(1, pageId);
+            ps.executeUpdate();
         }
     }
 
