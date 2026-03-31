@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Live terminal dashboard: HTML budget vs crawler.budget.maxTotalPages, total rows, FRONTIER / PROCESSING / terminals.
+# Live terminal dashboard: HTML budget vs crawler.budget.maxTotalPages, total rows, FRONTIER / PROCESSING / terminals (incl. HUB).
 #
 # Usage:
 #   ./db-crawl-status.sh [--docker] [--interval SECONDS]
@@ -150,7 +150,8 @@ QUERY=$(
 SELECT
   COUNT(*)::bigint,
   COUNT(*) FILTER (WHERE page_type_code = 'HTML')::bigint,
-  COUNT(*) FILTER (WHERE page_type_code IN ('HTML','BINARY','DUPLICATE','ERROR'))::bigint,
+  COUNT(*) FILTER (WHERE page_type_code = 'HUB')::bigint,
+  COUNT(*) FILTER (WHERE page_type_code IN ('HTML','HUB','BINARY','DUPLICATE','ERROR'))::bigint,
   COUNT(*) FILTER (WHERE page_type_code = 'FRONTIER')::bigint,
   COUNT(*) FILTER (WHERE page_type_code = 'PROCESSING')::bigint
 FROM crawldb.page;
@@ -187,12 +188,12 @@ parse_args() {
 }
 
 validate_counts() {
-  local t=$1 html=$2 f=$3 fr=$4 pr=$5
-  [[ "$t" =~ ^[0-9]+$ && "$html" =~ ^[0-9]+$ && "$f" =~ ^[0-9]+$ && "$fr" =~ ^[0-9]+$ && "$pr" =~ ^[0-9]+$ ]]
+  local t=$1 html=$2 hub=$3 f=$4 fr=$5 pr=$6
+  [[ "$t" =~ ^[0-9]+$ && "$html" =~ ^[0-9]+$ && "$hub" =~ ^[0-9]+$ && "$f" =~ ^[0-9]+$ && "$fr" =~ ^[0-9]+$ && "$pr" =~ ^[0-9]+$ ]]
 }
 
 render_frame() {
-  local total_rows=$1 html=$2 fetched=$3 frontier=$4 processing=$5 max_pages=$6
+  local total_rows=$1 html=$2 hub=$3 fetched=$4 frontier=$5 processing=$6 max_pages=$7
   local now pct_str bcolor queue eta_sec eta_label remaining
   now="$(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -238,12 +239,13 @@ render_frame() {
   # State rows: scale against max_pages when set; else proportion of total table size.
   local fb="$total_rows"
 
-  print_bar_row "Fetched (terminal)" "$fetched" "$max_pages" "$fb" "$C_GREEN"
+  # Fetched terminal progress is relative to all rows, not HTML budget cap.
+  print_bar_row "Fetched (terminal)" "$fetched" "$total_rows" "$fb" "$C_GREEN"
   print_bar_row "Frontier" "$frontier" "$max_pages" "$fb" "$C_YELLOW"
   print_bar_row "Processing" "$processing" "$max_pages" "$fb" "$C_BLUE"
 
   printf '\n'
-  printf '  Totals:%b  html=%s  fetched=%s  frontier=%s  processing=%s  %b| all rows=%s%b\n' "$R" "$html" "$fetched" "$frontier" "$processing" "$C_DIM" "$total_rows" "$R"
+  printf '  Totals:%b  html=%s  hub=%s  fetched=%s  frontier=%s  processing=%s  %b| all rows=%s%b\n' "$R" "$html" "$hub" "$fetched" "$frontier" "$processing" "$C_DIM" "$total_rows" "$R"
   printf '  %b(sanity: %s + %s + %s = %s)%b\n\n' "$C_DIM" "$fetched" "$frontier" "$processing" "$((fetched + frontier + processing))" "$R"
 
   queue=$((frontier + processing))
@@ -276,7 +278,7 @@ main() {
 
   while true; do
     clear_screen_safe
-    local line total_rows html fetched frontier processing
+    local line total_rows html hub fetched frontier processing
     if ! line="$(run_sql "$QUERY" 2>/dev/null)"; then
       printf '%bDatabase query failed%b\n\n' "$C_RED" "$R"
       printf '  %bCheck PostgreSQL is running and credentials match application.properties.%b\n' "$C_DIM" "$R"
@@ -290,14 +292,14 @@ main() {
       continue
     fi
 
-    IFS='|' read -r total_rows html fetched frontier processing <<<"$line"
-    if ! validate_counts "$total_rows" "$html" "$fetched" "$frontier" "$processing"; then
+    IFS='|' read -r total_rows html hub fetched frontier processing <<<"$line"
+    if ! validate_counts "$total_rows" "$html" "$hub" "$fetched" "$frontier" "$processing"; then
       printf '%bUnexpected query output:%b %q\n' "$C_RED" "$R" "$line"
       sleep "$REFRESH_SEC"
       continue
     fi
 
-    render_frame "$total_rows" "$html" "$fetched" "$frontier" "$processing" "$max_pages"
+    render_frame "$total_rows" "$html" "$hub" "$fetched" "$frontier" "$processing" "$max_pages"
     sleep "$REFRESH_SEC"
   done
 }
