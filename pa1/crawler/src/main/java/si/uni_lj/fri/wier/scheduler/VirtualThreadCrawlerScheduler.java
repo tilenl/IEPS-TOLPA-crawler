@@ -31,7 +31,8 @@ import si.uni_lj.fri.wier.storage.postgres.repositories.PageRepository;
 
 /**
  * Runs one {@link DomainFrontierPump} virtual thread, up to {@code workerCount} concurrent pipeline tasks on the
- * same executor, and a supervisor implementing TS-02 empty-queue grace termination.
+ * same executor, and a supervisor implementing TS-02 empty-queue grace termination and HTML budget crawl stop
+ * ({@code crawler.budget.maxTotalPages}).
  */
 public final class VirtualThreadCrawlerScheduler implements si.uni_lj.fri.wier.contracts.Scheduler {
 
@@ -139,6 +140,16 @@ public final class VirtualThreadCrawlerScheduler implements si.uni_lj.fri.wier.c
         try {
             while (!Thread.currentThread().isInterrupted()) {
                 if (shutdown.get()) {
+                    break;
+                }
+                long html = pageRepository.countHtmlPages();
+                int htmlCap = config.budgetMaxTotalPages();
+                if (html >= htmlCap) {
+                    log.info(
+                            "crawlTermination supervisor=htmlBudgetCap html={} cap={}",
+                            html,
+                            htmlCap);
+                    shutdown.set(true);
                     break;
                 }
                 long pending = pageRepository.countNonTerminalQueuePages();

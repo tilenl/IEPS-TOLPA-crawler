@@ -70,6 +70,8 @@ import si.uni_lj.fri.wier.queue.enqueue.EnqueueService;
  */
 public final class PageRepository {
 
+    private static final String SQL_COUNT_HTML_PAGES = "SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'HTML'";
+
     /**
      * Snapshot of overdue {@code FRONTIER} rows ({@code next_attempt_at <= now()}) for TS-12 queue-health
      * metrics ({@code delayed queue age}, {@code oldest overdue retry}).
@@ -651,6 +653,23 @@ public final class PageRepository {
             return 0L;
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to count non-terminal queue pages", e);
+        }
+    }
+
+    /**
+     * Terminal {@code HTML} rows in {@code crawldb.page} (same filter as {@code crawler.budget.maxTotalPages} ingest
+     * budget and crawl-stop supervisor).
+     */
+    public long countHtmlPages() {
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(SQL_COUNT_HTML_PAGES);
+                ResultSet rs = statement.executeQuery()) {
+            if (rs.next()) {
+                return rs.getLong(1);
+            }
+            return 0L;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to count HTML pages", e);
         }
     }
 
@@ -1353,8 +1372,7 @@ public final class PageRepository {
     }
 
     private static long countHtmlPages(Connection connection) throws SQLException {
-        final String sql = "SELECT COUNT(*) FROM crawldb.page WHERE page_type_code = 'HTML'";
-        try (PreparedStatement statement = connection.prepareStatement(sql);
+        try (PreparedStatement statement = connection.prepareStatement(SQL_COUNT_HTML_PAGES);
                 ResultSet rs = statement.executeQuery()) {
             return rs.next() ? rs.getLong(1) : 0L;
         }

@@ -1331,6 +1331,21 @@ class PageRepositoryIntegrationTest {
     }
 
     @Test
+    void countHtmlPages_publicApi_matchesPromotedHtmlAndRunSummary() throws Exception {
+        assertEquals(0L, repository.countHtmlPages());
+        long siteId = repository.ensureSite("example.com").orElseThrow();
+        long id1 = repository.insertFrontierIfAbsent("https://example.com/pub-html-a", siteId, 0.5).pageId();
+        long id2 = repository.insertFrontierIfAbsent("https://example.com/pub-html-b", siteId, 0.5).pageId();
+        assertEquals(0L, repository.countHtmlPages());
+        promoteToHtmlTerminal(id1);
+        assertEquals(1L, repository.countHtmlPages());
+        promoteToHtmlTerminal(id2);
+        assertEquals(2L, repository.countHtmlPages());
+        PageRepository.RunSummaryPageTypeSnapshot snap = repository.queryRunSummaryPageTypeSnapshot();
+        assertEquals(2L, snap.htmlCount());
+    }
+
+    @Test
     void runSummaryReporter_logsCrawlerRunSummaryEvent() throws Exception {
         long siteId = repository.ensureSite("rsevent.example.com").orElseThrow();
         repository.insertFrontierIfAbsent("https://rsevent.example.com/p", siteId, 0.5);

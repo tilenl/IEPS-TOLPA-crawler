@@ -23,8 +23,9 @@ import si.uni_lj.fri.wier.downloader.fetch.UrlPathSuffixHtmlPolicy;
 /**
  * Runtime configuration (TS-13). Single-domain crawl: no per-domain page cap — use {@code
  * budgetMaxTotalPages} as the max count of {@code HTML} rows in {@code crawldb.page} for discovery admission
- * (score-based FRONTIER replacement when that HTML budget is reached); it does not count FRONTIER, PROCESSING,
- * or non-HTML terminal rows.
+ * (score-based FRONTIER replacement when that HTML budget is reached) and for cooperative crawl termination in
+ * {@link si.uni_lj.fri.wier.scheduler.VirtualThreadCrawlerScheduler}; it does not count FRONTIER, PROCESSING, or
+ * non-HTML terminal rows.
  *
  * <p>{@link #validate()} must run before database access that depends on bounded frontier/recovery settings;
  * it also validates {@code crawler.scoring.keywordConfig} JSON on the filesystem (relative paths use the JVM

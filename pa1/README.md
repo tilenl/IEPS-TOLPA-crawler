@@ -62,7 +62,7 @@ Edit `crawler/src/main/resources/application.properties` (paths relative to `pa1
 | `crawler.db.user`                  | `user`                                     | Must match `POSTGRES_USER`.                                              |
 | `crawler.db.password`              | `SecretPassword`                           | Must match `POSTGRES_PASSWORD`.                                          |
 | `crawler.db.expectedSchemaVersion` | `7`                                        | Must equal the value in `crawldb.schema_version`.                        |
-| `crawler.budget.maxTotalPages`     | `5000`                                     | Max **HTML** rows in `crawldb.page` for discovery admission (not total rows). |
+| `crawler.budget.maxTotalPages`     | `5000`                                     | Max **HTML** rows: limits discovery admission (score-based FRONTIER eviction) **and** triggers cooperative crawl shutdown once `COUNT(*) WHERE page_type_code='HTML'` reaches this value. Does not count non-HTML terminals or queue rows. Shutdown is polled on `crawler.frontier.pollMs`, so the final HTML count may slightly exceed the cap while in-flight pipelines finish. |
 | `crawler.seedUrls`                 | *(see file)*                               | Comma-separated HTTPS seeds. Only inserted when `crawldb.page` is empty. |
 
 
@@ -96,7 +96,7 @@ export JAVA_HOME="$(/usr/libexec/java_home -v 21)"   # macOS
 
 Replace `4` with the desired number of concurrent pipeline tasks. Use `--args="--help"` to see all CLI options.
 
-A successful run logs schema validation, optional seed bootstrap, periodic heartbeats, and exits with code **0** after printing a run summary. Press **Ctrl+C** for a graceful stop.
+A successful run logs schema validation, optional seed bootstrap, periodic heartbeats, and exits with code **0** after printing a run summary when the frontier has drained (empty-queue grace) **or** when the HTML count reaches `crawler.budget.maxTotalPages` (see table above for overshoot). Press **Ctrl+C** for a graceful stop.
 
 ### 6. Live crawl status (optional)
 
