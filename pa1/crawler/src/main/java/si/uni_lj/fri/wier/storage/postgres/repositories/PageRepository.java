@@ -809,7 +809,13 @@ public final class PageRepository {
     }
 
     public InsertFrontierResult insertFrontierIfAbsent(String canonicalUrl, long siteId, double relevanceScore) {
-        return insertFrontierIfAbsent(canonicalUrl, siteId, relevanceScore, Instant.now());
+        try (Connection connection = dataSource.getConnection()) {
+            InsertFrontierResult r = insertFrontierIfAbsent(connection, canonicalUrl, siteId, relevanceScore);
+            notifyFrontierDomainWake(canonicalUrl);
+            return r;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to insert frontier url=" + canonicalUrl, e);
+        }
     }
 
     /**
@@ -1248,8 +1254,8 @@ public final class PageRepository {
                         domain);
             }
 
-            Instant now = Instant.now();
-            Instant nextAttempt = now;
+            Instant nextAttempt = Instant.now();
+            boolean deferUntilExplicit = false;
 
             RobotDecision robotDecision = discoveredIngestRobots.evaluate(discovered.canonicalUrl());
             if (robotDecision.type() == RobotDecisionType.DISALLOWED) {
@@ -1260,16 +1266,23 @@ public final class PageRepository {
                 Instant denyUntil = robotDecision.denyUntilOrDefault();
                 if (denyUntil.isAfter(nextAttempt)) {
                     nextAttempt = denyUntil;
+                    deferUntilExplicit = true;
                 }
             }
 
             InsertFrontierResult insertResult =
-                    insertFrontierIfAbsent(
-                            connection,
-                            discovered.canonicalUrl(),
-                            discovered.siteId(),
-                            discovered.relevanceScore(),
-                            nextAttempt);
+                    deferUntilExplicit
+                            ? insertFrontierIfAbsent(
+                                    connection,
+                                    discovered.canonicalUrl(),
+                                    discovered.siteId(),
+                                    discovered.relevanceScore(),
+                                    nextAttempt)
+                            : insertFrontierIfAbsent(
+                                    connection,
+                                    discovered.canonicalUrl(),
+                                    discovered.siteId(),
+                                    discovered.relevanceScore());
             accepted.add(insertResult.pageId());
             insertLink(connection, discovered.fromPageId(), insertResult.pageId());
         }
@@ -1301,12 +1314,42 @@ public final class PageRepository {
                             connection,
                             discovered.canonicalUrl(),
                             discovered.siteId(),
-                            discovered.relevanceScore(),
-                            Instant.now());
+                            discovered.relevanceScore());
             accepted.add(insertResult.pageId());
             insertLink(connection, discovered.fromPageId(), insertResult.pageId());
         }
         return new IngestResult(accepted, rejected);
+    }
+
+    /**
+     * Inserts a FRONTIER row due immediately ({@code next_attempt_at = now()} in the database clock) so claims using
+     * {@code next_attempt_at <= now()} cannot miss the row when JVM and PostgreSQL clocks differ slightly.
+     */
+    private InsertFrontierResult insertFrontierIfAbsent(
+            Connection connection, String canonicalUrl, long siteId, double relevanceScore) throws SQLException {
+        final String sql =
+                """
+                INSERT INTO crawldb.page(site_id, page_type_code, url, relevance_score, next_attempt_at, attempt_count)
+                VALUES (?, 'FRONTIER', ?, ?, now(), 0)
+                ON CONFLICT (url) DO UPDATE SET url = EXCLUDED.url
+                RETURNING id, (xmax = 0) AS inserted
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, siteId);
+            statement.setString(2, canonicalUrl);
+            statement.setDouble(3, relevanceScore);
+            try (ResultSet rs = statement.executeQuery()) {
+                if (!rs.next()) {
+                    throw new SQLException("insertFrontierIfAbsent returned no rows");
+                }
+                long id = rs.getLong("id");
+                boolean inserted = rs.getBoolean("inserted");
+                if (crawlMetrics != null && !inserted) {
+                    crawlMetrics.recordUrlDedupHit();
+                }
+                return new InsertFrontierResult(id, inserted);
+            }
+        }
     }
 
     private static long countHtmlPages(Connection connection) throws SQLException {
