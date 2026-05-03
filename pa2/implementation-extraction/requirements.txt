@@ -1,0 +1,12 @@
+# PA2 extraction + pgvector pipeline (pin versions enough to reproduce embeddings).
+# Install: pip install -r requirements.txt
+
+numpy>=1.26.0,<3
+psycopg[binary]>=3.1.18,<4
+pgvector>=0.3.6,<1
+beautifulsoup4>=4.12.0,<5
+lxml>=5.0.0,<6
+
+# Embeddings & reranking (pulls PyTorch via sentence-transformers).
+sentence-transformers>=3.4.0,<4
+torch>=2.2.0,<3

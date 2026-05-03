@@ -7,3 +7,8 @@ pa1/build/
 .docker/
 
 pa1/db/crawldb
+
+# PA2: large DB dumps (keep small README/SQL helpers in extraction-db/ if needed)
+pa2/extraction-db/*.dump
+pa2/extraction-db/*.backup
+pa2/extraction-db/*.sql.gz
