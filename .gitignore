@@ -5,3 +5,5 @@ pa1/build/
 
 .gradle-local/
 .docker/
+
+pa1/db/crawldb
