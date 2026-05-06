@@ -90,17 +90,19 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/003_page_segment.sql
    ```
 
-2. **Run Strategy C segmentation** (heading-aware + structure-aware):
+2. **Run Strategy C segmentation** (heading-aware + structure-aware).  
+   You can choose one of three strategy variants: `heading_structure_v1`, `heading_structure_v2`, or `heading_structure_v3`.
 
    ```bash
+   # v1 (baseline heading-aware segmentation)
    cd pa2/implementation-extraction
    .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v1 --rebuild
-   ```
 
-   New variant for collapse-then-split behavior with strict MiniLM tokenizer budgeting:
-
-   ```bash
+   # v2 (combine-then-split with strict tokenizer budgeting)
    .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v2 --rebuild
+   
+   # v3 (multi-pass combine/split + tiny-tail repair)
+   .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v3 --rebuild
    ```
 
    Recommended first smoke test:
@@ -135,6 +137,18 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - `PA2_V2_HARD_CAP_TOKENS` (default `240`)
    - `PA2_V2_SMALL_SUBSECTION_MAX_TOKENS` (default `40`)
    - `PA2_V2_LOCAL_FILES_ONLY=1` to force tokenizer loading from local cache only.
+
+6. **`heading_structure_v3` token policy** (for `all-MiniLM-L6-v2`):
+   - Stage A: greedily packs consecutive sibling subsections under the same parent heading up to a soft target.
+   - Stage B: reuses strict hard-cap splitting by subsection/paragraph/sentence/token-window fallbacks.
+   - Stage C: repairs underfilled chunks by merging tiny tails with adjacent sibling chunks when cap-safe.
+   - Final output is split once more to enforce the hard cap after repair.
+
+   Optional environment overrides:
+   - `PA2_V3_SOFT_TARGET_TOKENS` (default `200`)
+   - `PA2_V3_HARD_CAP_TOKENS` (default `240`)
+   - `PA2_V3_MIN_CHUNK_TOKENS` (default `35`)
+   - `PA2_V3_REPAIR_MAX_PASSES` (default `2`)
 
 ## Phase 4 — Embeddings (`page_segment.embedding`)
 

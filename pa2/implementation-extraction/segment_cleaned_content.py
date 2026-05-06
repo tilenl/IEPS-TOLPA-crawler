@@ -19,6 +19,7 @@ Assumptions and invariants:
 Created: 2026-05-06
 Major revisions:
 - 2026-05-06: Initial Strategy C implementation (chunking + DB ingestion + quality gates).
+- 2026-05-06: Added `heading_structure_v3` (multi-pass greedy packing + tiny-tail repair).
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ LIST_LINE_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)")
 
 DEFAULT_STRATEGY = "heading_structure_v1"
 V2_STRATEGY = "heading_structure_v2"
+V3_STRATEGY = "heading_structure_v3"
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,11 @@ class SegmentationConfig:
     v2_small_subsection_max_tokens: int = 40
     v2_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     v2_local_files_only: bool = False
+    # v3 multi-pass combine/split/repair configuration.
+    v3_soft_target_tokens: int = 200
+    v3_hard_cap_tokens: int = 240
+    v3_min_chunk_tokens: int = 35
+    v3_repair_max_passes: int = 2
 
 
 @dataclass(frozen=True)
@@ -128,6 +135,7 @@ class V2ChunkPart:
     text: str
     segment_type: str
     tokens: int
+    source_heading_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +144,7 @@ class V2PackedChunk:
 
     heading_path: str | None
     parts: list[V2ChunkPart]
+    merge_group_path: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -639,6 +648,80 @@ def _collapse_v2_small_subsections(units: list[V2SectionUnit], cfg: Segmentation
     return packed
 
 
+def _part_from_unit(unit: V2SectionUnit) -> V2ChunkPart:
+    """Create a reusable chunk part payload from one section unit."""
+    return V2ChunkPart(
+        heading_title=unit.heading_title,
+        text=unit.text,
+        segment_type=unit.segment_type,
+        tokens=unit.tokens,
+        source_heading_path=unit.full_heading_path,
+    )
+
+
+def _pack_v3_by_parent_greedy(units: list[V2SectionUnit], cfg: SegmentationConfig) -> list[V2PackedChunk]:
+    """Stage A(v3): greedily pack consecutive sibling units under a soft token target."""
+    packed: list[V2PackedChunk] = []
+    active_parent: str | None = None
+    active_parts: list[V2ChunkPart] = []
+    active_tokens = 0
+
+    def flush_active() -> None:
+        """Flush current active group while preserving provenance for singletons."""
+        nonlocal active_parent, active_parts, active_tokens
+        if not active_parts:
+            return
+        if len(active_parts) == 1 and active_parts[0].source_heading_path:
+            chunk_heading_path = active_parts[0].source_heading_path
+        else:
+            chunk_heading_path = active_parent
+        packed.append(
+            V2PackedChunk(
+                heading_path=chunk_heading_path,
+                parts=list(active_parts),
+                merge_group_path=active_parent,
+            )
+        )
+        active_parent = None
+        active_parts = []
+        active_tokens = 0
+
+    for unit in units:
+        unit_part = _part_from_unit(unit)
+        # NOTE: Oversized units are emitted as standalone chunks and handled by split stage.
+        if unit.tokens >= cfg.v3_hard_cap_tokens:
+            flush_active()
+            packed.append(
+                V2PackedChunk(
+                    heading_path=unit.full_heading_path,
+                    parts=[unit_part],
+                    merge_group_path=unit.parent_heading_path,
+                )
+            )
+            continue
+
+        if not active_parts:
+            active_parent = unit.parent_heading_path
+            active_parts = [unit_part]
+            active_tokens = unit.tokens
+            continue
+
+        same_parent = active_parent == unit.parent_heading_path
+        fits_soft_target = (active_tokens + unit.tokens) <= cfg.v3_soft_target_tokens
+        if same_parent and fits_soft_target:
+            active_parts.append(unit_part)
+            active_tokens += unit.tokens
+            continue
+
+        flush_active()
+        active_parent = unit.parent_heading_path
+        active_parts = [unit_part]
+        active_tokens = unit.tokens
+
+    flush_active()
+    return packed
+
+
 def _render_v2_part(part: V2ChunkPart) -> str:
     """Render one child subsection contribution inside a collapsed segment."""
     if part.heading_title.strip():
@@ -646,21 +729,112 @@ def _render_v2_part(part: V2ChunkPart) -> str:
     return part.text.strip()
 
 
+def _segment_type_from_parts(parts: list[V2ChunkPart]) -> str:
+    """Resolve segment type for one packed chunk from its composing part types."""
+    segment_type = "mixed"
+    part_types = {part.segment_type for part in parts}
+    if len(part_types) == 1:
+        only = next(iter(part_types))
+        if only in {"prose", "code_block", "table_rows", "list_bundle"}:
+            segment_type = only
+    return segment_type
+
+
+def _estimate_packed_tokens(packed: V2PackedChunk) -> int:
+    """Estimate chunk token budget from already-counted strict part token values."""
+    return sum(max(0, part.tokens) for part in packed.parts)
+
+
+def _merge_v3_packed_chunks(left: V2PackedChunk, right: V2PackedChunk) -> V2PackedChunk:
+    """Merge two neighboring packed chunks while preserving heading provenance."""
+    merged_parts = list(left.parts) + list(right.parts)
+    source_paths = {
+        part.source_heading_path for part in merged_parts if part.source_heading_path
+    }
+    if len(source_paths) == 1:
+        heading_path = next(iter(source_paths))
+    else:
+        heading_path = left.merge_group_path or right.merge_group_path or left.heading_path
+    merge_group = left.merge_group_path or right.merge_group_path or _parent_heading_path(heading_path)
+    return V2PackedChunk(
+        heading_path=heading_path,
+        parts=merged_parts,
+        merge_group_path=merge_group,
+    )
+
+
+def _repair_v3_underfilled_chunks(
+    packed_chunks: list[V2PackedChunk], cfg: SegmentationConfig
+) -> list[V2PackedChunk]:
+    """Stage C(v3): merge tiny chunks with adjacent siblings when safe and deterministic."""
+    repaired = list(packed_chunks)
+    if not repaired:
+        return repaired
+
+    for _ in range(max(1, cfg.v3_repair_max_passes)):
+        changed = False
+        i = 0
+        while i < len(repaired):
+            current = repaired[i]
+            current_tokens = _estimate_packed_tokens(current)
+            if current_tokens >= cfg.v3_min_chunk_tokens:
+                i += 1
+                continue
+
+            merged = False
+            prev_idx = i - 1
+            if prev_idx >= 0:
+                prev_chunk = repaired[prev_idx]
+                same_group = prev_chunk.merge_group_path == current.merge_group_path
+                fits_cap = (
+                    _estimate_packed_tokens(prev_chunk) + current_tokens
+                    <= cfg.v3_hard_cap_tokens
+                )
+                if same_group and fits_cap:
+                    repaired[prev_idx] = _merge_v3_packed_chunks(prev_chunk, current)
+                    repaired.pop(i)
+                    changed = True
+                    merged = True
+                    i = max(0, prev_idx)
+            if merged:
+                continue
+
+            next_idx = i + 1
+            if next_idx < len(repaired):
+                next_chunk = repaired[next_idx]
+                same_group = next_chunk.merge_group_path == current.merge_group_path
+                fits_cap = (
+                    _estimate_packed_tokens(next_chunk) + current_tokens
+                    <= cfg.v3_hard_cap_tokens
+                )
+                if same_group and fits_cap:
+                    repaired[i] = _merge_v3_packed_chunks(current, next_chunk)
+                    repaired.pop(next_idx)
+                    changed = True
+                    continue
+            i += 1
+        if not changed:
+            break
+    return repaired
+
+
 def _split_v2_text_by_token_cap(
     text: str,
     cfg: SegmentationConfig,
     *,
     kind_hint: str,
+    hard_cap_tokens: int | None = None,
 ) -> list[str]:
     """Split text by cap-aware fallbacks while preserving structure as much as possible."""
-    if _count_tokens(text, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+    cap = hard_cap_tokens if hard_cap_tokens is not None else cfg.v2_hard_cap_tokens
+    if _count_tokens(text, cfg, strict=True) <= cap:
         return [text]
 
     def force_char_splits(value: str) -> list[str]:
         """Split extremely long continuous strings (e.g. URLs) by char spans."""
         if not value:
             return []
-        if _count_tokens(value, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+        if _count_tokens(value, cfg, strict=True) <= cap:
             return [value]
         pieces: list[str] = []
         start = 0
@@ -674,7 +848,7 @@ def _split_v2_text_by_token_cap(
                 if not candidate:
                     low = mid + 1
                     continue
-                if _count_tokens(candidate, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+                if _count_tokens(candidate, cfg, strict=True) <= cap:
                     best = mid
                     low = mid + 1
                 else:
@@ -692,7 +866,7 @@ def _split_v2_text_by_token_cap(
         current: list[str] = []
         for line in lines:
             candidate = "\n".join(current + [line]).strip()
-            if current and _count_tokens(candidate, cfg, strict=True) > cfg.v2_hard_cap_tokens:
+            if current and _count_tokens(candidate, cfg, strict=True) > cap:
                 out.append("\n".join(current).strip())
                 current = [line]
             else:
@@ -700,11 +874,11 @@ def _split_v2_text_by_token_cap(
         if current:
             out.append("\n".join(current).strip())
         normalized = [chunk for chunk in out if chunk]
-        if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+        if all(_count_tokens(chunk, cfg, strict=True) <= cap for chunk in normalized):
             return normalized
         refined: list[str] = []
         for chunk in normalized:
-            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            if _count_tokens(chunk, cfg, strict=True) <= cap:
                 refined.append(chunk)
             else:
                 # NOTE: Some logs/CSV rows are single lines that still exceed cap; use generic fallback.
@@ -713,6 +887,7 @@ def _split_v2_text_by_token_cap(
                         chunk,
                         cfg,
                         kind_hint="prose",
+                        hard_cap_tokens=cap,
                     )
                 )
         return refined
@@ -723,7 +898,7 @@ def _split_v2_text_by_token_cap(
         current: list[str] = []
         for paragraph in paragraphs:
             candidate = "\n\n".join(current + [paragraph]).strip()
-            if current and _count_tokens(candidate, cfg, strict=True) > cfg.v2_hard_cap_tokens:
+            if current and _count_tokens(candidate, cfg, strict=True) > cap:
                 out.append("\n\n".join(current).strip())
                 current = [paragraph]
             else:
@@ -731,11 +906,11 @@ def _split_v2_text_by_token_cap(
         if current:
             out.append("\n\n".join(current).strip())
         normalized = [chunk for chunk in out if chunk]
-        if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+        if all(_count_tokens(chunk, cfg, strict=True) <= cap for chunk in normalized):
             return normalized
         refined: list[str] = []
         for chunk in normalized:
-            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            if _count_tokens(chunk, cfg, strict=True) <= cap:
                 refined.append(chunk)
             else:
                 refined.extend(
@@ -743,6 +918,7 @@ def _split_v2_text_by_token_cap(
                         chunk,
                         cfg,
                         kind_hint=kind_hint,
+                        hard_cap_tokens=cap,
                     )
                 )
         return refined
@@ -754,7 +930,7 @@ def _split_v2_text_by_token_cap(
         current: list[str] = []
         for sentence in sentences:
             candidate = " ".join(current + [sentence]).strip()
-            if current and _count_tokens(candidate, cfg, strict=True) > cfg.v2_hard_cap_tokens:
+            if current and _count_tokens(candidate, cfg, strict=True) > cap:
                 out.append(" ".join(current).strip())
                 current = [sentence]
             else:
@@ -762,11 +938,11 @@ def _split_v2_text_by_token_cap(
         if current:
             out.append(" ".join(current).strip())
         normalized = [chunk for chunk in out if chunk]
-        if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+        if all(_count_tokens(chunk, cfg, strict=True) <= cap for chunk in normalized):
             return normalized
         refined: list[str] = []
         for chunk in normalized:
-            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            if _count_tokens(chunk, cfg, strict=True) <= cap:
                 refined.append(chunk)
             else:
                 refined.extend(
@@ -774,6 +950,7 @@ def _split_v2_text_by_token_cap(
                         chunk,
                         cfg,
                         kind_hint=kind_hint,
+                        hard_cap_tokens=cap,
                     )
                 )
         return refined
@@ -792,37 +969,43 @@ def _split_v2_text_by_token_cap(
             if not candidate:
                 low = mid + 1
                 continue
-            if _count_tokens(candidate, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            if _count_tokens(candidate, cfg, strict=True) <= cap:
                 best = mid
                 low = mid + 1
             else:
                 high = mid - 1
         chunk = " ".join(words[start:best]).strip()
         if chunk:
-            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            if _count_tokens(chunk, cfg, strict=True) <= cap:
                 out.append(chunk)
             else:
                 out.extend(force_char_splits(chunk))
         start = max(best, start + 1)
     normalized = [chunk for chunk in out if chunk]
-    if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+    if all(_count_tokens(chunk, cfg, strict=True) <= cap for chunk in normalized):
         return normalized
     fully_enforced: list[str] = []
     for chunk in normalized:
-        if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+        if _count_tokens(chunk, cfg, strict=True) <= cap:
             fully_enforced.append(chunk)
         else:
             fully_enforced.extend(force_char_splits(chunk))
     return [chunk for chunk in fully_enforced if chunk]
 
 
-def _split_v2_packed_chunks(packed_chunks: list[V2PackedChunk], cfg: SegmentationConfig) -> list[V2PackedChunk]:
+def _split_v2_packed_chunks(
+    packed_chunks: list[V2PackedChunk],
+    cfg: SegmentationConfig,
+    *,
+    hard_cap_tokens: int | None = None,
+) -> list[V2PackedChunk]:
     """Stage B: enforce hard cap using boundary-priority splitting."""
+    cap = hard_cap_tokens if hard_cap_tokens is not None else cfg.v2_hard_cap_tokens
     out: list[V2PackedChunk] = []
     for packed in packed_chunks:
         rendered_parts = [_render_v2_part(part) for part in packed.parts]
         rendered_tokens = [_count_tokens(text, cfg, strict=True) for text in rendered_parts]
-        if _count_tokens("\n\n".join(rendered_parts), cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+        if _count_tokens("\n\n".join(rendered_parts), cfg, strict=True) <= cap:
             out.append(packed)
             continue
 
@@ -831,7 +1014,7 @@ def _split_v2_packed_chunks(packed_chunks: list[V2PackedChunk], cfg: Segmentatio
             current_parts: list[V2ChunkPart] = []
             current_rendered_parts: list[str] = []
             for part, rendered_text, part_tokens in zip(packed.parts, rendered_parts, rendered_tokens):
-                if part_tokens > cfg.v2_hard_cap_tokens:
+                if part_tokens > cap:
                     if current_parts:
                         out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
                         current_parts = []
@@ -840,6 +1023,7 @@ def _split_v2_packed_chunks(packed_chunks: list[V2PackedChunk], cfg: Segmentatio
                         rendered_text,
                         cfg,
                         kind_hint=part.segment_type,
+                        hard_cap_tokens=cap,
                     ):
                         out.append(
                             V2PackedChunk(
@@ -850,21 +1034,35 @@ def _split_v2_packed_chunks(packed_chunks: list[V2PackedChunk], cfg: Segmentatio
                                         text=text,
                                         segment_type=part.segment_type,
                                         tokens=_count_tokens(text, cfg, strict=True),
+                                        source_heading_path=part.source_heading_path,
                                     )
                                 ],
+                                merge_group_path=packed.merge_group_path,
                             )
                         )
                     continue
                 candidate_joined = "\n\n".join(current_rendered_parts + [rendered_text]).strip()
-                if current_parts and _count_tokens(candidate_joined, cfg, strict=True) > cfg.v2_hard_cap_tokens:
-                    out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
+                if current_parts and _count_tokens(candidate_joined, cfg, strict=True) > cap:
+                    out.append(
+                        V2PackedChunk(
+                            heading_path=packed.heading_path,
+                            parts=list(current_parts),
+                            merge_group_path=packed.merge_group_path,
+                        )
+                    )
                     current_parts = [part]
                     current_rendered_parts = [rendered_text]
                 else:
                     current_parts.append(part)
                     current_rendered_parts.append(rendered_text)
             if current_parts:
-                out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
+                out.append(
+                    V2PackedChunk(
+                        heading_path=packed.heading_path,
+                        parts=list(current_parts),
+                        merge_group_path=packed.merge_group_path,
+                    )
+                )
             continue
 
         # Priorities 2-4: split one large part by paragraph/sentence/window fallback.
@@ -873,6 +1071,7 @@ def _split_v2_packed_chunks(packed_chunks: list[V2PackedChunk], cfg: Segmentatio
             _render_v2_part(single_part),
             cfg,
             kind_hint=single_part.segment_type,
+            hard_cap_tokens=cap,
         )
         for text in chunks:
             out.append(
@@ -884,8 +1083,10 @@ def _split_v2_packed_chunks(packed_chunks: list[V2PackedChunk], cfg: Segmentatio
                             text=text,
                             segment_type=single_part.segment_type,
                             tokens=_count_tokens(text, cfg, strict=True),
+                            source_heading_path=single_part.source_heading_path,
                         )
                     ],
+                    merge_group_path=packed.merge_group_path,
                 )
             )
     return out
@@ -904,19 +1105,51 @@ def _segment_page_v2(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
     segments: list[Segment] = []
     for chunk_index, packed_chunk in enumerate(final_chunks):
         chunk_text = "\n\n".join(_render_v2_part(part) for part in packed_chunk.parts).strip()
-        segment_type = "mixed"
-        part_types = {part.segment_type for part in packed_chunk.parts}
-        if len(part_types) == 1:
-            only = next(iter(part_types))
-            if only in {"prose", "code_block", "table_rows", "list_bundle"}:
-                segment_type = only
         segments.append(
             Segment(
                 page_id=page_id,
                 chunk_index=chunk_index,
                 strategy=strategy,
                 heading_path=packed_chunk.heading_path,
-                segment_type=segment_type,
+                segment_type=_segment_type_from_parts(packed_chunk.parts),
+                segment_text=chunk_text,
+                token_estimate=_count_tokens(chunk_text, cfg, strict=True),
+                char_count=len(chunk_text),
+            )
+        )
+    return segments
+
+
+def _segment_page_v3(*, page_id: int, cleaned_content: str, strategy: str, cfg: SegmentationConfig) -> list[Segment]:
+    """v3 strategy: greedy parent packing, hard-cap split, then underfilled-tail repair."""
+    parsed = _split_cleaned_content_into_blocks(cleaned_content)
+    if not parsed:
+        return []
+
+    units = _build_v2_section_units(parsed, cfg)
+    packed = _pack_v3_by_parent_greedy(units, cfg)
+    split_chunks = _split_v2_packed_chunks(
+        packed,
+        cfg,
+        hard_cap_tokens=cfg.v3_hard_cap_tokens,
+    )
+    repaired_chunks = _repair_v3_underfilled_chunks(split_chunks, cfg)
+    final_chunks = _split_v2_packed_chunks(
+        repaired_chunks,
+        cfg,
+        hard_cap_tokens=cfg.v3_hard_cap_tokens,
+    )
+
+    segments: list[Segment] = []
+    for chunk_index, packed_chunk in enumerate(final_chunks):
+        chunk_text = "\n\n".join(_render_v2_part(part) for part in packed_chunk.parts).strip()
+        segments.append(
+            Segment(
+                page_id=page_id,
+                chunk_index=chunk_index,
+                strategy=strategy,
+                heading_path=packed_chunk.heading_path,
+                segment_type=_segment_type_from_parts(packed_chunk.parts),
                 segment_text=chunk_text,
                 token_estimate=_count_tokens(chunk_text, cfg, strict=True),
                 char_count=len(chunk_text),
@@ -933,6 +1166,13 @@ def segment_page_cleaned_content(
     cfg: SegmentationConfig,
 ) -> list[Segment]:
     """Segment one page using the requested strategy version."""
+    if strategy == V3_STRATEGY:
+        return _segment_page_v3(
+            page_id=page_id,
+            cleaned_content=cleaned_content,
+            strategy=strategy,
+            cfg=cfg,
+        )
     if strategy == V2_STRATEGY:
         return _segment_page_v2(
             page_id=page_id,
@@ -1148,9 +1388,18 @@ def run_segmentation(
             os.environ.get("PA2_V2_SMALL_SUBSECTION_MAX_TOKENS", "40")
         ),
         v2_local_files_only=os.environ.get("PA2_V2_LOCAL_FILES_ONLY", "0") in {"1", "true", "TRUE"},
+        v3_soft_target_tokens=int(os.environ.get("PA2_V3_SOFT_TARGET_TOKENS", "200")),
+        v3_hard_cap_tokens=int(os.environ.get("PA2_V3_HARD_CAP_TOKENS", "240")),
+        v3_min_chunk_tokens=int(os.environ.get("PA2_V3_MIN_CHUNK_TOKENS", "35")),
+        v3_repair_max_passes=int(os.environ.get("PA2_V3_REPAIR_MAX_PASSES", "2")),
     )
     stats = RunStats(strategy=strategy)
-    stats.hard_cap_tokens = cfg.v2_hard_cap_tokens if strategy == V2_STRATEGY else cfg.hard_cap_tokens
+    if strategy == V2_STRATEGY:
+        stats.hard_cap_tokens = cfg.v2_hard_cap_tokens
+    elif strategy == V3_STRATEGY:
+        stats.hard_cap_tokens = cfg.v3_hard_cap_tokens
+    else:
+        stats.hard_cap_tokens = cfg.hard_cap_tokens
     conn_kwargs = _resolve_conn_kwargs()
     with psycopg.connect(**conn_kwargs, autocommit=False) as conn:
         conn.execute("SET search_path TO crawldb, public")
@@ -1260,6 +1509,79 @@ Use cosine LR schedule and mixed precision.
     assert any("max_epoch" in s.segment_text for s in segments), "Code block content missing"
     assert all(s.chunk_index == i for i, s in enumerate(segments)), "Chunk indices must be contiguous"
 
+    # v3 pass-A regression: if one chunk is full-ish, later medium siblings should still combine.
+    v3_cfg = SegmentationConfig(
+        v3_soft_target_tokens=200,
+        v3_hard_cap_tokens=240,
+        v3_min_chunk_tokens=35,
+        v3_repair_max_passes=2,
+    )
+    units = [
+        V2SectionUnit(
+            full_heading_path="README > Parent > Big",
+            parent_heading_path="README > Parent",
+            heading_title="Big",
+            text="big",
+            segment_type="prose",
+            tokens=240,
+        ),
+        V2SectionUnit(
+            full_heading_path="README > Parent > MidA",
+            parent_heading_path="README > Parent",
+            heading_title="MidA",
+            text="mida",
+            segment_type="prose",
+            tokens=50,
+        ),
+        V2SectionUnit(
+            full_heading_path="README > Parent > MidB",
+            parent_heading_path="README > Parent",
+            heading_title="MidB",
+            text="midb",
+            segment_type="prose",
+            tokens=80,
+        ),
+    ]
+    v3_packed = _pack_v3_by_parent_greedy(units, v3_cfg)
+    assert len(v3_packed) == 2, "Expected v3 to keep 240 alone and combine 50+80."
+    assert _estimate_packed_tokens(v3_packed[0]) == 240
+    assert _estimate_packed_tokens(v3_packed[1]) == 130
+
+    # v3 pass-C regression: tiny tail should merge into adjacent sibling under same parent group.
+    tiny_repair_input = [
+        V2PackedChunk(
+            heading_path="README > Parent > Abstract",
+            merge_group_path="README > Parent",
+            parts=[
+                V2ChunkPart(
+                    heading_title="",
+                    text="chunk-a",
+                    segment_type="prose",
+                    tokens=210,
+                    source_heading_path="README > Parent > Abstract",
+                )
+            ],
+        ),
+        V2PackedChunk(
+            heading_path="README > Parent > Abstract",
+            merge_group_path="README > Parent",
+            parts=[
+                V2ChunkPart(
+                    heading_title="",
+                    text="[Paper] [Code]",
+                    segment_type="prose",
+                    tokens=8,
+                    source_heading_path="README > Parent > Abstract",
+                )
+            ],
+        ),
+    ]
+    repaired = _repair_v3_underfilled_chunks(tiny_repair_input, v3_cfg)
+    assert len(repaired) == 1, "Expected tiny tail to merge with previous sibling."
+    assert _estimate_packed_tokens(repaired[0]) == 218, "Unexpected merged token sum."
+    assert repaired[0].parts[0].text == "chunk-a"
+    assert repaired[0].parts[1].text == "[Paper] [Code]"
+
     print("segment_cleaned_content self-test: OK")
 
 
@@ -1271,6 +1593,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strategy",
         default=DEFAULT_STRATEGY,
+        choices=[DEFAULT_STRATEGY, V2_STRATEGY, V3_STRATEGY],
         help=f"Strategy label stored in DB (default: {DEFAULT_STRATEGY}).",
     )
     parser.add_argument(

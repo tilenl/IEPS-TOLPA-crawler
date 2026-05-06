@@ -285,11 +285,74 @@ Interpretation:
 - raises median chunk density closer to the target context budget,
 - and enforces the configured hard cap strictly.
 
-Additional statistics:
-- pages read: `4031` (of all the 5000 HTML pages, some did not contain README files at all, and this is why only 4031 pages were 
-read in the end)
-- pages with segments: `4011` (coverage `99.5%`) (additionally 20 pages with README files had them empty, and as such had no 
-segments)
+### Why v2 still left avoidable fragmentation
+
+Despite strong global gains, we found a local limitation in v2 combine logic:
+
+- if the first subsection in a parent group is already large (`>= v2_collapse_upper_bound_tokens = 220`), v2 flushes the active collapse buffer and emits it as a standalone chunk,
+- later medium siblings such as `50` and `80` tokens are **not** considered "small" (`v2_small_subsection_max_tokens = 40`),
+- therefore these later siblings do not necessarily start/extend a collapse group in the same pass, even when `50 + 80` would fit comfortably.
+
+This is the concrete `240 + 50 + 80` failure mode that motivated v3.
+
+We also observed another pattern on subsection-heavy pages: after split fallback, tiny tails can resurface as standalone chunks (for example short link-only or citation-only tails). In v2 there is no post-split recombination stage, so these fragments remain small even when adjacent sibling chunks could absorb them without violating the cap.
+
+![Observed residual fragmentation in v2](../why-we-implemented-v3-of-segmentation.png)
+
+### `heading_structure_v3`: multi-pass combine/split repair
+
+To fix these cases we implemented `heading_structure_v3`:
+
+1. **Pass A (parent-aware greedy combine):** greedily combine consecutive sibling subsections under the same parent up to a soft target budget.
+2. **Pass B (strict hard-cap split):** keep v2 boundary-priority split logic to enforce model-safe max tokens.
+3. **Pass C (tiny-tail repair):** merge underfilled chunks with adjacent siblings (same parent group, cap-safe), then re-check split cap.
+
+This multi-pass flow addresses both:
+- missed combinations after one large sibling already filled capacity,
+- small fragments created by split fallback.
+
+### Concrete v3 improvement statistics (targeted pages)
+
+To provide concrete evidence, we recomputed segmentation for known problematic pages and compared existing v2 DB rows with v3 outputs under the same tokenizer budgeting:
+
+| Page ID | Strategy | Segments | Min | Median | Avg | Max | `<20` | `<40` | `>cap` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `8` | v2 | `21` | `40` | `130` | `134` | `226` | `0` | `0` | `0` |
+| `8` | v3 | `21` | `40` | `130` | `134` | `226` | `0` | `0` | `0` |
+| `715` | v2 | `76` | `20` | `207` | `178` | `240` | `0` | `3` | `0` |
+| `715` | v3 | `74` | `21` | `207` | `183` | `240` | `0` | `1` | `0` |
+| `312135` | v2 | `122` | `8` | `35` | `84` | `236` | `25` | `64` | `0` |
+| `312135` | v3 | `107` | `11` | `49` | `95` | `240` | `17` | `49` | `0` |
+
+Interpretation on these pages:
+- v3 keeps hard-cap safety (`>cap = 0`),
+- reduces micro-segments (`<20` and `<40`) where v2 still fragmented heavily,
+- increases median and average chunk density without flattening unrelated sections.
+
+### Persisted SQL aggregate comparison (all segmented pages)
+
+After running a full rebuild for `heading_structure_v3`, we compared persisted rows directly in `crawldb.page_segment` for both strategies:
+
+| Strategy | Segments | Pages with segments | Min | Median | P95 | Avg | Max | `<20` | `<20 %` | `<40` | `<40 %` | `>240` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `heading_structure_v2` | `46603` | `4011` | `3` | `149` | `236` | `142.71` | `240` | `955` | `2.05%` | `3766` | `8.08%` | `0` |
+| `heading_structure_v3` | `43303` | `4011` | `5` | `165` | `236` | `153.44` | `240` | `369` | `0.85%` | `2048` | `4.73%` | `0` |
+
+Global interpretation:
+- v3 reduces micro-fragmentation by more than half on `<20` chunks (`2.05% -> 0.85%`),
+- v3 substantially lowers `<40` chunks (`8.08% -> 4.73%`),
+- median and average chunk density increase while hard-cap safety remains strict (`>240 = 0`).
+
+### Why we rely on headers (tree structure) instead of flat README text
+
+We intentionally treat README content as a **hierarchical tree** (`H1..H6`) rather than a flat stream:
+
+- **Local context preservation:** combine/split operates on neighboring text inside the same section lineage, so chunk content stays topically coherent.
+- **Safer merges:** parent/sibling constraints prevent blending unrelated topics (for example setup commands with model-comparison prose).
+- **Better retrieval grounding:** `heading_path` gives the retriever/LLM explicit structural provenance (`README > Training > Hyperparameters`), improving ranking and answer traceability.
+- **Deterministic chunk identity:** tree boundaries provide stable segment reconstruction across rebuilds and strategy comparisons.
+
+A flat-text approach would simplify implementation but would lose section semantics and increase cross-topic bleed when packing by token budget alone.
 
 ### Expected advantages and known trade-offs
 
@@ -302,6 +365,15 @@ segments)
 - More complex parser/chunker logic than fixed windows.
 - Heuristics are tuned for README-like markdown and may require adjustment for non-standard pages.
 - Tokenizer-based budgeting is more accurate for model limits, but slower than lightweight word/regex estimates.
+
+
+Additional statistics:
+- pages read: `4031` (of all the 5000 HTML pages, some did not contain README files at all, and this is why only 4031 pages 
+were 
+read in the end)
+- pages with segments: `4011` (coverage `99.5%`) (additionally 20 pages with README files had them empty, and as such had 
+no 
+segments)
 
 ---
 
