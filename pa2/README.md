@@ -177,6 +177,81 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
 **Connection**: defaults `localhost:5432`, database `crawldb`, user `user`, password `SecretPassword`. Override with `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
 
+## Phase 5 — Retrieval demo (`demo.py`)
+
+`demo.py` now implements the full assignment retrieval loop:
+1. read query,
+2. embed query with MiniLM,
+3. run pgvector similarity search,
+4. print top-k segment hits with `page_id`, `segment_id`, `chunk_index`, `strategy`, and source URL.
+
+Run from `pa2/implementation-extraction/` and activate the virtual environment first:
+
+```bash
+cd pa2/implementation-extraction
+source .venv/bin/activate
+python demo.py --query "How do I use pretrained models?" --top-k 5
+```
+
+### Similarity metric experiments
+
+Cosine (recommended with current schema/index):
+
+```bash
+python demo.py --query "optimizer learning rate settings" --metric cosine --top-k 5
+```
+
+L2 distance:
+
+```bash
+python demo.py --query "optimizer learning rate settings" --metric l2 --top-k 5
+```
+
+Inner product:
+
+```bash
+python demo.py --query "optimizer learning rate settings" --metric inner_product --top-k 5
+```
+
+L1 distance:
+
+```bash
+python demo.py --query "optimizer learning rate settings" --metric l1 --top-k 5
+```
+
+### Optional reranking
+
+Use cross-encoder reranking on top of embedding retrieval:
+
+```bash
+python demo.py --query "how to train DeepLabV3+" --top-k 5 --rerank --candidate-k 20
+```
+
+If reranking model loading fails, the script logs a warning and falls back to base retrieval output.
+
+### Built-in qualitative evaluation set
+
+The script includes:
+- 3 expected-good domain queries,
+- 3 intentionally weak/hard queries.
+
+Run all six queries:
+
+```bash
+python demo.py --run-eval --top-k 5
+```
+
+Run evaluation with reranking enabled:
+
+```bash
+python demo.py --run-eval --top-k 5 --rerank --candidate-k 20
+```
+
+### Index / metric alignment note
+
+Migration `004_page_segment_embedding.sql` currently creates an HNSW index for cosine (`vector_cosine_ops`).
+Other metrics (`l2`, `inner_product`, `l1`) are still valid for experimentation, but may run slower because no matching ANN index is currently created for those operators.
+
 ---
 
 Database restore steps for submission dumps will be documented when `extraction-db/` is finalized.

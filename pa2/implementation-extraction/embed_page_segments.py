@@ -25,17 +25,13 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import statistics
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Sequence
 
 import numpy as np
-
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-EXPECTED_DIMENSION = 384
+from embedding_common import encode_texts, resolve_conn_kwargs
 
 
 @dataclass(frozen=True)
@@ -66,31 +62,6 @@ class EmbeddingRunStats:
     def __post_init__(self) -> None:
         if self.norm_values is None:
             self.norm_values = []
-
-
-def _resolve_conn_kwargs() -> dict[str, Any]:
-    """Resolve PostgreSQL connection kwargs from environment with PA defaults."""
-    return {
-        "host": os.environ.get("PGHOST", "localhost"),
-        "port": int(os.environ.get("PGPORT", "5432")),
-        "dbname": os.environ.get("PGDATABASE", "crawldb"),
-        "user": os.environ.get("PGUSER", "user"),
-        "password": os.environ.get("PGPASSWORD", "SecretPassword"),
-    }
-
-
-@lru_cache(maxsize=1)
-def _load_model() -> Any:
-    """Load and cache the sentence-transformers model used for embeddings."""
-    from sentence_transformers import SentenceTransformer
-
-    model = SentenceTransformer(MODEL_NAME)
-    model_dimension = int(model.get_sentence_embedding_dimension())
-    if model_dimension != EXPECTED_DIMENSION:
-        raise RuntimeError(
-            f"Model '{MODEL_NAME}' dimension mismatch: expected {EXPECTED_DIMENSION}, got {model_dimension}."
-        )
-    return model
 
 
 def _fetch_batch(
@@ -151,28 +122,6 @@ def _split_valid_rows(rows: Sequence[SegmentRow]) -> tuple[list[SegmentRow], int
     return valid, skipped
 
 
-def _encode_texts(
-    texts: Sequence[str],
-    *,
-    normalize_embeddings: bool,
-) -> np.ndarray:
-    """Encode texts with MiniLM and enforce deterministic output shape."""
-    model = _load_model()
-    embeddings = model.encode(
-        list(texts),
-        convert_to_numpy=True,
-        normalize_embeddings=normalize_embeddings,
-        show_progress_bar=False,
-    )
-    if embeddings.ndim != 2:
-        raise RuntimeError(f"Unexpected embedding tensor rank: {embeddings.ndim}.")
-    if embeddings.shape[1] != EXPECTED_DIMENSION:
-        raise RuntimeError(
-            f"Encoded dimension mismatch: expected {EXPECTED_DIMENSION}, got {embeddings.shape[1]}."
-        )
-    return embeddings.astype(np.float32, copy=False)
-
-
 def _record_embedding_quality(
     stats: EmbeddingRunStats,
     embeddings: np.ndarray,
@@ -222,7 +171,7 @@ def _run_batch_with_retries(
     attempts = max(1, max_retries + 1)
     for attempt in range(1, attempts + 1):
         try:
-            embeddings = _encode_texts(
+            embeddings = encode_texts(
                 [row.segment_text for row in rows],
                 normalize_embeddings=normalize_embeddings,
             )
@@ -344,7 +293,7 @@ def run_embedding_pipeline(
     import psycopg
     from pgvector.psycopg import register_vector
 
-    conn_kwargs = _resolve_conn_kwargs()
+    conn_kwargs = resolve_conn_kwargs()
     stats = EmbeddingRunStats()
     remaining = limit
     last_seen_id = 0

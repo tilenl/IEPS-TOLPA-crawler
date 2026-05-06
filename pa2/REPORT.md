@@ -11,7 +11,7 @@ Use the official headings that match your write-up flow; include every bullet.
 1. **Website filtering / extraction** — What you threw away globally (menus, chrome, scripts, assets) versus what you kept. For this project: crawler already limits to GitHub-ish pages; extraction further isolates **only the rendered README** subtree (see below).
 2. **Chunking strategy** — Criteria for thematic sections (paragraphs vs fixed windows vs headings, merge/split rules, token limits tied to the embedding model). Implemented strategy plus **advantages and disadvantages**.
 3. **Embeddings** — Which model(s) you chose, English vs multilingual rationale, experiments with alternatives ([sentence-transformers](https://www.sbert.net/) / Hugging Face), and models you tried but discarded.
-4. **Similarity metric** — Cosine vs L2 vs inner product in pgvector, index type (IVFFlat or HSNW), and why it matches how you encode queries and segments.
+4. **Similarity metric** — Cosine vs L2 vs inner product in pgvector, index type (IVFFlat or HNSW), and why it matches how you encode queries and segments.
 5. **Queries and answers** — **Three** queries that retrieve **good** segments for your domain, **three** that are **weak or misleading**, each with short note of what came back (IDs, URLs, or quoted snippets).
 6. **Reranking** — Cross-encoder (or equivalent) identity, rerank pairs (query + segment), **examples where order improves** on the weaker queries from (5).
 7. **Where reranking still fails** — At least **one** honest example after reranking (still wrong ranking or irrelevant top hit).
@@ -328,6 +328,14 @@ We use pgvector inside PostgreSQL:
 
 Cosine search is aligned with normalized sentence embeddings and with the retrieval setup planned for `demo.py`.
 
+We selected **HNSW** over **IVFFlat** for this project because it better fits our current workload and data scale:
+
+- our collection size is moderate (about 46k segments), where HNSW usually offers stronger recall/latency trade-offs with less parameter tuning;
+- this pipeline is mostly bulk-build then read/query, so a heavier index build step is acceptable for better query quality;
+- IVFFlat is highly usable too, but it depends more on tuning (`lists`, `probes`) and is more attractive when faster/cheaper rebuilds are the primary goal.
+
+Given our assignment focus (retrieval quality over many rebuild cycles), HNSW is the safer default for final semantic search results.
+
 ### Reliability and quality checks
 
 The embedding pipeline includes resilience and sanity diagnostics:
@@ -344,6 +352,75 @@ The embedding pipeline includes resilience and sanity diagnostics:
 
 - Running multiple embedding models in parallel (deferred to keep Phase 4 reproducible and focused).
 - Canonical-content-first embedding (`cleaned_content_canonical`) remains available but is not required for the current deduplicated dataset.
+
+---
+
+## Phase 5 — Retrieval demo and similarity metrics
+
+Phase 5 is implemented in `implementation-extraction/demo.py` and follows the required loop:
+1. receive query text,
+2. compute query embedding (`all-MiniLM-L6-v2` by default),
+3. execute pgvector similarity search on `crawldb.page_segment.embedding`,
+4. print top-k segments with source metadata (`page_id`, URL, `chunk_index`, strategy).
+
+### Similarity metric choice and rationale
+
+The retriever supports four metrics by mapping CLI `--metric` to pgvector operators:
+- cosine -> `<=>`
+- l2 -> `<->`
+- inner product -> `<#>`
+- l1 -> `<+>`
+
+Current migration (`004_page_segment_embedding.sql`) creates a cosine HNSW index (`vector_cosine_ops`), so cosine is the default and expected best latency-quality balance for this project. Other metrics are still available for assignment experimentation, but they may run slower without metric-specific ANN indexes.
+
+### Qualitative evaluation queries (required 3 good + 3 weak)
+
+`demo.py --run-eval` includes the following built-in query sets:
+
+**Expected-good queries**
+1. `How do I run DeepLabV3+ training with this repository?`
+2. `Which configuration keys control optimizer learning rate?`
+3. `How can I use a pretrained segmentation model from the README?`
+
+**Weak/unexpected-result queries**
+1. `What is the best segmentation model for medical biology images in 2026?`
+2. `How does this project compare to Segment Anything 2 benchmarks?`
+3. `Can this codebase guarantee state-of-the-art mIoU on every dataset?`
+
+These weak queries are intentionally broader than repository README scope and are useful for showing both baseline retrieval limits and reranking behavior.
+
+### How to capture report evidence
+
+Run:
+
+```bash
+cd pa2/implementation-extraction
+.venv/bin/python demo.py --run-eval --top-k 5
+.venv/bin/python demo.py --run-eval --top-k 5 --rerank --candidate-k 20
+```
+
+For the final PDF section, record:
+- one short snippet + source URL for each of the 3 good-query outputs,
+- one short snippet showing weak-query mismatch before rerank,
+- at least one weak query where reranking improves top ordering,
+- at least one weak query where reranking still fails.
+
+---
+
+## Phase 6 — Reranking behavior
+
+The retrieval script supports optional cross-encoder reranking (`--rerank`) using:
+- default model: `cross-encoder/ms-marco-MiniLM-L-6-v2`,
+- input pairs: `(query, segment_text)` for top-N embedding candidates (`--candidate-k`, default 20),
+- output: reranked top-k list shown with `rerank_score`.
+
+If the reranker model cannot load, the script logs a warning and returns baseline embedding-ranking results, ensuring demo execution still succeeds.
+
+### Known limitations (current retriever + reranker)
+
+- README-only corpus limits answer coverage for generic or external-comparison questions.
+- Cosine-index alignment is currently strongest; non-cosine experiments may be slower.
+- Reranking can reorder relevant items, but cannot recover facts absent from extracted README content.
 
 ---
 

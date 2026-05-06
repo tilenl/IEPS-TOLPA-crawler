@@ -16,6 +16,8 @@ pa2/extraction-db/*.sql.gz
 # PA2 Python venv
 pa2/implementation-extraction/.venv/
 
+# PA2 Python cache
+pa2/implementation-extraction/__pycache__/
 
 # sentence-transformers HuggingFace cache - locally loaded models
-.hf_cache/
+pa2/implementation-extraction/.hf_cache/
