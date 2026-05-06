@@ -23,7 +23,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
+import textwrap
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -51,6 +53,12 @@ EVAL_QUERY_SETS = {
         "Can this codebase guarantee state-of-the-art mIoU on every dataset?",
     ],
 }
+
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_CYAN = "\033[36m"
+ANSI_MAGENTA = "\033[35m"
+ANSI_YELLOW = "\033[33m"
 
 
 @dataclass(frozen=True)
@@ -252,11 +260,68 @@ def _rerank_hits(
 
 
 def _format_preview(text: str, *, max_chars: int) -> str:
-    """Render one-line preview for stable terminal output."""
-    compact = " ".join(text.strip().split())
-    if len(compact) <= max_chars:
-        return compact
-    return compact[: max_chars - 3] + "..."
+    """Render full segment text with line wrapping (no truncation)."""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+
+    # NOTE: Keep wrapped text inside terminal/card bounds even when --show-chars
+    # is set very high for inspection.
+    terminal_columns = shutil.get_terminal_size(fallback=(120, 24)).columns
+    max_safe_width = max(40, terminal_columns - 8)
+    wrap_width = min(max(40, max_chars), max_safe_width, 100)
+    wrapped_lines: list[str] = []
+    for raw_line in stripped.splitlines():
+        if not raw_line.strip():
+            wrapped_lines.append("")
+            continue
+        wrapped = textwrap.wrap(
+            raw_line,
+            width=wrap_width,
+            replace_whitespace=False,
+            drop_whitespace=False,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        wrapped_lines.extend(wrapped if wrapped else [""])
+    return "\n".join(wrapped_lines)
+
+
+def _supports_color() -> bool:
+    """Return True when stdout likely supports ANSI colors."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
+def _style(text: str, *, role: str, use_color: bool) -> str:
+    """Apply role-based ANSI styling for readability when supported."""
+    if not use_color:
+        return text
+    if role == "header":
+        return f"{ANSI_BOLD}{ANSI_MAGENTA}{text}{ANSI_RESET}"
+    if role == "label":
+        return f"{ANSI_BOLD}{ANSI_CYAN}{text}{ANSI_RESET}"
+    if role == "section":
+        return f"{ANSI_BOLD}{ANSI_YELLOW}{text}{ANSI_RESET}"
+    if role == "meta_key":
+        return f"{ANSI_BOLD}{text}{ANSI_RESET}"
+    return text
+
+
+def _format_meta_row(key: str, value: str, *, use_color: bool) -> str:
+    """Format one metadata row with bold key and aligned value."""
+    key_text = _style(f"{key:<12}", role="meta_key", use_color=use_color)
+    return f"| {key_text} : {value}"
+
+
+def _print_segment_text_block(preview: str) -> None:
+    """Print multiline segment body inside card body with indentation."""
+    if not preview:
+        print("|   [EMPTY SEGMENT]")
+        return
+    for line in preview.splitlines():
+        print(f"|   {line}")
 
 
 def _print_hits(
@@ -265,27 +330,51 @@ def _print_hits(
     metric: str,
     show_chars: int,
     reranked: bool,
+    use_color: bool,
 ) -> None:
-    """Print retrieval results in marker-friendly format."""
+    """Print retrieval results in card-style blocks."""
     if not hits:
-        print("No hits found for this query.")
+        print(f"{_style('NO HITS', role='section', use_color=use_color)}")
+        print("  No segments matched this query.")
         return
 
+    border = "+" + "-" * 110 + "+"
+    score_label = "rerank_score" if reranked else "distance"
     for rank, hit in enumerate(hits, start=1):
         preview = _format_preview(hit.segment_text, max_chars=show_chars)
-        score_label = "rerank_score" if reranked else "distance"
         score_value = hit.rerank_score if reranked else hit.distance
-        print(f"[{rank}] {score_label}={score_value:.6f} metric={metric}")
+        print()
+        print(border)
+        print(f"| {_style(f'RESULT {rank}/{len(hits)}', role='section', use_color=use_color)}")
+        print(border)
         print(
-            f"    page_id={hit.page_id} segment_id={hit.segment_id} "
-            f"chunk_index={hit.chunk_index} strategy={hit.strategy}"
+            _format_meta_row(
+                "score",
+                f"{score_label}={score_value:.6f}  metric={metric}",
+                use_color=use_color,
+            )
         )
-        print(f"    url={hit.source_url or 'N/A'}")
-        print(f"    text={preview}")
+        print(_format_meta_row("page_id", str(hit.page_id), use_color=use_color))
+        print(_format_meta_row("segment_id", str(hit.segment_id), use_color=use_color))
+        print(_format_meta_row("chunk_index", str(hit.chunk_index), use_color=use_color))
+        print(_format_meta_row("strategy", hit.strategy, use_color=use_color))
+        print(
+            _format_meta_row(
+                "url",
+                hit.source_url or "N/A",
+                use_color=use_color,
+            )
+        )
+        print(border)
+        print(f"| {_style('SEGMENT TEXT', role='label', use_color=use_color)}")
+        print(border)
+        _print_segment_text_block(preview)
+        print(border)
 
 
 def _run_single_query(args: argparse.Namespace, query: str) -> int:
     """Execute one retrieval request and print results."""
+    use_color = _supports_color()
     if args.metric != "cosine":
         logging.warning(
             "Metric '%s' has no matching ANN index in current migration (cosine HNSW only). "
@@ -323,28 +412,40 @@ def _run_single_query(args: argparse.Namespace, query: str) -> int:
         except Exception as exc:
             logging.warning("Reranking failed, falling back to base retrieval: %s", exc)
 
-    print(f"\nQuery: {query}")
+    print()
+    print("#" * 100)
+    print(f"{_style('QUERY', role='header', use_color=use_color)}: {query}")
     print(
-        "Mode: "
+        f"{_style('RUN CONFIG', role='header', use_color=use_color)}: "
         f"metric={args.metric} top_k={args.top_k} strategy={args.strategy or 'ALL'} "
         f"rerank={'on' if reranked else 'off'}"
     )
+    print("#" * 100)
     _print_hits(
         final_hits,
         metric=args.metric,
         show_chars=args.show_chars,
         reranked=reranked,
+        use_color=use_color,
     )
+    print()
     return 0
 
 
 def _run_eval(args: argparse.Namespace) -> int:
     """Run built-in qualitative query set required by the assignment."""
+    print()
+    print("#" * 100)
     print("Running qualitative evaluation set (3 good + 3 weak queries).")
+    print("#" * 100)
     for bucket in ("good", "weak"):
-        print(f"\n=== {bucket.upper()} QUERIES ===")
+        print()
+        print("*" * 100)
+        print(f"{bucket.upper()} QUERIES")
+        print("*" * 100)
         for index, query in enumerate(EVAL_QUERY_SETS[bucket], start=1):
-            print(f"\n--- {bucket} #{index} ---")
+            print()
+            print(f"[{bucket} query {index}]")
             _run_single_query(args, query)
     return 0
 
