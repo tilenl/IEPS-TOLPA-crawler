@@ -12,3 +12,6 @@ pa1/db/crawldb
 pa2/extraction-db/*.dump
 pa2/extraction-db/*.backup
 pa2/extraction-db/*.sql.gz
+
+# PA2 Python venv
+pa2/implementation-extraction/.venv/
