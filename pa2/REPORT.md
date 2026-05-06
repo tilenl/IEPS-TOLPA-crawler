@@ -315,12 +315,19 @@ We also observed another pattern on subsection-heavy pages: after split fallback
 To fix these cases we implemented `heading_structure_v3`:
 
 1. **Pass A (parent-aware greedy combine):** greedily combine consecutive sibling subsections under the same parent up to a soft target budget.
-2. **Pass B (strict hard-cap split):** keep v2 boundary-priority split logic to enforce model-safe max tokens.
-3. **Pass C (tiny-tail repair):** merge underfilled chunks with adjacent siblings (same parent group, cap-safe), then re-check split cap.
+2. **Refinement rounds (`PA2_V3_REFINE_ROUNDS`):** repeat Pass B + Pass C `N` times (default `N = 1`).
+3. **Pass B (strict hard-cap split):** keep v2 boundary-priority split logic to enforce model-safe max tokens.
+4. **Pass C (tiny-tail repair):** merge underfilled chunks with adjacent siblings (same parent group, cap-safe), where `PA2_V3_REPAIR_MAX_PASSES` caps the inner merge attempts per round.
+5. **Final split:** re-check hard-cap safety after refinement.
 
 This multi-pass flow addresses both:
 - missed combinations after one large sibling already filled capacity,
 - small fragments created by split fallback.
+
+Configuration note:
+- `PA2_V3_REFINE_ROUNDS` controls how many outer split/repair cycles run.
+- `PA2_V3_REPAIR_MAX_PASSES` controls how many inner merge passes one repair stage may perform.
+- The aggregate comparisons below were produced with `PA2_V3_REFINE_ROUNDS=1` (default).
 
 ### Concrete v3 improvement statistics (targeted pages)
 

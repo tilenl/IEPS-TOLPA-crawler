@@ -123,6 +123,7 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - `--batch-size <n>`: insert/update threshold,
    - `--dry-run`: compute quality stats without writes,
    - `--rebuild`: delete old rows for the chosen strategy before inserting,
+   - `--v3-refine-rounds <n>`: outer split/repair refinement rounds for `heading_structure_v3`,
    - `--self-test`: run embedded algorithm checks without DB access.
 
 5. **`heading_structure_v2` token policy** (for `all-MiniLM-L6-v2`):
@@ -140,7 +141,8 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
 6. **`heading_structure_v3` token policy** (for `all-MiniLM-L6-v2`):
    - Stage A: greedily packs consecutive sibling subsections under the same parent heading up to a soft target.
-   - Stage B: reuses strict hard-cap splitting by subsection/paragraph/sentence/token-window fallbacks.
+   - Refinement rounds: repeat Stage B + Stage C `N` times (`N = PA2_V3_REFINE_ROUNDS`).
+   - Stage B: strict hard-cap splitting by subsection/paragraph/sentence/token-window fallbacks.
    - Stage C: repairs underfilled chunks by merging tiny tails with adjacent sibling chunks when cap-safe.
    - Final output is split once more to enforce the hard cap after repair.
 
@@ -149,6 +151,8 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - `PA2_V3_HARD_CAP_TOKENS` (default `240`)
    - `PA2_V3_MIN_CHUNK_TOKENS` (default `35`)
    - `PA2_V3_REPAIR_MAX_PASSES` (default `2`)
+   - `PA2_V3_REFINE_ROUNDS` (default `1`)
+   - `PA2_V3_REPAIR_MAX_PASSES` is the inner merge loop cap inside one Stage C run.
 
 ## Phase 4 — Embeddings (`page_segment.embedding`)
 

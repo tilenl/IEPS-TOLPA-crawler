@@ -65,6 +65,7 @@ class SegmentationConfig:
     v3_hard_cap_tokens: int = 240
     v3_min_chunk_tokens: int = 35
     v3_repair_max_passes: int = 2
+    v3_refine_rounds: int = 1
 
 
 @dataclass(frozen=True)
@@ -1127,15 +1128,16 @@ def _segment_page_v3(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
         return []
 
     units = _build_v2_section_units(parsed, cfg)
-    packed = _pack_v3_by_parent_greedy(units, cfg)
-    split_chunks = _split_v2_packed_chunks(
-        packed,
-        cfg,
-        hard_cap_tokens=cfg.v3_hard_cap_tokens,
-    )
-    repaired_chunks = _repair_v3_underfilled_chunks(split_chunks, cfg)
+    chunks = _pack_v3_by_parent_greedy(units, cfg)
+    for _ in range(max(1, cfg.v3_refine_rounds)):
+        chunks = _split_v2_packed_chunks(
+            chunks,
+            cfg,
+            hard_cap_tokens=cfg.v3_hard_cap_tokens,
+        )
+        chunks = _repair_v3_underfilled_chunks(chunks, cfg)
     final_chunks = _split_v2_packed_chunks(
-        repaired_chunks,
+        chunks,
         cfg,
         hard_cap_tokens=cfg.v3_hard_cap_tokens,
     )
@@ -1364,6 +1366,7 @@ def run_segmentation(
     batch_size: int = 200,
     rebuild: bool = False,
     dry_run: bool = False,
+    v3_refine_rounds: int | None = None,
 ) -> RunStats:
     """
     Execute full DB segmentation flow.
@@ -1392,6 +1395,11 @@ def run_segmentation(
         v3_hard_cap_tokens=int(os.environ.get("PA2_V3_HARD_CAP_TOKENS", "240")),
         v3_min_chunk_tokens=int(os.environ.get("PA2_V3_MIN_CHUNK_TOKENS", "35")),
         v3_repair_max_passes=int(os.environ.get("PA2_V3_REPAIR_MAX_PASSES", "2")),
+        v3_refine_rounds=(
+            int(os.environ.get("PA2_V3_REFINE_ROUNDS", "1"))
+            if v3_refine_rounds is None
+            else v3_refine_rounds
+        ),
     )
     stats = RunStats(strategy=strategy)
     if strategy == V2_STRATEGY:
@@ -1515,6 +1523,7 @@ Use cosine LR schedule and mixed precision.
         v3_hard_cap_tokens=240,
         v3_min_chunk_tokens=35,
         v3_repair_max_passes=2,
+        v3_refine_rounds=1,
     )
     units = [
         V2SectionUnit(
@@ -1630,6 +1639,12 @@ def _main(argv: list[str] | None = None) -> int:
         help="Enable DEBUG logging.",
     )
     parser.add_argument(
+        "--v3-refine-rounds",
+        type=int,
+        default=None,
+        help="Number of v3 split/repair refinement rounds before final split.",
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Run embedded checks and exit.",
@@ -1652,6 +1667,7 @@ def _main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         rebuild=args.rebuild,
         dry_run=args.dry_run,
+        v3_refine_rounds=args.v3_refine_rounds,
     )
     logging.info(
         "done: pages_read=%s pages_with_segments=%s total_segments=%s strategy=%s dry_run=%s",
