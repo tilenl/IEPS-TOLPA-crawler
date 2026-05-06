@@ -259,17 +259,37 @@ We also track additional quality diagnostics for v2:
 - percentage of chunks above the configured hard cap (must be 0),
 - min/median/p95 token counts and per-page chunk spread.
 
-### Quality statistics after improvement
+### Quality statistics: `heading_structure_v1` vs `heading_structure_v2`
 
-After recomputing segmentation with `heading_structure_v2` on the full dataset:
-- pages read: `4031` (of all the 5000 HTML pages, some did not contain README files at all, and this is why only 4031 pages were read in the end)
-- pages with segments: `4011` (coverage `99.5%`) (additionally 20 pages with README files had them empty, and as such had no segments)
+Metrics were recomputed from `crawldb.page_segment` for both strategies on the same eligible page set:
+
+- pages read: `4031` (non-empty `cleaned_content` pages)
+- pages with segments: `4011` for both strategies (coverage `99.5%`; 20 pages remained segment-empty)
+
+`heading_structure_v1`:
+- total segments: `42893`
+- tokens per segment: min `1`, median `78`, p95 `311`
+- micro-segments: `<20` tokens `6264` (`14.6%`), `<40` tokens `12960` (`30.2%`)
+- overflow above hard cap (`420` tokens): `261` (`0.6%`)
+
+`heading_structure_v2`:
 - total segments: `46603`
 - tokens per segment: min `3`, median `149`, p95 `236`
-- micro-segments: `<20` tokens `955` (`2.0%`), `<40` tokens `3766` (`8.1%`) (repositories with only a few words in the README could not be grouped any more, as the few words are all that was in the README file. As such, these repositories explain why we have 2% micro-segments under 20 tokens, and 8.1% micro segments under 40 tokens)
+- micro-segments: `<20` tokens `955` (`2.0%`), `<40` tokens `3766` (`8.1%`) (repositories with only a few words in the README 
+could not be grouped any more, as the few words are all that was in the README file. As such, these repositories explain why we 
+have 2% micro-segments under 20 tokens, and 8.1% micro segments under 40 tokens)
 - overflow above hard cap (`240` tokens): `0` (`0.0%`)
 
-We do not have fully comparable stored statistics from the pre-improvement implementation in this report section, but the earlier behavior clearly produced many fragmented micro-segments. The v2 numbers above show that token density is now much closer to the target budget while still respecting the hard cap.
+Interpretation:
+- v2 significantly reduces micro-fragmentation (especially `<40` token chunks),
+- raises median chunk density closer to the target context budget,
+- and enforces the configured hard cap strictly.
+
+Additional statistics:
+- pages read: `4031` (of all the 5000 HTML pages, some did not contain README files at all, and this is why only 4031 pages were 
+read in the end)
+- pages with segments: `4011` (coverage `99.5%`) (additionally 20 pages with README files had them empty, and as such had no 
+segments)
 
 ### Expected advantages and known trade-offs
 
