@@ -2,7 +2,7 @@
 
 Program SYSTEMATICALLY, firstly do the 1., then write everything we have done into the PA2 report. Then do the 2. and create relevant sections in the PA2 report yet again. This way we won't forget what we did at the end, when we will be writing the report.
 
-Firstly create the directory files, as are necessary for the assignment. Extract the PA2 into a notebook, so that the LLM has context if it wants to check if it is relevant for the programming assignment 2.
+✅ Firstly create the directory files, as are necessary for the assignment. Extract the PA2 into a notebook, so that the LLM has context if it wants to check if it is relevant for the programming assignment 2.
 
 All the code that we should use are already in the notebooks, provided to us.
 
@@ -287,6 +287,7 @@ from previous labs, the vaje_4, where we processed the whole document as a text,
 # # OFFICIAL PROGRAMMING ASSIGNMENT 2 INSTRUCTONS
 
 ## 1. Introduction
+
 The goal of this programming assignment is to extract useful information from the crawled websites and store it in a vector database for answering domain-specific questions. The assignment consists of three parts:
 
 1. Identifying and extracting important information
@@ -336,11 +337,9 @@ title = tree.xpath('//div[@class="article"]/h2/text()')
 print(title)  # Output: ['Sample Article']
 ```
 
-
 ## 2.2. Using regular expressions
 
 Another approach to content extraction is using **regular expressions** (regex). Regular expressions are powerful tools for pattern matching and text processing. While regex can be faster for small and well-structured tasks, it is more error-prone for messy or deeply nested HTML. Use it when you know the structure of the text you’re working with and want to quickly extract specific elements.
-
 
 Basic Regex Syntax:
 
@@ -358,14 +357,15 @@ Basic Regex Syntax:
 **Common Regex Examples and What They Match:**
 
 
-| Regular Expression	| Matches |
-| ------- | ------- |
-| `<h2>(.*?)</h2>`	    | The text inside an `<h2>` tag |
-| `href="(.*?)"`	      | The value of an `href` attribute |
-| `<p>(.*?)</p>`	      | Paragraph content between `<p>` tags |
-| `\d{4}-\d{2}-\d{2}`	  | Dates in `YYYY-MM-DD` format |
-| `\$[0-9]+\.[0-9]{2}`	| Dollar amounts like `$19.99` |
-| `<[^>]+>`	            | Any HTML tag |
+| Regular Expression   | Matches                              |
+| -------------------- | ------------------------------------ |
+| `<h2>(.*?)</h2>`     | The text inside an `<h2>` tag        |
+| `href="(.*?)"`       | The value of an `href` attribute     |
+| `<p>(.*?)</p>`       | Paragraph content between `<p>` tags |
+| `\d{4}-\d{2}-\d{2}`  | Dates in `YYYY-MM-DD` format         |
+| `\$[0-9]+\.[0-9]{2}` | Dollar amounts like `$19.99`         |
+| `<[^>]+>`            | Any HTML tag                         |
+
 
 You can test your regular expressions expressions at [regexr.com](https://regexr.com).
 
@@ -513,7 +513,7 @@ You should implement a small Python demo program that:
 
 In the demo program, include three queries that return relevant results for your domain, and prepare at three queries that does not return the expected result.
 
-## 4.1 Reranking 
+## 4.1 Reranking
 
 Even with good embeddings, the first top‑k results from vector similarity search are not always the most relevant. To improve final accuracy, add a **reranking step**, which takes the initial retrieved segments (e.g., top‑k) and reorders them using a more precise relevance model. Test reranking step with the three queries that do not return the expected result.
 
@@ -530,7 +530,6 @@ Even with good embeddings, the first top‑k results from vector similarity sear
 3. Pass each segment together with the query to a reranker model (e.g., a cross‑encoder)
 4. Sort by relevance score and return the final top‑k results
 5. Typical rerankers include cross‑encoder models from sentence‑transformers. You can find the example in the notebook in the next section. Choose the model based on your dataset language.
-
 
 ## 5 Basic tools
 

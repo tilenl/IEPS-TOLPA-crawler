@@ -5,6 +5,7 @@ This folder follows the course submission layout:
 ```
 pa2/
 ├── report-extraction.pdf      # Final report (added when complete)
+├── REPORT.md                   # Report checklist + extraction writeup (source for the PDF)
 ├── README.md                  # This file — setup, DB restore (expanded in later phases)
 ├── pa2_context.ipynb           # Condensed assignment context for notebooks / collaborators
 ├── db/migrations/
@@ -55,4 +56,4 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
 Database restore steps for submission dumps will be documented when `extraction-db/` is finalized.
 
-**See also**: [PROGRAMMING-ASSIGNMENT-2.md](../PROGRAMMING-ASSIGNMENT-2.md) for full notes, official rubric, and report checklist.
+**See also**: [PROGRAMMING-ASSIGNMENT-2.md](../PROGRAMMING-ASSIGNMENT-2.md) for full notes and official rubric; [REPORT.md](REPORT.md) for the PDF checklist and GitHub README extraction summary.

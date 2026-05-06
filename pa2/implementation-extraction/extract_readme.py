@@ -18,6 +18,7 @@ and the Docker recipe in ``pa1/README.md`` (host ``localhost``, db ``crawldb``).
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import os
 import re
@@ -45,6 +46,23 @@ _BLOCK_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# GitHub puts the exact copy buffer on a wrapper ``div`` (and sometimes embeds) so
+# highlighted ``<pre>`` (many ``<span>`` tokens) does not corrupt YAML/shell layout.
+_GH_CLIPBOARD_ATTR = "data-snippet-clipboard-copy-content"
+
+
+def _pre_plain_from_github_clipboard(pre: Tag) -> str | None:
+    """If *pre* sits under GitHub's snippet wrapper, return its copy payload."""
+    current: Tag | BeautifulSoup | None = pre
+    while current is not None and isinstance(current, Tag):
+        raw = current.get(_GH_CLIPBOARD_ATTR)
+        if isinstance(raw, str) and raw.strip():
+            text = html.unescape(raw).strip()
+            if text:
+                return text
+        current = current.parent
+    return None
+
 
 def _child_block_tags(el: Tag) -> list[str]:
     """Return block-tag names among *direct* children (used to detect leaf blocks)."""
@@ -64,7 +82,7 @@ def _readme_root_from_soup(soup: BeautifulSoup) -> Tag | None:
     embedded ``richText`` payloads). Fallbacks widen slightly without grabbing
     arbitrary site chrome.
     """
-    # Canonical GitHub README article (SPA and traditional HTML responses).
+    # Canonical GitHub README article (SPA and traditional HTML responses). - ignore the nav, file table... only the README subtree is processed
     node = soup.select_one('article.markdown-body[itemprop="text"]')
     if node:
         return node
@@ -118,9 +136,12 @@ def _iter_leaf_blocks(article_root: Tag) -> Iterator[str]:
                 if t:
                     texts.append(t)
             chunk = " | ".join(texts).strip()
+        elif el.name == "pre":
+            chunk = _pre_plain_from_github_clipboard(el) or el.get_text(
+                separator="\n", strip=True
+            )
         else:
-            separator = "\n" if el.name == "pre" else " "
-            chunk = el.get_text(separator=separator, strip=True)
+            chunk = el.get_text(separator=" ", strip=True)
         if chunk:
             yield chunk
 
@@ -146,6 +167,7 @@ def extract_readme_plain_text(html: str | None) -> str | None:
         logging.exception("BeautifulSoup parse failed")
         return None
 
+    # get only the README subtree from the soup - only relevant content we want to process.
     readme = _readme_root_from_soup(soup)
     if readme is None:
         return None
@@ -323,6 +345,16 @@ def _self_test() -> None:
     """
     out = extract_readme_plain_text(sample)
     assert out and "Title" in out and "First para" in out and "code line" in out, out
+
+    gh_yaml = """
+    <article class="markdown-body" itemprop="text"><div
+      data-snippet-clipboard-copy-content="Net:\\n  enc_type: 'resnet18'">
+      <pre><span>Net</span><span>:</span><span>junk</span></pre>
+    </div></article>
+    """
+    gh_out = extract_readme_plain_text(gh_yaml)
+    assert gh_out and "enc_type: 'resnet18'" in gh_out and "junk" not in gh_out, gh_out
+
     assert extract_readme_plain_text(None) is None
     assert extract_readme_plain_text("<html><body></body></html>") is None
     print("extract_readme self-test: OK", file=sys.stderr)
