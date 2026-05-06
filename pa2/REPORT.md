@@ -48,6 +48,13 @@ Some crawled URLs are **commits**, **wiki history**, etc. Those snapshots often 
 
 Inside the subtree, **noise** is stripped locally (scripts/styles, badges-as-images logic, redundant heading-anchor chrome, SVG) so embeddings are not polluted by markup-only nodes. Structured blocks (**headings, paragraphs, lists, blockquotes, `pre`, table rows**) are turned into newline-separated paragraphs for later segmentation.
 
+To improve chunk quality for PA2 retrieval, extraction also applies four normalization rules before writing `cleaned_content`:
+
+1. **Nested-list protection:** parent list items that contain nested lists are not flattened, which prevents duplicated "Table of Contents"-style text.
+2. **ToC suppression:** explicit *Table of Contents* sections are removed.
+3. **Selective link preservation:** weak anchor labels such as "paper" / "code" preserve external targets in the text (`paper (https://...)`), while descriptive anchor text stays readable.
+4. **Heading markers:** headings are emitted as `[H1]` ... `[H6]` to preserve section structure for chunkers and embeddings.
+
 ### Code blocks: syntax highlighting vs plain-text layout
 
 On the live page, a fenced code block looks like a normal monospace snippet with sensible line breaks and indentation. In the **HTML**, GitHub applies syntax highlighting by wrapping tokens in many nested **`<span>`** elements. Our extractor walks block-level nodes and turns each `<pre>` into text by concatenating descendant strings. With one string fragment per span, that inserts **extra line breaks between pieces** that were a single logical line on screen—so the **extracted layout no longer matches** what readers see.
@@ -155,6 +162,18 @@ Optimizer:
 If the attribute is missing (older markup or non-GitHub pages), we still fall back to `<pre>` text extraction as before.
 
 Together, this focuses retrieval on **one stable semantic island** of the crawl—README prose—rather than scraping the entire GitHub SPA shell.
+
+### Deduplication before embeddings
+
+We also evaluated a canonicalization step based on fingerprinting full `cleaned_content` (`md5(cleaned_content)`) before embedding. This would merge only pages with **identical full extracted README text** (not sentence-level overlap), e.g.:
+
+- Page A: `This is a segmentation repository. Train with U-Net.`
+- Page B: `This is a segmentation repository. Train with U-Net.`
+- Page C: `This is a segmentation repository. Train with DeepLabV3+.`
+
+In this scenario, A and B would map to one canonical content row, while C would remain separate.
+
+However, in our final pipeline this step is **not required**, because duplicate pages were already removed earlier during crawling/collection. Therefore, we keep canonical mapping as an optional safeguard, but it is not necessary for normal embedding generation in our current dataset.
 
 ---
 

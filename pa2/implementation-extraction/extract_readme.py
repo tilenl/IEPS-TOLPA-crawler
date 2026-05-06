@@ -24,13 +24,13 @@ import os
 import re
 import sys
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag
 
-# Block tags we treat as one logical text unit when they have no block child.
-# ``tr`` covers simple GitHub tables; skip ``td``/``th`` to avoid double counting.
-_BLOCK_NAMES: frozenset[str] = frozenset(
+# Block tags that are emitted into cleaned text.
+_EMITTABLE_BLOCK_NAMES: frozenset[str] = frozenset(
     {
         "h1",
         "h2",
@@ -46,9 +46,42 @@ _BLOCK_NAMES: frozenset[str] = frozenset(
     }
 )
 
+# Block tags used for hierarchy decisions.
+# ``ul`` / ``ol`` are structural only: they are not emitted directly, but they
+# prevent parent ``li`` nodes from flattening nested lists into one giant line.
+_STRUCTURAL_BLOCK_NAMES: frozenset[str] = _EMITTABLE_BLOCK_NAMES | {"ul", "ol"}
+
 # GitHub puts the exact copy buffer on a wrapper ``div`` (and sometimes embeds) so
 # highlighted ``<pre>`` (many ``<span>`` tokens) does not corrupt YAML/shell layout.
 _GH_CLIPBOARD_ATTR = "data-snippet-clipboard-copy-content"
+_WEAK_LINK_LABELS: frozenset[str] = frozenset(
+    {
+        "here",
+        "link",
+        "links",
+        "paper",
+        "code",
+        "repo",
+        "repository",
+        "website",
+        "more",
+        "read more",
+        "details",
+        "demo",
+        "project",
+        "arxiv",
+    }
+)
+_TOC_HEADING_NAMES: frozenset[str] = frozenset({"table of contents", "contents", "toc"})
+
+
+@dataclass(frozen=True)
+class ExtractedBlock:
+    """One extracted block with minimal metadata for post-processing."""
+
+    kind: str
+    text: str
+    heading_level: int | None = None
 
 
 def _pre_plain_from_github_clipboard(pre: Tag) -> str | None:
@@ -69,9 +102,97 @@ def _child_block_tags(el: Tag) -> list[str]:
     names: list[str] = []
     for child in el.children:
         name = getattr(child, "name", None)
-        if name and name in _BLOCK_NAMES:
+        if name and name in _STRUCTURAL_BLOCK_NAMES:
             names.append(name)
     return names
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse repeated spaces and tidy spaces around newlines."""
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip()
+
+
+def _is_absolute_url(href: str) -> bool:
+    return href.startswith("http://") or href.startswith("https://")
+
+
+def _is_weak_anchor_label(label: str) -> bool:
+    normalized = label.strip().lower()
+    if not normalized:
+        return True
+    if normalized in _WEAK_LINK_LABELS:
+        return True
+    words = [w for w in re.split(r"\s+", normalized) if w]
+    if len(words) == 1 and len(words[0]) <= 4:
+        return True
+    return False
+
+
+def _render_anchor_text(label: str, href: str | None) -> str:
+    """Render anchor text while preserving informative URLs for weak labels."""
+    clean_label = _normalize_whitespace(label)
+    if not href:
+        return clean_label
+    href = href.strip()
+    if not href or href.startswith("#"):
+        return clean_label
+    if not _is_absolute_url(href):
+        return clean_label
+    if not clean_label:
+        return href
+    if _is_weak_anchor_label(clean_label):
+        return f"{clean_label} ({href})"
+    return clean_label
+
+
+def _extract_inline_text(node: Tag | NavigableString) -> str:
+    """Extract readable inline text while applying anchor rendering policy."""
+    if isinstance(node, NavigableString):
+        return str(node)
+    if not isinstance(node, Tag):
+        return ""
+    if node.name == "br":
+        return "\n"
+    if node.name == "a":
+        return _render_anchor_text(
+            node.get_text(separator=" ", strip=True),
+            node.get("href"),
+        )
+    parts: list[str] = []
+    for child in node.children:
+        piece = _extract_inline_text(child)
+        if piece:
+            parts.append(piece)
+    return "".join(parts)
+
+
+def _text_from_tag(tag: Tag) -> str:
+    """Extract normalized text for prose/list blocks."""
+    text = _extract_inline_text(tag)
+    text = text.replace("\n", " ")
+    return _normalize_whitespace(text)
+
+
+def _text_from_table_row(row: Tag) -> str:
+    """Join table row cells into a markdown-like representation."""
+    cells: list[str] = []
+    for cell in row.find_all(["th", "td"], recursive=False):
+        t = _text_from_tag(cell)
+        if t:
+            cells.append(t)
+    return " | ".join(cells).strip()
+
+
+def _has_nested_emittable_child(el: Tag) -> bool:
+    """
+    True when *el* should not be emitted because child blocks will represent it.
+
+    We intentionally treat ``ul`` / ``ol`` as structural descendants. This avoids
+    flattening a parent ``li`` that contains a nested list (common in ToC blocks).
+    """
+    return bool(_child_block_tags(el))
 
 
 def _readme_root_from_soup(soup: BeautifulSoup) -> Tag | None:
@@ -115,35 +236,83 @@ def _strip_noise(root: Tag) -> None:
         img.decompose()
 
 
-def _iter_leaf_blocks(article_root: Tag) -> Iterator[str]:
+def _iter_leaf_blocks(article_root: Tag) -> Iterator[ExtractedBlock]:
     """
     Yield human-readable snippets in document order.
 
     Skip outer blocks that still contain nested block tags so we emit *leaf*
     blocks only (e.g. ``blockquote > p`` yields the ``p``, not both).
     """
-    for el in article_root.find_all(_BLOCK_NAMES, recursive=True):
+    for el in article_root.find_all(_EMITTABLE_BLOCK_NAMES, recursive=True):
         if not isinstance(el, Tag):
             continue
-        if _child_block_tags(el):
+        if _has_nested_emittable_child(el):
             # Non-leaf: a heading wrapper or nested structure will surface via children.
             continue
+        heading_level: int | None = None
         if el.name == "tr":
-            # Join cells roughly like a Markdown table row.
-            texts = []
-            for cell in el.find_all(["th", "td"], recursive=False):
-                t = cell.get_text(separator=" ", strip=True)
-                if t:
-                    texts.append(t)
-            chunk = " | ".join(texts).strip()
+            chunk = _text_from_table_row(el)
         elif el.name == "pre":
             chunk = _pre_plain_from_github_clipboard(el) or el.get_text(
                 separator="\n", strip=True
             )
         else:
-            chunk = el.get_text(separator=" ", strip=True)
+            chunk = _text_from_tag(el)
+            if el.name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+                heading_level = int(el.name[1])
         if chunk:
-            yield chunk
+            yield ExtractedBlock(kind=el.name, text=chunk, heading_level=heading_level)
+
+
+def _normalize_for_match(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _is_toc_heading(text: str) -> bool:
+    normalized = _normalize_for_match(text)
+    return normalized in _TOC_HEADING_NAMES
+
+
+def _looks_like_toc_entry(text: str) -> bool:
+    normalized = _normalize_for_match(text)
+    if not normalized:
+        return False
+    words = normalized.split()
+    if "http" in normalized:
+        return False
+    if len(words) <= 16 and len(text) <= 160 and not re.search(r"[.!?]\s*$", text):
+        return True
+    return False
+
+
+def _drop_table_of_contents_blocks(blocks: list[ExtractedBlock]) -> list[ExtractedBlock]:
+    """Remove ToC heading + immediate nav-like items that follow it."""
+    kept: list[ExtractedBlock] = []
+    i = 0
+    n = len(blocks)
+    while i < n:
+        block = blocks[i]
+        if _is_toc_heading(block.text):
+            i += 1
+            while i < n:
+                candidate = blocks[i]
+                if candidate.heading_level is not None:
+                    break
+                if candidate.kind == "li" or _looks_like_toc_entry(candidate.text):
+                    i += 1
+                    continue
+                break
+            continue
+        kept.append(block)
+        i += 1
+    return kept
+
+
+def _format_block_for_output(block: ExtractedBlock) -> str:
+    """Render extracted block with stable heading markers for chunking."""
+    if block.heading_level is not None:
+        return f"[H{block.heading_level}] {block.text}"
+    return block.text
 
 
 def _collapse_blank_lines(text: str) -> str:
@@ -175,9 +344,11 @@ def extract_readme_plain_text(html: str | None) -> str | None:
     assert isinstance(readme, Tag)
     # README subtree only: safe to strip in place (row HTML is not reused).
     _strip_noise(readme)
-    parts = list(_iter_leaf_blocks(readme))
-    if not parts:
+    blocks = list(_iter_leaf_blocks(readme))
+    blocks = _drop_table_of_contents_blocks(blocks)
+    if not blocks:
         return None
+    parts = [_format_block_for_output(block) for block in blocks]
     text = "\n\n".join(parts)
     text = _collapse_blank_lines(text)
     return text or None
@@ -344,7 +515,7 @@ def _self_test() -> None:
     </body></html>
     """
     out = extract_readme_plain_text(sample)
-    assert out and "Title" in out and "First para" in out and "code line" in out, out
+    assert out and "[H1] Title" in out and "First para" in out and "code line" in out, out
 
     gh_yaml = """
     <article class="markdown-body" itemprop="text"><div
@@ -354,6 +525,33 @@ def _self_test() -> None:
     """
     gh_out = extract_readme_plain_text(gh_yaml)
     assert gh_out and "enc_type: 'resnet18'" in gh_out and "junk" not in gh_out, gh_out
+
+    toc = """
+    <article class="markdown-body" itemprop="text">
+      <h2>Table of Contents</h2>
+      <ul>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#usage">Usage</a>
+          <ul><li><a href="#cli">CLI</a></li></ul>
+        </li>
+      </ul>
+      <h2>Install</h2>
+      <p>Use pip.</p>
+    </article>
+    """
+    toc_out = extract_readme_plain_text(toc)
+    assert toc_out and "Table of Contents" not in toc_out, toc_out
+    assert toc_out and "[H2] Install" in toc_out and "Use pip." in toc_out, toc_out
+
+    links = """
+    <article class="markdown-body" itemprop="text">
+      <p>Read <a href="https://example.com/paper">paper</a> and
+      <a href="https://example.com/very-descriptive-resource">segmentation benchmark details</a>.</p>
+    </article>
+    """
+    links_out = extract_readme_plain_text(links)
+    assert links_out and "paper (https://example.com/paper)" in links_out, links_out
+    assert links_out and "segmentation benchmark details" in links_out, links_out
 
     assert extract_readme_plain_text(None) is None
     assert extract_readme_plain_text("<html><body></body></html>") is None

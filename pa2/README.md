@@ -9,10 +9,12 @@ pa2/
 ├── README.md                  # This file — setup, DB restore (expanded in later phases)
 ├── pa2_context.ipynb           # Condensed assignment context for notebooks / collaborators
 ├── db/migrations/
-│   └── 001_page_cleaned_content.sql
+│   ├── 001_page_cleaned_content.sql
+│   └── 002_cleaned_content_canonicalization.sql
 ├── implementation-extraction/
 │   ├── requirements.txt
 │   ├── extract_readme.py      # Phase 1: HTML → README plain text → cleaned_content
+│   ├── build_canonical_content_map.py  # Canonical dedup map for segmentation
 │   └── demo.py                # Query demo for markers (later phases)
 └── extraction-db/              # PostgreSQL dumps and restore artefacts
 ```
@@ -37,6 +39,12 @@ pip install -r requirements.txt
    docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/001_page_cleaned_content.sql
    ```
 
+   Optional (only if duplicate cleaned pages are expected): canonical dedup mapping migration:
+
+   ```bash
+   docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/002_cleaned_content_canonicalization.sql
+   ```
+
 2. **Populate** text from GitHub-rendered README (`article.markdown-body[itemprop="text"]`) into `cleaned_content`:
 
    ```bash
@@ -48,7 +56,27 @@ pip install -r requirements.txt
 
    Rows without a README block (commits, wiki history, empty repo) receive `cleaned_content = NULL`.
 
+   Extraction now additionally:
+   - prevents nested-list flattening duplicates (common in ToC blocks),
+   - drops explicit Table-of-Contents sections,
+   - preserves weak anchor links as `label (https://...)`,
+   - prefixes headings as `[H1]` ... `[H6]` for downstream chunking.
+
 Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
+
+3. **Optional: build canonical cleaned-content mapping** (skip in our current pipeline, because duplicate pages were already removed during crawling):
+
+   ```bash
+   cd pa2/implementation-extraction
+   .venv/bin/python build_canonical_content_map.py
+   ```
+
+   If used, this materializes:
+   - `crawldb.cleaned_content_canonical` (one row per unique `cleaned_content`)
+   - `crawldb.page_cleaned_content_map` (maps every page to canonical content)
+
+   Use `--dry-run` to inspect canonical/mapped counts without writes.
+   This step is kept as a safeguard for future datasets where duplicate README content may reappear.
 
 **Connection**: defaults `localhost:5432`, database `crawldb`, user `user`, password `SecretPassword`. Override with `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
 
