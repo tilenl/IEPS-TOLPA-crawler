@@ -177,4 +177,77 @@ However, in our final pipeline this step is **not required**, because duplicate 
 
 ---
 
+## Segmentation strategy selected for Phase 2
+
+We evaluated three chunking families and selected **Strategy C (heading-aware + structure-aware)** as the implementation target for `crawldb.page_segment`.
+
+### Why Strategy C over A/B for this dataset
+
+- **Strategy A (fixed token windows)** is easy to baseline, but it can merge unrelated sections when windows cross heading boundaries.
+- **Strategy B (paragraph merge)** improves size stability, but still risks blending conceptually different subtopics when many short blocks are adjacent.
+- **Strategy C** leverages extraction-time `[H1]..[H6]` markers to preserve section semantics, which directly helps domain questions such as model recommendations and pipeline choices.
+
+In practice, the heading path (`README > section > subsection`) carries context that should remain coupled with each segment when generating embeddings.
+
+### Strategy C rules implemented
+
+1. **Section boundaries first:** segmentation never crosses heading transitions.
+2. **Adaptive size window:** target chunks are built toward a medium token range with a hard cap for outliers.
+3. **Structure-aware handling:**
+   - code and table-like blocks are kept atomic where possible,
+   - oversized atomic blocks are split internally with safe boundaries,
+   - list-heavy (awesome-list style) sections are grouped into medium bundles (not one giant chunk, not many tiny chunks).
+4. **Local overlap only:** one-block overlap is used only when a section is split due to size cap; overlap never crosses sections.
+5. **Deterministic chunk identity:** each row is stored by `(page_id, strategy, chunk_index)` for reproducible rebuilds and strategy comparisons.
+
+### Database extension for segmentation
+
+Phase 2 introduces `crawldb.page_segment` (migration `003_page_segment.sql`) with fields required for retrieval analysis before embeddings:
+- `page_id`, `chunk_index`, `strategy`,
+- `heading_path`, `segment_type`,
+- `segment_text`, `token_estimate`, `char_count`.
+
+This keeps segmentation experiments traceable and allows multiple strategy labels side-by-side without overwriting historical runs.
+
+### Segment type metadata and classification rules
+
+The `segment_type` label is not cosmetic; it captures the structural role of a chunk and helps downstream ranking/prompting.
+
+- **`prose`**: narrative/explanatory text blocks (typical README paragraphs).
+- **`list_bundle`**: grouped bullet/numbered items from list-heavy sections (for example awesome-list entries).
+- **`code_block`**: code/config/log-like content where line structure and symbols carry meaning.
+- **`table_rows`**: table-like rows where columns are important.
+- **`mixed`**: a merged chunk that contains multiple structural kinds (for example prose + code snippet).
+
+`code_block` is assigned using explicit heuristics during block classification:
+- fenced markers (```) indicate code immediately,
+- line-level indentation patterns (`    ` or tab-prefixed lines) indicate preformatted blocks,
+- symbol-heavy lines (e.g. many `{ } ( ) : = < > # [ ]`) suggest config/code/log syntax,
+- for multi-line blocks, high punctuation/code-symbol density increases confidence that the block is code-like.
+
+This rule-set is intentionally conservative: we prefer preserving technical formatting as `code_block` instead of flattening it into prose, because many repository answers depend on exact option names, keys, commands, or stack-trace fragments.
+
+### How this metadata improves LLM answers
+
+The retrieval payload can include `heading_path`, `segment_type`, and size metadata (`token_estimate`, `char_count`) alongside `segment_text`. This adds context for the LLM before answer generation:
+- **Better interpretation:** `heading_path` tells the model where the text sits in repository structure (`README > Training > Hyperparameters`).
+- **Better weighting:** `segment_type` allows the pipeline to prioritize `prose` for conceptual questions and `code_block`/`table_rows` for implementation-detail questions.
+- **Safer synthesis:** metadata reduces accidental blending of unrelated sections and helps justify why a segment is relevant.
+
+As additional provenance metadata, we also include the **original repository link** for each segment (resolved from `page_id` by joining to the source page URL). This enables citation-ready answers where the LLM can state where the information came from, improving transparency and trust in generated responses.
+
+### Expected advantages and known trade-offs
+
+**Advantages**
+- Better topical purity per chunk (less cross-section bleed).
+- Stronger retrieval context due to stored heading path.
+- Better behavior on mixed README layouts (prose + lists + config/code blocks).
+
+**Trade-offs**
+- More complex parser/chunker logic than fixed windows.
+- Heuristics are tuned for README-like markdown and may require adjustment for non-standard pages.
+- Token counts are estimated (fast) and not model-tokenizer exact; exact tokenizer integration can be added later if needed.
+
+---
+
 *Last aligned with extraction logic in [`implementation-extraction/extract_readme.py`](implementation-extraction/extract_readme.py). Extend this file when chunking, embeddings, querying, and reranking are finalized.*

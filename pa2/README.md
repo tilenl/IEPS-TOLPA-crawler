@@ -10,11 +10,13 @@ pa2/
 ├── pa2_context.ipynb           # Condensed assignment context for notebooks / collaborators
 ├── db/migrations/
 │   ├── 001_page_cleaned_content.sql
-│   └── 002_cleaned_content_canonicalization.sql
+│   ├── 002_cleaned_content_canonicalization.sql
+│   └── 003_page_segment.sql
 ├── implementation-extraction/
 │   ├── requirements.txt
 │   ├── extract_readme.py      # Phase 1: HTML → README plain text → cleaned_content
 │   ├── build_canonical_content_map.py  # Canonical dedup map for segmentation
+│   ├── segment_cleaned_content.py  # Phase 2: Strategy C segmentation → page_segment
 │   └── demo.py                # Query demo for markers (later phases)
 └── extraction-db/              # PostgreSQL dumps and restore artefacts
 ```
@@ -77,6 +79,41 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
    Use `--dry-run` to inspect canonical/mapped counts without writes.
    This step is kept as a safeguard for future datasets where duplicate README content may reappear.
+
+## Phase 2 — Strategy C segmentation (`page_segment`)
+
+1. **Migration** (once per database): apply [`db/migrations/003_page_segment.sql`](db/migrations/003_page_segment.sql) to create `crawldb.page_segment`.
+
+   ```bash
+   docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/003_page_segment.sql
+   ```
+
+2. **Run Strategy C segmentation** (heading-aware + structure-aware):
+
+   ```bash
+   cd pa2/implementation-extraction
+   .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v1 --rebuild
+   ```
+
+   Recommended first smoke test:
+
+   ```bash
+   .venv/bin/python segment_cleaned_content.py --dry-run --limit 50 --verbose
+   ```
+
+3. **Segment behavior highlights**:
+   - section boundaries are derived from `[H1]` ... `[H6]` markers in `cleaned_content`,
+   - list-heavy pages are bundled into medium list groups (instead of microchunks),
+   - code/table-like blocks remain atomic where possible and are split safely when oversized,
+   - one-block overlap is applied only for cap-triggered splits inside one section,
+   - rows are deterministic per `(page_id, strategy, chunk_index)` and can be rebuilt by strategy.
+
+4. **Useful CLI flags**:
+   - `--page-id <id>`: process a single page for debugging,
+   - `--batch-size <n>`: insert/update threshold,
+   - `--dry-run`: compute quality stats without writes,
+   - `--rebuild`: delete old rows for the chosen strategy before inserting,
+   - `--self-test`: run embedded algorithm checks without DB access.
 
 **Connection**: defaults `localhost:5432`, database `crawldb`, user `user`, password `SecretPassword`. Override with `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
 
