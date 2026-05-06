@@ -11,12 +11,14 @@ pa2/
 ├── db/migrations/
 │   ├── 001_page_cleaned_content.sql
 │   ├── 002_cleaned_content_canonicalization.sql
-│   └── 003_page_segment.sql
+│   ├── 003_page_segment.sql
+│   └── 004_page_segment_embedding.sql
 ├── implementation-extraction/
 │   ├── requirements.txt
 │   ├── extract_readme.py      # Phase 1: HTML → README plain text → cleaned_content
 │   ├── build_canonical_content_map.py  # Canonical dedup map for segmentation
 │   ├── segment_cleaned_content.py  # Phase 2: Strategy C segmentation → page_segment
+│   ├── embed_page_segments.py  # Phase 4: MiniLM embeddings → page_segment.embedding
 │   └── demo.py                # Query demo for markers (later phases)
 └── extraction-db/              # PostgreSQL dumps and restore artefacts
 ```
@@ -133,6 +135,45 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - `PA2_V2_HARD_CAP_TOKENS` (default `240`)
    - `PA2_V2_SMALL_SUBSECTION_MAX_TOKENS` (default `40`)
    - `PA2_V2_LOCAL_FILES_ONLY=1` to force tokenizer loading from local cache only.
+
+## Phase 4 — Embeddings (`page_segment.embedding`)
+
+1. **Migration** (once per database): apply [`db/migrations/004_page_segment_embedding.sql`](db/migrations/004_page_segment_embedding.sql).
+
+   ```bash
+   docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/004_page_segment_embedding.sql
+   ```
+
+   This migration:
+   - enables pgvector extension (`CREATE EXTENSION IF NOT EXISTS vector`),
+   - adds `embedding vector(384)` to `crawldb.page_segment`,
+   - creates cosine HNSW ANN index (`vector_cosine_ops`).
+
+2. **Generate embeddings** with `all-MiniLM-L6-v2`:
+
+   ```bash
+   cd pa2/implementation-extraction
+   .venv/bin/python embed_page_segments.py --strategy heading_structure_v2 --batch-size 64
+   ```
+
+3. **Recommended smoke test** (no writes):
+
+   ```bash
+   .venv/bin/python embed_page_segments.py --strategy heading_structure_v2 --limit 200 --dry-run --verbose
+   ```
+
+4. **Useful CLI flags**:
+   - `--rebuild-embeddings`: re-encode rows even if embedding already exists,
+   - `--page-id <id>`: isolate one page during debugging,
+   - `--max-retries <n>` and `--retry-delay-seconds <s>`: tune failure recovery,
+   - `--near-zero-norm-threshold <f>`: stricter/looser anomaly warning,
+   - `--no-normalize`: disable L2 normalization during encoding.
+
+5. **Diagnostics logged per run**:
+   - rows seen/embedded/skipped/failed,
+   - norm distribution (min/median/p95),
+   - near-zero vector count,
+   - sparse-vector count (very low non-zero dimension ratio).
 
 **Connection**: defaults `localhost:5432`, database `crawldb`, user `user`, password `SecretPassword`. Override with `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
 

@@ -305,4 +305,46 @@ segments)
 
 ---
 
+## Phase 4 — Embeddings and storage implementation
+
+Phase 4 is implemented as a dedicated pipeline (`implementation-extraction/embed_page_segments.py`) that reads rows from `crawldb.page_segment`, encodes `segment_text`, and writes vectors back to `crawldb.page_segment.embedding`.
+
+### Model and dimensionality choice
+
+- Primary model: `sentence-transformers/all-MiniLM-L6-v2` (English README corpus, strong quality/speed trade-off).
+- Embedding dimension is fixed to **384**, and both schema and runtime checks enforce this:
+  - migration `004_page_segment_embedding.sql` defines `embedding vector(384)`,
+  - the script validates `model.get_sentence_embedding_dimension() == 384` before processing.
+
+This prevents the common mismatch error where a `vector(768)` schema is used with a 384-dimensional model.
+
+### Storage and index decisions
+
+We use pgvector inside PostgreSQL:
+
+- `CREATE EXTENSION IF NOT EXISTS vector`,
+- `ALTER TABLE crawldb.page_segment ADD COLUMN IF NOT EXISTS embedding vector(384)`,
+- cosine ANN index: `USING hnsw (embedding vector_cosine_ops)`.
+
+Cosine search is aligned with normalized sentence embeddings and with the retrieval setup planned for `demo.py`.
+
+### Reliability and quality checks
+
+The embedding pipeline includes resilience and sanity diagnostics:
+
+- **Batch processing + retries**: failed batches are retried with bounded backoff; failed rows are reported explicitly.
+- **Safe transactions**: each batch uses commit/rollback boundaries to avoid partial corrupt writes.
+- **Anomaly logging**:
+  - near-zero vector norm count (possible encoding/runtime issues),
+  - sparse vector count (very low non-zero-dimension ratio),
+  - norm distribution (`min`, `median`, `p95`) for quick run-level health checks.
+- **Data hygiene**: empty `segment_text` rows are skipped and counted.
+
+### Alternatives considered but not implemented in this phase
+
+- Running multiple embedding models in parallel (deferred to keep Phase 4 reproducible and focused).
+- Canonical-content-first embedding (`cleaned_content_canonical`) remains available but is not required for the current deduplicated dataset.
+
+---
+
 *Last aligned with extraction logic in [`implementation-extraction/extract_readme.py`](implementation-extraction/extract_readme.py). Extend this file when chunking, embeddings, querying, and reranking are finalized.*
