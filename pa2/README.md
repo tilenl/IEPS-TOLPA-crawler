@@ -95,6 +95,12 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v1 --rebuild
    ```
 
+   New variant for collapse-then-split behavior with strict MiniLM tokenizer budgeting:
+
+   ```bash
+   .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v2 --rebuild
+   ```
+
    Recommended first smoke test:
 
    ```bash
@@ -114,6 +120,19 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - `--dry-run`: compute quality stats without writes,
    - `--rebuild`: delete old rows for the chosen strategy before inserting,
    - `--self-test`: run embedded algorithm checks without DB access.
+
+5. **`heading_structure_v2` token policy** (for `all-MiniLM-L6-v2`):
+   - strict tokenizer counting (not regex/word estimation),
+   - Stage A: collapse small sibling subsections under the same parent heading,
+   - Stage B: split oversized chunks by subsection/paragraph/sentence/token-window fallbacks,
+   - child subsection names are injected into `segment_text` (`### subsection`) when collapsed.
+
+   Optional environment overrides:
+   - `PA2_V2_TARGET_TOKENS` (default `200`)
+   - `PA2_V2_COLLAPSE_UPPER_BOUND_TOKENS` (default `220`)
+   - `PA2_V2_HARD_CAP_TOKENS` (default `240`)
+   - `PA2_V2_SMALL_SUBSECTION_MAX_TOKENS` (default `40`)
+   - `PA2_V2_LOCAL_FILES_ONLY=1` to force tokenizer loading from local cache only.
 
 **Connection**: defaults `localhost:5432`, database `crawldb`, user `user`, password `SecretPassword`. Override with `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
 

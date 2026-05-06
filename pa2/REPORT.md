@@ -236,6 +236,41 @@ The retrieval payload can include `heading_path`, `segment_type`, and size metad
 
 As additional provenance metadata, we also include the **original repository link** for each segment (resolved from `page_id` by joining to the source page URL). This enables citation-ready answers where the LLM can state where the information came from, improving transparency and trust in generated responses.
 
+### `heading_structure_v2`: combine-then-split refinement
+
+After running `heading_structure_v1`, we observed many micro-segments on subsection-heavy pages. To address this, we added `heading_structure_v2` with a two-stage policy:
+
+1. **Combine stage (section-aware collapse):**
+   - sibling subsections under the same parent are merged when they are individually small and the merged chunk stays below a collapse upper bound;
+   - subsection labels are moved into `segment_text` (for example `### Our best model yet`) so local structure is preserved even when `heading_path` is promoted to the parent section.
+2. **Split stage (strict safety):**
+   - chunks above the model cap are split by boundary priority:
+     1. subsection boundary,
+     2. paragraph boundary,
+     3. sentence boundary,
+     4. tokenizer-window fallback.
+
+This design is constrained by the embedding model limit: `all-MiniLM-L6-v2` has a maximum sequence length of **256 tokens**. Because of that, v2 uses **tokenizer-based budgeting** (accurate to the model budget, but slower) instead of simple word/regex budgeting (faster, but less accurate).
+
+For this strategy, token lengths are measured using the actual tokenizer of `sentence-transformers/all-MiniLM-L6-v2`. This ensures chunk budgets match what the embedding model actually sees at inference time.
+
+We also track additional quality diagnostics for v2:
+- percentage of chunks shorter than 20/40 tokens (micro-chunk rate),
+- percentage of chunks above the configured hard cap (must be 0),
+- min/median/p95 token counts and per-page chunk spread.
+
+### Quality statistics after improvement
+
+After recomputing segmentation with `heading_structure_v2` on the full dataset:
+- pages read: `4031` (of all the 5000 HTML pages, some did not contain README files at all, and this is why only 4031 pages were read in the end)
+- pages with segments: `4011` (coverage `99.5%`) (additionally 20 pages with README files had them empty, and as such had no segments)
+- total segments: `46603`
+- tokens per segment: min `3`, median `149`, p95 `236`
+- micro-segments: `<20` tokens `955` (`2.0%`), `<40` tokens `3766` (`8.1%`) (repositories with only a few words in the README could not be grouped any more, as the few words are all that was in the README file. As such, these repositories explain why we have 2% micro-segments under 20 tokens, and 8.1% micro segments under 40 tokens)
+- overflow above hard cap (`240` tokens): `0` (`0.0%`)
+
+We do not have fully comparable stored statistics from the pre-improvement implementation in this report section, but the earlier behavior clearly produced many fragmented micro-segments. The v2 numbers above show that token density is now much closer to the target budget while still respecting the hard cap.
+
 ### Expected advantages and known trade-offs
 
 **Advantages**
@@ -246,7 +281,7 @@ As additional provenance metadata, we also include the **original repository lin
 **Trade-offs**
 - More complex parser/chunker logic than fixed windows.
 - Heuristics are tuned for README-like markdown and may require adjustment for non-standard pages.
-- Token counts are estimated (fast) and not model-tokenizer exact; exact tokenizer integration can be added later if needed.
+- Tokenizer-based budgeting is more accurate for model limits, but slower than lightweight word/regex estimates.
 
 ---
 

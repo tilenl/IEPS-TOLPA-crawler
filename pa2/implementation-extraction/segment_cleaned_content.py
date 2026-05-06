@@ -28,14 +28,16 @@ import logging
 import os
 import re
 import statistics
+from functools import lru_cache
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 HEADING_RE = re.compile(r"^\[H([1-6])\]\s+(.+?)\s*$")
 WORDLIKE_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 LIST_LINE_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)")
 
 DEFAULT_STRATEGY = "heading_structure_v1"
+V2_STRATEGY = "heading_structure_v2"
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,13 @@ class SegmentationConfig:
     list_bundle_max_items: int = 15
     overlap_blocks_when_split: int = 1
     root_heading: str = "README"
+    # v2 combine-then-split configuration (strict tokenizer counting).
+    v2_target_tokens: int = 200
+    v2_collapse_upper_bound_tokens: int = 220
+    v2_hard_cap_tokens: int = 240
+    v2_small_subsection_max_tokens: int = 40
+    v2_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    v2_local_files_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,12 +96,80 @@ class RunStats:
     chunks_per_page: list[int] | None = None
     tokens_per_segment: list[int] | None = None
     strategy: str = DEFAULT_STRATEGY
+    short_chunks_lt20: int = 0
+    short_chunks_lt40: int = 0
+    overflow_chunks_gt_cap: int = 0
+    hard_cap_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.chunks_per_page is None:
             self.chunks_per_page = []
         if self.tokens_per_segment is None:
             self.tokens_per_segment = []
+
+
+@dataclass(frozen=True)
+class V2SectionUnit:
+    """Section-level unit for v2 collapse and split stages."""
+
+    full_heading_path: str | None
+    parent_heading_path: str | None
+    heading_title: str
+    text: str
+    segment_type: str
+    tokens: int
+
+
+@dataclass(frozen=True)
+class V2ChunkPart:
+    """One subsection contribution inside a v2 packed chunk."""
+
+    heading_title: str
+    text: str
+    segment_type: str
+    tokens: int
+
+
+@dataclass(frozen=True)
+class V2PackedChunk:
+    """Intermediate packed chunk before final hard-cap splitting."""
+
+    heading_path: str | None
+    parts: list[V2ChunkPart]
+
+
+@lru_cache(maxsize=1)
+def _get_v2_tokenizer(model_name: str, local_files_only: bool) -> Any:
+    """Load and cache tokenizer used for strict v2 token budgeting."""
+    from transformers import AutoTokenizer
+
+    try:
+        return AutoTokenizer.from_pretrained(
+            model_name,
+            local_files_only=local_files_only,
+            use_fast=True,
+        )
+    except Exception as exc:
+        mode = "local cache only" if local_files_only else "download/cache"
+        raise RuntimeError(
+            f"Unable to load tokenizer '{model_name}' in {mode} mode. "
+            "For strict heading_structure_v2 token counting, ensure model files are available."
+        ) from exc
+
+
+def _count_tokens(text: str, cfg: SegmentationConfig, *, strict: bool) -> int:
+    """Count tokens with either strict model tokenizer or fast estimate."""
+    if not strict:
+        return _estimate_tokens(text)
+    tokenizer = _get_v2_tokenizer(cfg.v2_model_name, cfg.v2_local_files_only)
+    encoded = tokenizer(
+        text,
+        add_special_tokens=True,
+        truncation=False,
+        return_attention_mask=False,
+        return_token_type_ids=False,
+    )
+    return len(encoded["input_ids"])
 
 
 def _resolve_conn_kwargs() -> dict[str, Any]:
@@ -178,6 +255,29 @@ def _heading_path_from_stack(heading_stack: list[tuple[int, str]]) -> str | None
     if not heading_stack:
         return None
     return " > ".join([title for _, title in heading_stack])
+
+
+def _split_heading_path(heading_path: str | None) -> list[str]:
+    """Split heading path into components while dropping empty fragments."""
+    if not heading_path:
+        return []
+    return [part.strip() for part in heading_path.split(" > ") if part.strip()]
+
+
+def _parent_heading_path(heading_path: str | None) -> str | None:
+    """Return parent heading path (without the last component)."""
+    parts = _split_heading_path(heading_path)
+    if len(parts) <= 1:
+        return heading_path
+    return " > ".join(parts[:-1])
+
+
+def _last_heading_title(heading_path: str | None, cfg: SegmentationConfig) -> str:
+    """Return last heading title or root fallback label."""
+    parts = _split_heading_path(heading_path)
+    if not parts:
+        return cfg.root_heading
+    return parts[-1]
 
 
 def _split_oversize_block(block: Block, hard_cap_tokens: int) -> list[Block]:
@@ -376,14 +476,8 @@ def _emit_chunk(
     )
 
 
-def segment_page_cleaned_content(
-    *,
-    page_id: int,
-    cleaned_content: str,
-    strategy: str,
-    cfg: SegmentationConfig,
-) -> list[Segment]:
-    """Segment one page into Strategy C chunks."""
+def _segment_page_v1(*, page_id: int, cleaned_content: str, strategy: str, cfg: SegmentationConfig) -> list[Segment]:
+    """Original v1 segmentation flow (kept unchanged for A/B comparison)."""
     parsed = _split_cleaned_content_into_blocks(cleaned_content)
     if not parsed:
         return []
@@ -435,6 +529,423 @@ def segment_page_cleaned_content(
             chunk_index += 1
 
     return segments
+
+
+def _build_v2_section_units(parsed: list[Block], cfg: SegmentationConfig) -> list[V2SectionUnit]:
+    """Build section-local units consumed by v2 collapse and split stages."""
+    units: list[V2SectionUnit] = []
+    for heading_path, section_blocks in _iter_sections(parsed, cfg):
+        prepared = _bundle_consecutive_list_items(section_blocks, cfg)
+        if not prepared:
+            continue
+        section_text = "\n\n".join(block.text for block in prepared).strip()
+        if not section_text:
+            continue
+        units.append(
+            V2SectionUnit(
+                full_heading_path=heading_path,
+                parent_heading_path=_parent_heading_path(heading_path),
+                heading_title=_last_heading_title(heading_path, cfg),
+                text=section_text,
+                segment_type=_segment_type_for_chunk(prepared),
+                tokens=_count_tokens(section_text, cfg, strict=True),
+            )
+        )
+    return units
+
+
+def _collapse_v2_small_subsections(units: list[V2SectionUnit], cfg: SegmentationConfig) -> list[V2PackedChunk]:
+    """Stage A: merge sibling small subsections under same parent heading."""
+    packed: list[V2PackedChunk] = []
+    active_parent: str | None = None
+    active_parts: list[V2ChunkPart] = []
+    active_tokens = 0
+
+    def flush_active() -> None:
+        nonlocal active_parent, active_parts, active_tokens
+        if active_parts:
+            packed.append(V2PackedChunk(heading_path=active_parent, parts=list(active_parts)))
+        active_parent = None
+        active_parts = []
+        active_tokens = 0
+
+    for unit in units:
+        is_small_unit = unit.tokens <= cfg.v2_small_subsection_max_tokens
+        if unit.tokens >= cfg.v2_collapse_upper_bound_tokens:
+            flush_active()
+            packed.append(
+                V2PackedChunk(
+                    heading_path=unit.full_heading_path,
+                    parts=[
+                        V2ChunkPart(
+                            heading_title=unit.heading_title,
+                            text=unit.text,
+                            segment_type=unit.segment_type,
+                            tokens=unit.tokens,
+                        )
+                    ],
+                )
+            )
+            continue
+
+        can_extend_active = (
+            active_parts
+            and active_parent == unit.parent_heading_path
+            and active_tokens + unit.tokens <= cfg.v2_collapse_upper_bound_tokens
+        )
+        should_start_or_extend_collapse = is_small_unit or bool(active_parts)
+
+        if should_start_or_extend_collapse and can_extend_active:
+            active_parts.append(
+                V2ChunkPart(
+                    heading_title=unit.heading_title,
+                    text=unit.text,
+                    segment_type=unit.segment_type,
+                    tokens=unit.tokens,
+                )
+            )
+            active_tokens += unit.tokens
+            continue
+
+        flush_active()
+        if should_start_or_extend_collapse:
+            active_parent = unit.parent_heading_path
+            active_parts = [
+                V2ChunkPart(
+                    heading_title=unit.heading_title,
+                    text=unit.text,
+                    segment_type=unit.segment_type,
+                    tokens=unit.tokens,
+                )
+            ]
+            active_tokens = unit.tokens
+            continue
+
+        packed.append(
+            V2PackedChunk(
+                heading_path=unit.full_heading_path,
+                parts=[
+                    V2ChunkPart(
+                        heading_title=unit.heading_title,
+                        text=unit.text,
+                        segment_type=unit.segment_type,
+                        tokens=unit.tokens,
+                    )
+                ],
+            )
+        )
+
+    flush_active()
+    return packed
+
+
+def _render_v2_part(part: V2ChunkPart) -> str:
+    """Render one child subsection contribution inside a collapsed segment."""
+    if part.heading_title.strip():
+        return f"### {part.heading_title}\n{part.text}".strip()
+    return part.text.strip()
+
+
+def _split_v2_text_by_token_cap(
+    text: str,
+    cfg: SegmentationConfig,
+    *,
+    kind_hint: str,
+) -> list[str]:
+    """Split text by cap-aware fallbacks while preserving structure as much as possible."""
+    if _count_tokens(text, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+        return [text]
+
+    def force_char_splits(value: str) -> list[str]:
+        """Split extremely long continuous strings (e.g. URLs) by char spans."""
+        if not value:
+            return []
+        if _count_tokens(value, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            return [value]
+        pieces: list[str] = []
+        start = 0
+        while start < len(value):
+            low = start + 1
+            high = len(value)
+            best = low
+            while low <= high:
+                mid = (low + high) // 2
+                candidate = value[start:mid]
+                if not candidate:
+                    low = mid + 1
+                    continue
+                if _count_tokens(candidate, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+                    best = mid
+                    low = mid + 1
+                else:
+                    high = mid - 1
+            piece = value[start:best].strip()
+            if piece:
+                pieces.append(piece)
+            start = max(best, start + 1)
+        return pieces
+
+    # NOTE: Keep line boundaries for code/table-like chunks whenever possible.
+    if kind_hint in {"code_block", "table_rows"}:
+        lines = [line for line in text.splitlines() if line.strip()]
+        out: list[str] = []
+        current: list[str] = []
+        for line in lines:
+            candidate = "\n".join(current + [line]).strip()
+            if current and _count_tokens(candidate, cfg, strict=True) > cfg.v2_hard_cap_tokens:
+                out.append("\n".join(current).strip())
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            out.append("\n".join(current).strip())
+        normalized = [chunk for chunk in out if chunk]
+        if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+            return normalized
+        refined: list[str] = []
+        for chunk in normalized:
+            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+                refined.append(chunk)
+            else:
+                # NOTE: Some logs/CSV rows are single lines that still exceed cap; use generic fallback.
+                refined.extend(
+                    _split_v2_text_by_token_cap(
+                        chunk,
+                        cfg,
+                        kind_hint="prose",
+                    )
+                )
+        return refined
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(paragraphs) > 1:
+        out: list[str] = []
+        current: list[str] = []
+        for paragraph in paragraphs:
+            candidate = "\n\n".join(current + [paragraph]).strip()
+            if current and _count_tokens(candidate, cfg, strict=True) > cfg.v2_hard_cap_tokens:
+                out.append("\n\n".join(current).strip())
+                current = [paragraph]
+            else:
+                current.append(paragraph)
+        if current:
+            out.append("\n\n".join(current).strip())
+        normalized = [chunk for chunk in out if chunk]
+        if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+            return normalized
+        refined: list[str] = []
+        for chunk in normalized:
+            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+                refined.append(chunk)
+            else:
+                refined.extend(
+                    _split_v2_text_by_token_cap(
+                        chunk,
+                        cfg,
+                        kind_hint=kind_hint,
+                    )
+                )
+        return refined
+
+    # Sentence fallback.
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if len(sentences) > 1:
+        out: list[str] = []
+        current: list[str] = []
+        for sentence in sentences:
+            candidate = " ".join(current + [sentence]).strip()
+            if current and _count_tokens(candidate, cfg, strict=True) > cfg.v2_hard_cap_tokens:
+                out.append(" ".join(current).strip())
+                current = [sentence]
+            else:
+                current.append(sentence)
+        if current:
+            out.append(" ".join(current).strip())
+        normalized = [chunk for chunk in out if chunk]
+        if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+            return normalized
+        refined: list[str] = []
+        for chunk in normalized:
+            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+                refined.append(chunk)
+            else:
+                refined.extend(
+                    _split_v2_text_by_token_cap(
+                        chunk,
+                        cfg,
+                        kind_hint=kind_hint,
+                    )
+                )
+        return refined
+
+    # Last resort: strict token windows by words.
+    words = text.split()
+    out: list[str] = []
+    start = 0
+    while start < len(words):
+        low = start + 1
+        high = len(words)
+        best = low
+        while low <= high:
+            mid = (low + high) // 2
+            candidate = " ".join(words[start:mid]).strip()
+            if not candidate:
+                low = mid + 1
+                continue
+            if _count_tokens(candidate, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        chunk = " ".join(words[start:best]).strip()
+        if chunk:
+            if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+                out.append(chunk)
+            else:
+                out.extend(force_char_splits(chunk))
+        start = max(best, start + 1)
+    normalized = [chunk for chunk in out if chunk]
+    if all(_count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens for chunk in normalized):
+        return normalized
+    fully_enforced: list[str] = []
+    for chunk in normalized:
+        if _count_tokens(chunk, cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            fully_enforced.append(chunk)
+        else:
+            fully_enforced.extend(force_char_splits(chunk))
+    return [chunk for chunk in fully_enforced if chunk]
+
+
+def _split_v2_packed_chunks(packed_chunks: list[V2PackedChunk], cfg: SegmentationConfig) -> list[V2PackedChunk]:
+    """Stage B: enforce hard cap using boundary-priority splitting."""
+    out: list[V2PackedChunk] = []
+    for packed in packed_chunks:
+        rendered_parts = [_render_v2_part(part) for part in packed.parts]
+        rendered_tokens = [_count_tokens(text, cfg, strict=True) for text in rendered_parts]
+        if _count_tokens("\n\n".join(rendered_parts), cfg, strict=True) <= cfg.v2_hard_cap_tokens:
+            out.append(packed)
+            continue
+
+        # Priority 1: split by child subsection boundaries.
+        if len(packed.parts) > 1:
+            current_parts: list[V2ChunkPart] = []
+            current_rendered_parts: list[str] = []
+            for part, rendered_text, part_tokens in zip(packed.parts, rendered_parts, rendered_tokens):
+                if part_tokens > cfg.v2_hard_cap_tokens:
+                    if current_parts:
+                        out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
+                        current_parts = []
+                        current_rendered_parts = []
+                    for text in _split_v2_text_by_token_cap(
+                        rendered_text,
+                        cfg,
+                        kind_hint=part.segment_type,
+                    ):
+                        out.append(
+                            V2PackedChunk(
+                                heading_path=packed.heading_path,
+                                parts=[
+                                    V2ChunkPart(
+                                        heading_title="",
+                                        text=text,
+                                        segment_type=part.segment_type,
+                                        tokens=_count_tokens(text, cfg, strict=True),
+                                    )
+                                ],
+                            )
+                        )
+                    continue
+                candidate_joined = "\n\n".join(current_rendered_parts + [rendered_text]).strip()
+                if current_parts and _count_tokens(candidate_joined, cfg, strict=True) > cfg.v2_hard_cap_tokens:
+                    out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
+                    current_parts = [part]
+                    current_rendered_parts = [rendered_text]
+                else:
+                    current_parts.append(part)
+                    current_rendered_parts.append(rendered_text)
+            if current_parts:
+                out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
+            continue
+
+        # Priorities 2-4: split one large part by paragraph/sentence/window fallback.
+        single_part = packed.parts[0]
+        chunks = _split_v2_text_by_token_cap(
+            _render_v2_part(single_part),
+            cfg,
+            kind_hint=single_part.segment_type,
+        )
+        for text in chunks:
+            out.append(
+                V2PackedChunk(
+                    heading_path=packed.heading_path,
+                    parts=[
+                        V2ChunkPart(
+                            heading_title="",
+                            text=text,
+                            segment_type=single_part.segment_type,
+                            tokens=_count_tokens(text, cfg, strict=True),
+                        )
+                    ],
+                )
+            )
+    return out
+
+
+def _segment_page_v2(*, page_id: int, cleaned_content: str, strategy: str, cfg: SegmentationConfig) -> list[Segment]:
+    """v2 strategy: collapse small subsections first, then split oversized chunks."""
+    parsed = _split_cleaned_content_into_blocks(cleaned_content)
+    if not parsed:
+        return []
+
+    units = _build_v2_section_units(parsed, cfg)
+    packed = _collapse_v2_small_subsections(units, cfg)
+    final_chunks = _split_v2_packed_chunks(packed, cfg)
+
+    segments: list[Segment] = []
+    for chunk_index, packed_chunk in enumerate(final_chunks):
+        chunk_text = "\n\n".join(_render_v2_part(part) for part in packed_chunk.parts).strip()
+        segment_type = "mixed"
+        part_types = {part.segment_type for part in packed_chunk.parts}
+        if len(part_types) == 1:
+            only = next(iter(part_types))
+            if only in {"prose", "code_block", "table_rows", "list_bundle"}:
+                segment_type = only
+        segments.append(
+            Segment(
+                page_id=page_id,
+                chunk_index=chunk_index,
+                strategy=strategy,
+                heading_path=packed_chunk.heading_path,
+                segment_type=segment_type,
+                segment_text=chunk_text,
+                token_estimate=_count_tokens(chunk_text, cfg, strict=True),
+                char_count=len(chunk_text),
+            )
+        )
+    return segments
+
+
+def segment_page_cleaned_content(
+    *,
+    page_id: int,
+    cleaned_content: str,
+    strategy: str,
+    cfg: SegmentationConfig,
+) -> list[Segment]:
+    """Segment one page using the requested strategy version."""
+    if strategy == V2_STRATEGY:
+        return _segment_page_v2(
+            page_id=page_id,
+            cleaned_content=cleaned_content,
+            strategy=strategy,
+            cfg=cfg,
+        )
+    return _segment_page_v1(
+        page_id=page_id,
+        cleaned_content=cleaned_content,
+        strategy=strategy,
+        cfg=cfg,
+    )
 
 
 def _fetch_candidate_pages(
@@ -566,6 +1077,20 @@ def _log_quality_summary(stats: RunStats) -> None:
         token_p95,
     )
     logging.info("heading_path non-null ratio: %.1f%%", heading_coverage)
+    if stats.total_segments > 0:
+        short20_ratio = 100.0 * stats.short_chunks_lt20 / stats.total_segments
+        short40_ratio = 100.0 * stats.short_chunks_lt40 / stats.total_segments
+        overflow_ratio = 100.0 * stats.overflow_chunks_gt_cap / stats.total_segments
+        logging.info(
+            "micro/overflow: <20=%s (%.1f%%) <40=%s (%.1f%%) >cap(%s)=%s (%.1f%%)",
+            stats.short_chunks_lt20,
+            short20_ratio,
+            stats.short_chunks_lt40,
+            short40_ratio,
+            stats.hard_cap_tokens,
+            stats.overflow_chunks_gt_cap,
+            overflow_ratio,
+        )
 
     # NOTE: These warnings enforce the acceptance criteria as practical guardrails.
     if coverage < 95.0:
@@ -582,6 +1107,12 @@ def _log_quality_summary(stats: RunStats) -> None:
         logging.warning(
             "95th percentile chunk size is high (%s tokens). Consider stricter split rules.",
             token_p95,
+        )
+    if stats.overflow_chunks_gt_cap > 0:
+        logging.warning(
+            "Found %s chunks above configured hard cap (%s).",
+            stats.overflow_chunks_gt_cap,
+            stats.hard_cap_tokens,
         )
 
 
@@ -607,8 +1138,19 @@ def run_segmentation(
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
 
-    cfg = SegmentationConfig()
+    cfg = SegmentationConfig(
+        v2_target_tokens=int(os.environ.get("PA2_V2_TARGET_TOKENS", "200")),
+        v2_collapse_upper_bound_tokens=int(
+            os.environ.get("PA2_V2_COLLAPSE_UPPER_BOUND_TOKENS", "220")
+        ),
+        v2_hard_cap_tokens=int(os.environ.get("PA2_V2_HARD_CAP_TOKENS", "240")),
+        v2_small_subsection_max_tokens=int(
+            os.environ.get("PA2_V2_SMALL_SUBSECTION_MAX_TOKENS", "40")
+        ),
+        v2_local_files_only=os.environ.get("PA2_V2_LOCAL_FILES_ONLY", "0") in {"1", "true", "TRUE"},
+    )
     stats = RunStats(strategy=strategy)
+    stats.hard_cap_tokens = cfg.v2_hard_cap_tokens if strategy == V2_STRATEGY else cfg.hard_cap_tokens
     conn_kwargs = _resolve_conn_kwargs()
     with psycopg.connect(**conn_kwargs, autocommit=False) as conn:
         conn.execute("SET search_path TO crawldb, public")
@@ -634,6 +1176,12 @@ def run_segmentation(
                 if segment.heading_path:
                     stats.heading_path_non_null_segments += 1
                 stats.tokens_per_segment.append(segment.token_estimate)
+                if segment.token_estimate < 20:
+                    stats.short_chunks_lt20 += 1
+                if segment.token_estimate < 40:
+                    stats.short_chunks_lt40 += 1
+                if segment.token_estimate > stats.hard_cap_tokens:
+                    stats.overflow_chunks_gt_cap += 1
             pending.extend(segments)
 
             if not dry_run and len(pending) >= batch_size:
