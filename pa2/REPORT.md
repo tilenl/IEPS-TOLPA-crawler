@@ -227,6 +227,9 @@ The `segment_type` label is not cosmetic; it captures the structural role of a c
 
 This rule-set is intentionally conservative: we prefer preserving technical formatting as `code_block` instead of flattening it into prose, because many repository answers depend on exact option names, keys, commands, or stack-trace fragments.
 
+**Dynamic type assignment during chunking:**
+When combining multiple blocks or parts into a single segment (e.g., during v2/v3 packing), the segmentation logic explicitly checks the types of the composing parts. If all parts share the exact same type (e.g., all are `prose` or all are `code_block`), the combined segment inherits that specific type. However, if the combined segment contains a mixture of different types (such as a `code_block` combined with a `prose` block), the `segment_type` is automatically updated to `"mixed"`.
+
 ### How this metadata improves LLM answers
 
 The retrieval payload can include `heading_path`, `segment_type`, and size metadata (`token_estimate`, `char_count`) alongside `segment_text`. This adds context for the LLM before answer generation:
@@ -246,9 +249,17 @@ After running `heading_structure_v1`, we observed many micro-segments on subsect
 2. **Split stage (strict safety):**
    - chunks above the model cap are split by boundary priority:
      1. subsection boundary,
-     2. paragraph boundary,
+     2. paragraph/line boundary,
      3. sentence boundary,
-     4. tokenizer-window fallback.
+     4. token-window fallback.
+
+In implementation (`implementation-extraction/segment_cleaned_content.py`), the split is greedy and cap-driven:
+- if an oversized packed chunk has multiple subsection parts, it first packs as many whole subsections as possible into one output chunk without crossing the hard cap; when the next subsection would overflow, it starts a new chunk;
+- if one subsection part is still too large on its own, boundary fallback is applied inside that part:
+  - for code/table-like content, split by lines first (line boundaries preserve structure better than sentence cuts),
+  - for prose/list-like content, split by paragraph blocks first;
+- if the paragraph/line pass still leaves an oversized piece, it falls back to sentence splitting;
+- if sentences still cannot satisfy the cap (for example very long unpunctuated spans), the last resort is strict token-window splitting (word windows sized to the tokenizer cap, with character-slice fallback for pathological long tokens/URLs).
 
 This design is constrained by the embedding model limit: `all-MiniLM-L6-v2` has a maximum sequence length of **256 tokens**. Because of that, v2 uses **tokenizer-based budgeting** (accurate to the model budget, but slower) instead of simple word/regex budgeting (faster, but less accurate).
 
