@@ -19,12 +19,43 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 EXPECTED_DIMENSION = 384
+
+
+def _resolve_local_sentence_model_path() -> str | None:
+    """Return a local sentence-transformers snapshot path when available."""
+    # NOTE: Support explicit override first so runs can pin a specific local model path.
+    explicit = os.environ.get("PA2_LOCAL_SENTENCE_MODEL_PATH", "").strip()
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if explicit_path.exists() and explicit_path.is_dir():
+            return str(explicit_path)
+
+    # NOTE: Prefer the repo-local HF cache populated by project setup scripts.
+    repo_cache_root = (
+        Path(__file__).resolve().parent / ".hf_cache" / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2" / "snapshots"
+    )
+    if not repo_cache_root.exists() or not repo_cache_root.is_dir():
+        return None
+
+    candidates = sorted([path for path in repo_cache_root.iterdir() if path.is_dir()])
+    if not candidates:
+        return None
+    return str(candidates[-1])
+
+
+def _resolve_model_name_or_path(model_name: str) -> str:
+    """Resolve model identifier to a local snapshot when available."""
+    local_path = _resolve_local_sentence_model_path()
+    if local_path:
+        return local_path
+    return model_name
 
 
 def resolve_conn_kwargs() -> dict[str, Any]:
@@ -48,7 +79,8 @@ def load_sentence_model(model_name: str = MODEL_NAME) -> Any:
     """
     from sentence_transformers import SentenceTransformer
 
-    model = SentenceTransformer(model_name)
+    resolved_model = _resolve_model_name_or_path(model_name)
+    model = SentenceTransformer(resolved_model)
     model_dimension = int(model.get_sentence_embedding_dimension())
     if model_dimension != EXPECTED_DIMENSION:
         raise RuntimeError(

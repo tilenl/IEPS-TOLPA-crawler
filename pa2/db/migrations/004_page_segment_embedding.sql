@@ -7,7 +7,7 @@ ALTER TABLE crawldb.page_segment
 	ADD COLUMN IF NOT EXISTS embedding vector(384);
 
 COMMENT ON COLUMN crawldb.page_segment.embedding IS
-	'Sentence embedding for segment_text (all-MiniLM-L6-v2, 384 dimensions).';
+	'Sentence embedding for embedding-facing segment text (all-MiniLM-L6-v2, 384 dimensions).';
 
 -- Create ANN index now so environments are immediately query-ready.
 -- For large bulk loads, it is still valid to recreate this index after loading.

@@ -20,6 +20,7 @@ Created: 2026-05-06
 Major revisions:
 - 2026-05-06: Initial Strategy C implementation (chunking + DB ingestion + quality gates).
 - 2026-05-06: Added `heading_structure_v3` (multi-pass greedy packing + tiny-tail repair).
+- 2026-05-07: Added `heading_structure_v4` with clean `segment_text` + contextual `embedding_text`.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ LIST_LINE_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)")
 DEFAULT_STRATEGY = "heading_structure_v1"
 V2_STRATEGY = "heading_structure_v2"
 V3_STRATEGY = "heading_structure_v3"
+V4_STRATEGY = "heading_structure_v4"
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,7 @@ class Segment:
     merge_group_parent: str | None
     segment_type: str
     segment_text: str
+    embedding_text: str
     token_estimate: int
     char_count: int
 
@@ -465,6 +468,44 @@ def _segment_type_for_chunk(blocks: list[Block]) -> str:
     return "mixed"
 
 
+def _normalize_heading_path_for_context(
+    heading_path: str | None, cfg: SegmentationConfig
+) -> str | None:
+    """Normalize heading path for embedding context by dropping root-only labels."""
+    parts = _split_heading_path(heading_path)
+    if parts and parts[0] == cfg.root_heading:
+        parts = parts[1:]
+    if not parts:
+        return None
+    return " > ".join(parts)
+
+
+def _build_embedding_text(
+    *,
+    heading_path: str | None,
+    segment_type: str,
+    body_text: str,
+    cfg: SegmentationConfig,
+    include_context_prefix: bool,
+) -> str:
+    """Build embedding-facing text with optional contextual prefix metadata."""
+    body = body_text.strip()
+    if not include_context_prefix:
+        return body
+
+    context_lines: list[str] = []
+    context_path = _normalize_heading_path_for_context(heading_path, cfg)
+    if context_path:
+        context_lines.append(f"Context: {context_path}")
+    context_lines.append(f"Type: {segment_type}")
+    prefix = "\n".join(context_lines).strip()
+    if not prefix:
+        return body
+    if not body:
+        return prefix
+    return f"{prefix}\n\n{body}".strip()
+
+
 def _emit_chunk(
     *,
     page_id: int,
@@ -472,19 +513,29 @@ def _emit_chunk(
     heading_path: str | None,
     chunk_index: int,
     chunk_blocks: list[Block],
+    cfg: SegmentationConfig,
 ) -> Segment:
     """Construct one Segment object from collected chunk blocks."""
     segment_text = "\n\n".join(block.text for block in chunk_blocks).strip()
+    segment_type = _segment_type_for_chunk(chunk_blocks)
+    embedding_text = _build_embedding_text(
+        heading_path=heading_path,
+        segment_type=segment_type,
+        body_text=segment_text,
+        cfg=cfg,
+        include_context_prefix=True,
+    )
     return Segment(
         page_id=page_id,
         chunk_index=chunk_index,
         strategy=strategy,
         heading_path=heading_path,
         merge_group_parent=None,
-        segment_type=_segment_type_for_chunk(chunk_blocks),
+        segment_type=segment_type,
         segment_text=segment_text,
-        token_estimate=_estimate_tokens(segment_text),
-        char_count=len(segment_text),
+        embedding_text=embedding_text,
+        token_estimate=_estimate_tokens(embedding_text),
+        char_count=len(embedding_text),
     )
 
 
@@ -517,6 +568,7 @@ def _segment_page_v1(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                         heading_path=heading_path,
                         chunk_index=chunk_index,
                         chunk_blocks=current_blocks,
+                        cfg=cfg,
                     )
                 )
                 chunk_index += 1
@@ -536,6 +588,7 @@ def _segment_page_v1(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                     heading_path=heading_path,
                     chunk_index=chunk_index,
                     chunk_blocks=current_blocks,
+                    cfg=cfg,
                 )
             )
             chunk_index += 1
@@ -560,7 +613,19 @@ def _build_v2_section_units(parsed: list[Block], cfg: SegmentationConfig) -> lis
                 heading_title=_last_heading_title(heading_path, cfg),
                 text=section_text,
                 segment_type=_segment_type_for_chunk(prepared),
-                tokens=_count_tokens(section_text, cfg, strict=True),
+                tokens=_count_tokens(
+                    _render_v2_part(
+                        V2ChunkPart(
+                            heading_title=_last_heading_title(heading_path, cfg),
+                            text=section_text,
+                            segment_type=_segment_type_for_chunk(prepared),
+                            tokens=0,
+                        ),
+                        include_subheading=True,
+                    ),
+                    cfg,
+                    strict=True,
+                ),
             )
         )
     return units
@@ -725,9 +790,9 @@ def _pack_v3_by_parent_greedy(units: list[V2SectionUnit], cfg: SegmentationConfi
     return packed
 
 
-def _render_v2_part(part: V2ChunkPart) -> str:
+def _render_v2_part(part: V2ChunkPart, *, include_subheading: bool) -> str:
     """Render one child subsection contribution inside a collapsed segment."""
-    if part.heading_title.strip():
+    if include_subheading and part.heading_title.strip():
         return f"### {part.heading_title}\n{part.text}".strip()
     return part.text.strip()
 
@@ -1001,14 +1066,35 @@ def _split_v2_packed_chunks(
     cfg: SegmentationConfig,
     *,
     hard_cap_tokens: int | None = None,
+    include_subheadings: bool = True,
+    include_context_prefix_in_budget: bool = False,
 ) -> list[V2PackedChunk]:
     """Stage B: enforce hard cap using boundary-priority splitting."""
     cap = hard_cap_tokens if hard_cap_tokens is not None else cfg.v2_hard_cap_tokens
     out: list[V2PackedChunk] = []
     for packed in packed_chunks:
-        rendered_parts = [_render_v2_part(part) for part in packed.parts]
-        rendered_tokens = [_count_tokens(text, cfg, strict=True) for text in rendered_parts]
-        if _count_tokens("\n\n".join(rendered_parts), cfg, strict=True) <= cap:
+        rendered_parts = [
+            _render_v2_part(part, include_subheading=include_subheadings)
+            for part in packed.parts
+        ]
+
+        def budget_text_for(
+            candidate_parts: list[V2ChunkPart], candidate_rendered_parts: list[str]
+        ) -> str:
+            body_text = "\n\n".join(candidate_rendered_parts).strip()
+            return _build_embedding_text(
+                heading_path=packed.heading_path,
+                segment_type=_segment_type_from_parts(candidate_parts),
+                body_text=body_text,
+                cfg=cfg,
+                include_context_prefix=include_context_prefix_in_budget,
+            )
+
+        rendered_tokens = [
+            _count_tokens(budget_text_for([part], [rendered_text]), cfg, strict=True)
+            for part, rendered_text in zip(packed.parts, rendered_parts, strict=True)
+        ]
+        if _count_tokens(budget_text_for(packed.parts, rendered_parts), cfg, strict=True) <= cap:
             out.append(packed)
             continue
 
@@ -1022,11 +1108,24 @@ def _split_v2_packed_chunks(
                         out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
                         current_parts = []
                         current_rendered_parts = []
+                    part_prefix_token_overhead = 0
+                    if include_context_prefix_in_budget:
+                        empty_wrapped = _build_embedding_text(
+                            heading_path=packed.heading_path,
+                            segment_type=part.segment_type,
+                            body_text="",
+                            cfg=cfg,
+                            include_context_prefix=True,
+                        )
+                        part_prefix_token_overhead = _count_tokens(
+                            empty_wrapped, cfg, strict=True
+                        )
+                    split_cap = max(1, cap - part_prefix_token_overhead)
                     for text in _split_v2_text_by_token_cap(
                         rendered_text,
                         cfg,
                         kind_hint=part.segment_type,
-                        hard_cap_tokens=cap,
+                        hard_cap_tokens=split_cap,
                     ):
                         out.append(
                             V2PackedChunk(
@@ -1044,8 +1143,10 @@ def _split_v2_packed_chunks(
                             )
                         )
                     continue
-                candidate_joined = "\n\n".join(current_rendered_parts + [rendered_text]).strip()
-                if current_parts and _count_tokens(candidate_joined, cfg, strict=True) > cap:
+                candidate_parts = current_parts + [part]
+                candidate_rendered = current_rendered_parts + [rendered_text]
+                candidate_budget_text = budget_text_for(candidate_parts, candidate_rendered)
+                if current_parts and _count_tokens(candidate_budget_text, cfg, strict=True) > cap:
                     out.append(
                         V2PackedChunk(
                             heading_path=packed.heading_path,
@@ -1070,11 +1171,28 @@ def _split_v2_packed_chunks(
 
         # Priorities 2-4: split one large part by paragraph/sentence/window fallback.
         single_part = packed.parts[0]
+        single_part_rendered = _render_v2_part(
+            single_part, include_subheading=include_subheadings
+        )
+        single_prefix_token_overhead = 0
+        if include_context_prefix_in_budget:
+            single_prefix_token_overhead = _count_tokens(
+                _build_embedding_text(
+                    heading_path=packed.heading_path,
+                    segment_type=single_part.segment_type,
+                    body_text="",
+                    cfg=cfg,
+                    include_context_prefix=True,
+                ),
+                cfg,
+                strict=True,
+            )
+        split_cap = max(1, cap - single_prefix_token_overhead)
         chunks = _split_v2_text_by_token_cap(
-            _render_v2_part(single_part),
+            single_part_rendered,
             cfg,
             kind_hint=single_part.segment_type,
-            hard_cap_tokens=cap,
+            hard_cap_tokens=split_cap,
         )
         for text in chunks:
             out.append(
@@ -1103,11 +1221,29 @@ def _segment_page_v2(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
 
     units = _build_v2_section_units(parsed, cfg)
     packed = _collapse_v2_small_subsections(units, cfg)
-    final_chunks = _split_v2_packed_chunks(packed, cfg)
+    final_chunks = _split_v2_packed_chunks(
+        packed,
+        cfg,
+        include_subheadings=True,
+        include_context_prefix_in_budget=False,
+    )
 
     segments: list[Segment] = []
     for chunk_index, packed_chunk in enumerate(final_chunks):
-        chunk_text = "\n\n".join(_render_v2_part(part) for part in packed_chunk.parts).strip()
+        segment_text = "\n\n".join(
+            _render_v2_part(part, include_subheading=False) for part in packed_chunk.parts
+        ).strip()
+        segment_type = _segment_type_from_parts(packed_chunk.parts)
+        embedding_body = "\n\n".join(
+            _render_v2_part(part, include_subheading=True) for part in packed_chunk.parts
+        ).strip()
+        embedding_text = _build_embedding_text(
+            heading_path=packed_chunk.heading_path,
+            segment_type=segment_type,
+            body_text=embedding_body,
+            cfg=cfg,
+            include_context_prefix=False,
+        )
         segments.append(
             Segment(
                 page_id=page_id,
@@ -1115,10 +1251,11 @@ def _segment_page_v2(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                 strategy=strategy,
                 heading_path=packed_chunk.heading_path,
                 merge_group_parent=packed_chunk.merge_group_path,
-                segment_type=_segment_type_from_parts(packed_chunk.parts),
-                segment_text=chunk_text,
-                token_estimate=_count_tokens(chunk_text, cfg, strict=True),
-                char_count=len(chunk_text),
+                segment_type=segment_type,
+                segment_text=segment_text,
+                embedding_text=embedding_text,
+                token_estimate=_count_tokens(embedding_text, cfg, strict=True),
+                char_count=len(embedding_text),
             )
         )
     return segments
@@ -1137,17 +1274,34 @@ def _segment_page_v3(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
             chunks,
             cfg,
             hard_cap_tokens=cfg.v3_hard_cap_tokens,
+            include_subheadings=True,
+            include_context_prefix_in_budget=False,
         )
         chunks = _repair_v3_underfilled_chunks(chunks, cfg)
     final_chunks = _split_v2_packed_chunks(
         chunks,
         cfg,
         hard_cap_tokens=cfg.v3_hard_cap_tokens,
+        include_subheadings=True,
+        include_context_prefix_in_budget=False,
     )
 
     segments: list[Segment] = []
     for chunk_index, packed_chunk in enumerate(final_chunks):
-        chunk_text = "\n\n".join(_render_v2_part(part) for part in packed_chunk.parts).strip()
+        segment_text = "\n\n".join(
+            _render_v2_part(part, include_subheading=False) for part in packed_chunk.parts
+        ).strip()
+        segment_type = _segment_type_from_parts(packed_chunk.parts)
+        embedding_body = "\n\n".join(
+            _render_v2_part(part, include_subheading=True) for part in packed_chunk.parts
+        ).strip()
+        embedding_text = _build_embedding_text(
+            heading_path=packed_chunk.heading_path,
+            segment_type=segment_type,
+            body_text=embedding_body,
+            cfg=cfg,
+            include_context_prefix=False,
+        )
         segments.append(
             Segment(
                 page_id=page_id,
@@ -1155,10 +1309,69 @@ def _segment_page_v3(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                 strategy=strategy,
                 heading_path=packed_chunk.heading_path,
                 merge_group_parent=packed_chunk.merge_group_path,
-                segment_type=_segment_type_from_parts(packed_chunk.parts),
-                segment_text=chunk_text,
-                token_estimate=_count_tokens(chunk_text, cfg, strict=True),
-                char_count=len(chunk_text),
+                segment_type=segment_type,
+                segment_text=segment_text,
+                embedding_text=embedding_text,
+                token_estimate=_count_tokens(embedding_text, cfg, strict=True),
+                char_count=len(embedding_text),
+            )
+        )
+    return segments
+
+
+def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: SegmentationConfig) -> list[Segment]:
+    """v4 strategy: v3 packing/splitting with clean display text and contextual embedding text."""
+    parsed = _split_cleaned_content_into_blocks(cleaned_content)
+    if not parsed:
+        return []
+
+    units = _build_v2_section_units(parsed, cfg)
+    chunks = _pack_v3_by_parent_greedy(units, cfg)
+    for _ in range(max(1, cfg.v3_refine_rounds)):
+        chunks = _split_v2_packed_chunks(
+            chunks,
+            cfg,
+            hard_cap_tokens=cfg.v3_hard_cap_tokens,
+            include_subheadings=True,
+            include_context_prefix_in_budget=True,
+        )
+        chunks = _repair_v3_underfilled_chunks(chunks, cfg)
+    final_chunks = _split_v2_packed_chunks(
+        chunks,
+        cfg,
+        hard_cap_tokens=cfg.v3_hard_cap_tokens,
+        include_subheadings=True,
+        include_context_prefix_in_budget=True,
+    )
+
+    segments: list[Segment] = []
+    for chunk_index, packed_chunk in enumerate(final_chunks):
+        segment_type = _segment_type_from_parts(packed_chunk.parts)
+        segment_text = "\n\n".join(
+            _render_v2_part(part, include_subheading=False) for part in packed_chunk.parts
+        ).strip()
+        embedding_body = "\n\n".join(
+            _render_v2_part(part, include_subheading=True) for part in packed_chunk.parts
+        ).strip()
+        embedding_text = _build_embedding_text(
+            heading_path=packed_chunk.heading_path,
+            segment_type=segment_type,
+            body_text=embedding_body,
+            cfg=cfg,
+            include_context_prefix=True,
+        )
+        segments.append(
+            Segment(
+                page_id=page_id,
+                chunk_index=chunk_index,
+                strategy=strategy,
+                heading_path=packed_chunk.heading_path,
+                merge_group_parent=packed_chunk.merge_group_path,
+                segment_type=segment_type,
+                segment_text=segment_text,
+                embedding_text=embedding_text,
+                token_estimate=_count_tokens(embedding_text, cfg, strict=True),
+                char_count=len(embedding_text),
             )
         )
     return segments
@@ -1174,6 +1387,13 @@ def segment_page_cleaned_content(
     """Segment one page using the requested strategy version."""
     if strategy == V3_STRATEGY:
         return _segment_page_v3(
+            page_id=page_id,
+            cleaned_content=cleaned_content,
+            strategy=strategy,
+            cfg=cfg,
+        )
+    if strategy == V4_STRATEGY:
+        return _segment_page_v4(
             page_id=page_id,
             cleaned_content=cleaned_content,
             strategy=strategy,
@@ -1246,6 +1466,7 @@ def _insert_segments(conn: Any, segments: list[Segment]) -> None:
             segment.merge_group_parent,
             segment.segment_type,
             segment.segment_text,
+            segment.embedding_text,
             segment.token_estimate,
             segment.char_count,
         )
@@ -1262,16 +1483,18 @@ INSERT INTO crawldb.page_segment (
   merge_group_parent,
   segment_type,
   segment_text,
+  embedding_text,
   token_estimate,
   char_count
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (page_id, strategy, chunk_index)
 DO UPDATE SET
   heading_path = EXCLUDED.heading_path,
   merge_group_parent = EXCLUDED.merge_group_parent,
   segment_type = EXCLUDED.segment_type,
   segment_text = EXCLUDED.segment_text,
+  embedding_text = EXCLUDED.embedding_text,
   token_estimate = EXCLUDED.token_estimate,
   char_count = EXCLUDED.char_count,
   created_at = NOW()
@@ -1411,7 +1634,7 @@ def run_segmentation(
     stats = RunStats(strategy=strategy)
     if strategy == V2_STRATEGY:
         stats.hard_cap_tokens = cfg.v2_hard_cap_tokens
-    elif strategy == V3_STRATEGY:
+    elif strategy in {V3_STRATEGY, V4_STRATEGY}:
         stats.hard_cap_tokens = cfg.v3_hard_cap_tokens
     else:
         stats.hard_cap_tokens = cfg.hard_cap_tokens
@@ -1598,6 +1821,21 @@ Use cosine LR schedule and mixed precision.
     assert repaired[0].parts[0].text == "chunk-a"
     assert repaired[0].parts[1].text == "[Paper] [Code]"
 
+    # v4 regression: keep display text clean while embedding text carries context.
+    v4_segments = _segment_page_v4(
+        page_id=42,
+        cleaned_content=sample,
+        strategy=V4_STRATEGY,
+        cfg=v3_cfg,
+    )
+    assert v4_segments, "Expected non-empty v4 segments"
+    assert all("Context:" not in s.segment_text for s in v4_segments), "V4 segment_text must stay clean."
+    assert any("Context:" in s.embedding_text for s in v4_segments), "V4 embedding_text missing context prefix."
+    assert all(
+        _count_tokens(s.embedding_text, v3_cfg, strict=True) <= v3_cfg.v3_hard_cap_tokens
+        for s in v4_segments
+    ), "V4 embedding_text overflowed hard cap."
+
     print("segment_cleaned_content self-test: OK")
 
 
@@ -1609,7 +1847,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strategy",
         default=DEFAULT_STRATEGY,
-        choices=[DEFAULT_STRATEGY, V2_STRATEGY, V3_STRATEGY],
+        choices=[DEFAULT_STRATEGY, V2_STRATEGY, V3_STRATEGY, V4_STRATEGY],
         help=f"Strategy label stored in DB (default: {DEFAULT_STRATEGY}).",
     )
     parser.add_argument(

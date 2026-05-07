@@ -205,7 +205,7 @@ In practice, the heading path (`README > section > subsection`) carries context 
 Phase 2 introduces `crawldb.page_segment` (migration `003_page_segment.sql`) with fields required for retrieval analysis before embeddings:
 - `page_id`, `chunk_index`, `strategy`,
 - `heading_path`, `segment_type`,
-- `segment_text`, `token_estimate`, `char_count`.
+- `segment_text`, `embedding_text`, `token_estimate`, `char_count`.
 
 This keeps segmentation experiments traceable and allows multiple strategy labels side-by-side without overwriting historical runs.
 
@@ -245,7 +245,7 @@ After running `heading_structure_v1`, we observed many micro-segments on subsect
 
 1. **Combine stage (section-aware collapse):**
    - sibling subsections under the same parent are merged when they are individually small and the merged chunk stays below a collapse upper bound;
-   - subsection labels are moved into `segment_text` (for example `### Our best model yet`) so local structure is preserved even when `heading_path` is promoted to the parent section.
+   - subsection labels are kept in embedding-facing chunk text (for example `### Our best model yet`) so local structure is preserved even when `heading_path` is promoted to the parent section while `segment_text` can remain clean for display.
 2. **Split stage (strict safety):**
    - chunks above the model cap are split by boundary priority:
      1. subsection boundary,
@@ -361,6 +361,15 @@ Global interpretation:
 - v3 substantially lowers `<40` chunks (`8.08% -> 4.73%`),
 - median and average chunk density increase while hard-cap safety remains strict (`>240 = 0`).
 
+### `heading_structure_v4`: clean display text + contextual embedding text
+
+Based on v2/v3 observations, we added `heading_structure_v4` to separate display and embedding payloads:
+- `segment_text` is kept clean for output/reranking display,
+- `embedding_text` carries contextual prefix metadata (`Context: ...`, `Type: ...`) so semantic search can match hierarchical intent words that are not present in raw snippet text (especially for short lists and code blocks),
+- hard-cap checks are computed against `embedding_text` token length so the model-facing payload remains budget-safe.
+
+`heading_structure_v4` reuses the v3 combine/split/repair backbone, but changes the final text representation contract for retrieval quality.
+
 ### Why we rely on headers (tree structure) instead of flat README text
 
 We intentionally treat README content as a **hierarchical tree** (`H1..H6`) rather than a flat stream:
@@ -397,7 +406,7 @@ segments)
 
 ## Phase 4 — Embeddings and storage implementation
 
-Phase 4 is implemented as a dedicated pipeline (`implementation-extraction/embed_page_segments.py`) that reads rows from `crawldb.page_segment`, encodes `segment_text`, and writes vectors back to `crawldb.page_segment.embedding`.
+Phase 4 is implemented as a dedicated pipeline (`implementation-extraction/embed_page_segments.py`) that reads rows from `crawldb.page_segment`, encodes embedding-facing text (`embedding_text` for v4 strategy rows), and writes vectors back to `crawldb.page_segment.embedding`.
 
 ### Model and dimensionality choice
 
@@ -414,6 +423,7 @@ We use pgvector inside PostgreSQL:
 
 - `CREATE EXTENSION IF NOT EXISTS vector`,
 - `ALTER TABLE crawldb.page_segment ADD COLUMN IF NOT EXISTS embedding vector(384)`,
+- `ALTER TABLE crawldb.page_segment ADD COLUMN IF NOT EXISTS embedding_text text`,
 - cosine ANN index: `USING hnsw (embedding vector_cosine_ops)`.
 
 Cosine search is aligned with normalized sentence embeddings and with the retrieval setup planned for `demo.py`.
@@ -436,7 +446,7 @@ The embedding pipeline includes resilience and sanity diagnostics:
   - near-zero vector norm count (possible encoding/runtime issues),
   - sparse vector count (very low non-zero-dimension ratio),
   - norm distribution (`min`, `median`, `p95`) for quick run-level health checks.
-- **Data hygiene**: empty `segment_text` rows are skipped and counted.
+- **Data hygiene**: empty embedding-source rows are skipped and counted; for v4 rows, missing/empty `embedding_text` is treated as an error.
 
 ### Alternatives considered but not implemented in this phase
 

@@ -4,7 +4,7 @@ Generate and store embeddings for `crawldb.page_segment`.
 
 Purpose:
 - Read segmented rows produced by `segment_cleaned_content.py`.
-- Encode `segment_text` with `sentence-transformers/all-MiniLM-L6-v2`.
+- Encode embedding-facing text with `sentence-transformers/all-MiniLM-L6-v2`.
 - Persist vectors into `crawldb.page_segment.embedding` (pgvector).
 
 System role:
@@ -33,6 +33,8 @@ from typing import Any, Sequence
 import numpy as np
 from embedding_common import encode_texts, resolve_conn_kwargs
 
+V4_STRATEGY = "heading_structure_v4"
+
 
 @dataclass(frozen=True)
 class SegmentRow:
@@ -43,6 +45,7 @@ class SegmentRow:
     chunk_index: int
     strategy: str
     segment_text: str
+    embedding_text: str
 
 
 @dataclass
@@ -76,7 +79,7 @@ def _fetch_batch(
 ) -> list[SegmentRow]:
     """Fetch the next deterministic batch of segment rows by primary key."""
     sql = """
-SELECT id, page_id, chunk_index, strategy, segment_text
+SELECT id, page_id, chunk_index, strategy, segment_text, embedding_text
 FROM crawldb.page_segment
 WHERE id > %s
 """
@@ -104,9 +107,23 @@ WHERE id > %s
             chunk_index=int(row[2]),
             strategy=str(row[3]),
             segment_text=str(row[4] or ""),
+            embedding_text=str(row[5] or ""),
         )
         for row in rows
     ]
+
+
+def _embedding_source_text(row: SegmentRow) -> str:
+    """Resolve the text payload to encode for one segment row."""
+    # NOTE: V4 rows must encode contextualized text to honor the strategy contract.
+    if row.strategy == V4_STRATEGY:
+        if not row.embedding_text.strip():
+            raise ValueError(
+                f"V4 segment row id={row.id} has empty embedding_text. "
+                "Rebuild V4 segmentation before embedding."
+            )
+        return row.embedding_text
+    return row.segment_text
 
 
 def _split_valid_rows(rows: Sequence[SegmentRow]) -> tuple[list[SegmentRow], int]:
@@ -114,8 +131,9 @@ def _split_valid_rows(rows: Sequence[SegmentRow]) -> tuple[list[SegmentRow], int
     valid: list[SegmentRow] = []
     skipped = 0
     for row in rows:
+        source_text = _embedding_source_text(row)
         # NOTE: Empty/whitespace-only rows cannot produce meaningful embeddings.
-        if not row.segment_text or not row.segment_text.strip():
+        if not source_text or not source_text.strip():
             skipped += 1
             continue
         valid.append(row)
@@ -172,7 +190,7 @@ def _run_batch_with_retries(
     for attempt in range(1, attempts + 1):
         try:
             embeddings = encode_texts(
-                [row.segment_text for row in rows],
+                [_embedding_source_text(row) for row in rows],
                 normalize_embeddings=normalize_embeddings,
             )
             _record_embedding_quality(

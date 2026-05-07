@@ -12,7 +12,9 @@ pa2/
 │   ├── 001_page_cleaned_content.sql
 │   ├── 002_cleaned_content_canonicalization.sql
 │   ├── 003_page_segment.sql
-│   └── 004_page_segment_embedding.sql
+│   ├── 004_page_segment_embedding.sql
+│   ├── 005_page_segment_merge_group_parent.sql
+│   └── 006_page_segment_embedding_text.sql
 ├── implementation-extraction/
 │   ├── requirements.txt
 │   ├── extract_readme.py      # Phase 1: HTML → README plain text → cleaned_content
@@ -86,15 +88,17 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
 1. **Migration** (once per database):
    - apply [`db/migrations/003_page_segment.sql`](db/migrations/003_page_segment.sql) to create `crawldb.page_segment`,
-   - then apply [`db/migrations/005_page_segment_merge_group_parent.sql`](db/migrations/005_page_segment_merge_group_parent.sql) to add `merge_group_parent` (v3 merge-group debug provenance).
+   - then apply [`db/migrations/005_page_segment_merge_group_parent.sql`](db/migrations/005_page_segment_merge_group_parent.sql) to add `merge_group_parent` (v3 merge-group debug provenance),
+   - then apply [`db/migrations/006_page_segment_embedding_text.sql`](db/migrations/006_page_segment_embedding_text.sql) to add `embedding_text` (v4 embedding payload).
 
    ```bash
    docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/003_page_segment.sql
    docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/005_page_segment_merge_group_parent.sql
+   docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/006_page_segment_embedding_text.sql
    ```
 
 2. **Run Strategy C segmentation** (heading-aware + structure-aware).  
-   You can choose one of three strategy variants: `heading_structure_v1`, `heading_structure_v2`, or `heading_structure_v3`.
+   You can choose one of four strategy variants: `heading_structure_v1`, `heading_structure_v2`, `heading_structure_v3`, or `heading_structure_v4`.
 
    ```bash
    # v1 (baseline heading-aware segmentation)
@@ -106,6 +110,9 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    
    # v3 (multi-pass combine/split + tiny-tail repair)
    .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v3 --rebuild
+
+   # v4 (v3 chunking + clean segment_text + contextual embedding_text)
+   .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v4 --rebuild
    ```
 
    Recommended first smoke test:
@@ -120,6 +127,9 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - code/table-like blocks remain atomic where possible and are split safely when oversized,
    - one-block overlap is applied only for cap-triggered splits inside one section,
    - rows are deterministic per `(page_id, strategy, chunk_index)` and can be rebuilt by strategy.
+   - for `heading_structure_v4`, each row stores:
+     - `segment_text` (clean display text),
+     - `embedding_text` (contextualized embedding payload with heading/type prefix).
 
 4. **Useful CLI flags**:
    - `--page-id <id>`: process a single page for debugging,
@@ -133,7 +143,7 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - strict tokenizer counting (not regex/word estimation),
    - Stage A: collapse small sibling subsections under the same parent heading,
    - Stage B: split oversized chunks by subsection/paragraph/sentence/token-window fallbacks,
-   - child subsection names are injected into `segment_text` (`### subsection`) when collapsed.
+   - child subsection names are kept in embedding-facing text while `segment_text` remains clean.
 
    Optional environment overrides:
    - `PA2_V2_TARGET_TOKENS` (default `200`)
@@ -157,6 +167,12 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - `PA2_V3_REFINE_ROUNDS` (default `1`)
    - `PA2_V3_REPAIR_MAX_PASSES` is the inner merge loop cap inside one Stage C run.
 
+7. **`heading_structure_v4` token policy** (for `all-MiniLM-L6-v2`):
+   - Uses v3 combine/split/repair flow as the structural backbone.
+   - Keeps `segment_text` clean (without subsection marker injection).
+   - Builds `embedding_text` with context metadata (`Context: ...`, `Type: ...`) plus chunk body.
+   - Enforces hard-cap checks against `embedding_text` token length.
+
 ## Phase 4 — Embeddings (`page_segment.embedding`)
 
 1. **Migration** (once per database): apply [`db/migrations/004_page_segment_embedding.sql`](db/migrations/004_page_segment_embedding.sql).
@@ -174,13 +190,13 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
    ```bash
    cd pa2/implementation-extraction
-   .venv/bin/python embed_page_segments.py --strategy heading_structure_v2 --batch-size 64
+   .venv/bin/python embed_page_segments.py --strategy heading_structure_v4 --batch-size 64
    ```
 
 3. **Recommended smoke test** (no writes):
 
    ```bash
-   .venv/bin/python embed_page_segments.py --strategy heading_structure_v2 --limit 200 --dry-run --verbose
+   .venv/bin/python embed_page_segments.py --strategy heading_structure_v4 --limit 200 --dry-run --verbose
    ```
 
 4. **Useful CLI flags**:
