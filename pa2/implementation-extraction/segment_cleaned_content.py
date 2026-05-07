@@ -87,6 +87,7 @@ class Segment:
     chunk_index: int
     strategy: str
     heading_path: str | None
+    merge_group_parent: str | None
     segment_type: str
     segment_text: str
     token_estimate: int
@@ -479,6 +480,7 @@ def _emit_chunk(
         chunk_index=chunk_index,
         strategy=strategy,
         heading_path=heading_path,
+        merge_group_parent=None,
         segment_type=_segment_type_for_chunk(chunk_blocks),
         segment_text=segment_text,
         token_estimate=_estimate_tokens(segment_text),
@@ -1112,6 +1114,7 @@ def _segment_page_v2(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                 chunk_index=chunk_index,
                 strategy=strategy,
                 heading_path=packed_chunk.heading_path,
+                merge_group_parent=packed_chunk.merge_group_path,
                 segment_type=_segment_type_from_parts(packed_chunk.parts),
                 segment_text=chunk_text,
                 token_estimate=_count_tokens(chunk_text, cfg, strict=True),
@@ -1151,6 +1154,7 @@ def _segment_page_v3(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                 chunk_index=chunk_index,
                 strategy=strategy,
                 heading_path=packed_chunk.heading_path,
+                merge_group_parent=packed_chunk.merge_group_path,
                 segment_type=_segment_type_from_parts(packed_chunk.parts),
                 segment_text=chunk_text,
                 token_estimate=_count_tokens(chunk_text, cfg, strict=True),
@@ -1239,6 +1243,7 @@ def _insert_segments(conn: Any, segments: list[Segment]) -> None:
             segment.chunk_index,
             segment.strategy,
             segment.heading_path,
+            segment.merge_group_parent,
             segment.segment_type,
             segment.segment_text,
             segment.token_estimate,
@@ -1254,15 +1259,17 @@ INSERT INTO crawldb.page_segment (
   chunk_index,
   strategy,
   heading_path,
+  merge_group_parent,
   segment_type,
   segment_text,
   token_estimate,
   char_count
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (page_id, strategy, chunk_index)
 DO UPDATE SET
   heading_path = EXCLUDED.heading_path,
+  merge_group_parent = EXCLUDED.merge_group_parent,
   segment_type = EXCLUDED.segment_type,
   segment_text = EXCLUDED.segment_text,
   token_estimate = EXCLUDED.token_estimate,

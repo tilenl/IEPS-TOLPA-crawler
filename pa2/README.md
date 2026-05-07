@@ -84,10 +84,13 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
 ## Phase 2 — Strategy C segmentation (`page_segment`)
 
-1. **Migration** (once per database): apply [`db/migrations/003_page_segment.sql`](db/migrations/003_page_segment.sql) to create `crawldb.page_segment`.
+1. **Migration** (once per database):
+   - apply [`db/migrations/003_page_segment.sql`](db/migrations/003_page_segment.sql) to create `crawldb.page_segment`,
+   - then apply [`db/migrations/005_page_segment_merge_group_parent.sql`](db/migrations/005_page_segment_merge_group_parent.sql) to add `merge_group_parent` (v3 merge-group debug provenance).
 
    ```bash
    docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/003_page_segment.sql
+   docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/005_page_segment_merge_group_parent.sql
    ```
 
 2. **Run Strategy C segmentation** (heading-aware + structure-aware).  
