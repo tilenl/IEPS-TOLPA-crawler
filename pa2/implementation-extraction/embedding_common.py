@@ -28,6 +28,23 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 EXPECTED_DIMENSION = 384
 
 
+def combined_v4_embed_input(embedding_text: str, segment_text: str) -> str:
+    """
+    Build the exact string encoded for V4 segments: additive prefix plus body.
+
+    `embedding_text` stores only contextual lines (Context, Type, optional
+    Merged_sections); `segment_text` is the display body. Both are joined with
+    a blank line when the prefix is non-empty.
+    """
+    prefix = (embedding_text or "").strip()
+    body = (segment_text or "").strip()
+    if not prefix:
+        return body
+    if not body:
+        return prefix
+    return f"{prefix}\n\n{body}"
+
+
 def _resolve_local_sentence_model_path() -> str | None:
     """Return a local sentence-transformers snapshot path when available."""
     # NOTE: Support explicit override first so runs can pin a specific local model path.

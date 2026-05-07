@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 import numpy as np
-from embedding_common import encode_texts, resolve_conn_kwargs
+from embedding_common import combined_v4_embed_input, encode_texts, resolve_conn_kwargs
 
 V4_STRATEGY = "heading_structure_v4"
 
@@ -115,14 +115,14 @@ WHERE id > %s
 
 def _embedding_source_text(row: SegmentRow) -> str:
     """Resolve the text payload to encode for one segment row."""
-    # NOTE: V4 rows must encode contextualized text to honor the strategy contract.
+    # NOTE: V4 stores additive metadata in embedding_text; the model input is prefix + body.
     if row.strategy == V4_STRATEGY:
-        if not row.embedding_text.strip():
+        if not row.embedding_text.strip() and not row.segment_text.strip():
             raise ValueError(
-                f"V4 segment row id={row.id} has empty embedding_text. "
+                f"V4 segment row id={row.id} has empty embedding_text and segment_text. "
                 "Rebuild V4 segmentation before embedding."
             )
-        return row.embedding_text
+        return combined_v4_embed_input(row.embedding_text, row.segment_text)
     return row.segment_text
 
 

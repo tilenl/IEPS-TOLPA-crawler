@@ -20,7 +20,7 @@ Created: 2026-05-06
 Major revisions:
 - 2026-05-06: Initial Strategy C implementation (chunking + DB ingestion + quality gates).
 - 2026-05-06: Added `heading_structure_v3` (multi-pass greedy packing + tiny-tail repair).
-- 2026-05-07: Added `heading_structure_v4` with clean `segment_text` + contextual `embedding_text`.
+- 2026-05-07: Added `heading_structure_v4` with clean `segment_text` + additive `embedding_text` combined at encode time.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ import statistics
 from functools import lru_cache
 from dataclasses import dataclass
 from typing import Any, Iterator
+
+from embedding_common import combined_v4_embed_input
 
 HEADING_RE = re.compile(r"^\[H([1-6])\]\s+(.+?)\s*$")
 WORDLIKE_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
@@ -506,6 +508,39 @@ def _build_embedding_text(
     return f"{prefix}\n\n{body}".strip()
 
 
+def _v4_merge_titles_for_parts(parts: list[V2ChunkPart]) -> tuple[str, ...]:
+    """Ordered subsection titles for Merged_sections line when a chunk spans multiple parts."""
+    if len(parts) <= 1:
+        return ()
+    titles = [part.heading_title.strip() for part in parts if part.heading_title.strip()]
+    return tuple(titles) if len(titles) > 1 else ()
+
+
+def _build_v4_embedding_prefix(
+    heading_path: str | None,
+    segment_type: str,
+    cfg: SegmentationConfig,
+    *,
+    merged_section_titles: tuple[str, ...] = (),
+) -> str:
+    """
+    V4 additive prefix only (no segment body). Context + Type, optional Merged_sections.
+    """
+    base = _build_embedding_text(
+        heading_path=heading_path,
+        segment_type=segment_type,
+        body_text="",
+        cfg=cfg,
+        include_context_prefix=True,
+    ).strip()
+    if len(merged_section_titles) > 1:
+        merged_line = "Merged_sections: " + "; ".join(merged_section_titles)
+        if base:
+            return f"{base}\n{merged_line}".strip()
+        return merged_line
+    return base
+
+
 def _emit_chunk(
     *,
     page_id: int,
@@ -596,7 +631,9 @@ def _segment_page_v1(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
     return segments
 
 
-def _build_v2_section_units(parsed: list[Block], cfg: SegmentationConfig) -> list[V2SectionUnit]:
+def _build_v2_section_units(
+    parsed: list[Block], cfg: SegmentationConfig, *, v4_combined_budget: bool = False
+) -> list[V2SectionUnit]:
     """Build section-local units consumed by v2 collapse and split stages."""
     units: list[V2SectionUnit] = []
     for heading_path, section_blocks in _iter_sections(parsed, cfg):
@@ -606,26 +643,41 @@ def _build_v2_section_units(parsed: list[Block], cfg: SegmentationConfig) -> lis
         section_text = "\n\n".join(block.text for block in prepared).strip()
         if not section_text:
             continue
+        segment_type = _segment_type_for_chunk(prepared)
+        if v4_combined_budget:
+            prefix = _build_v4_embedding_prefix(
+                heading_path,
+                segment_type,
+                cfg,
+                merged_section_titles=(),
+            )
+            token_total = _count_tokens(
+                combined_v4_embed_input(prefix, section_text),
+                cfg,
+                strict=True,
+            )
+        else:
+            token_total = _count_tokens(
+                _render_v2_part(
+                    V2ChunkPart(
+                        heading_title=_last_heading_title(heading_path, cfg),
+                        text=section_text,
+                        segment_type=segment_type,
+                        tokens=0,
+                    ),
+                    include_subheading=True,
+                ),
+                cfg,
+                strict=True,
+            )
         units.append(
             V2SectionUnit(
                 full_heading_path=heading_path,
                 parent_heading_path=_parent_heading_path(heading_path),
                 heading_title=_last_heading_title(heading_path, cfg),
                 text=section_text,
-                segment_type=_segment_type_for_chunk(prepared),
-                tokens=_count_tokens(
-                    _render_v2_part(
-                        V2ChunkPart(
-                            heading_title=_last_heading_title(heading_path, cfg),
-                            text=section_text,
-                            segment_type=_segment_type_for_chunk(prepared),
-                            tokens=0,
-                        ),
-                        include_subheading=True,
-                    ),
-                    cfg,
-                    strict=True,
-                ),
+                segment_type=segment_type,
+                tokens=token_total,
             )
         )
     return units
@@ -1068,6 +1120,7 @@ def _split_v2_packed_chunks(
     hard_cap_tokens: int | None = None,
     include_subheadings: bool = True,
     include_context_prefix_in_budget: bool = False,
+    v4_embed_text_split: bool = False,
 ) -> list[V2PackedChunk]:
     """Stage B: enforce hard cap using boundary-priority splitting."""
     cap = hard_cap_tokens if hard_cap_tokens is not None else cfg.v2_hard_cap_tokens
@@ -1078,9 +1131,25 @@ def _split_v2_packed_chunks(
             for part in packed.parts
         ]
 
+        def _v4_prefix_for_parts(candidate_parts: list[V2ChunkPart], segment_type: str) -> str:
+            merged = _v4_merge_titles_for_parts(candidate_parts)
+            return _build_v4_embedding_prefix(
+                packed.heading_path,
+                segment_type,
+                cfg,
+                merged_section_titles=merged,
+            )
+
         def budget_text_for(
             candidate_parts: list[V2ChunkPart], candidate_rendered_parts: list[str]
         ) -> str:
+            if v4_embed_text_split and include_context_prefix_in_budget:
+                stype = _segment_type_from_parts(candidate_parts)
+                body_text = "\n\n".join(
+                    _render_v2_part(part, include_subheading=False) for part in candidate_parts
+                ).strip()
+                prefix = _v4_prefix_for_parts(candidate_parts, stype)
+                return combined_v4_embed_input(prefix, body_text)
             body_text = "\n\n".join(candidate_rendered_parts).strip()
             return _build_embedding_text(
                 heading_path=packed.heading_path,
@@ -1090,10 +1159,28 @@ def _split_v2_packed_chunks(
                 include_context_prefix=include_context_prefix_in_budget,
             )
 
-        rendered_tokens = [
-            _count_tokens(budget_text_for([part], [rendered_text]), cfg, strict=True)
-            for part, rendered_text in zip(packed.parts, rendered_parts, strict=True)
-        ]
+        if v4_embed_text_split and include_context_prefix_in_budget:
+            rendered_tokens = [
+                _count_tokens(
+                    combined_v4_embed_input(
+                        _build_v4_embedding_prefix(
+                            packed.heading_path,
+                            part.segment_type,
+                            cfg,
+                            merged_section_titles=(),
+                        ),
+                        _render_v2_part(part, include_subheading=False),
+                    ),
+                    cfg,
+                    strict=True,
+                )
+                for part in packed.parts
+            ]
+        else:
+            rendered_tokens = [
+                _count_tokens(budget_text_for([part], [rendered_text]), cfg, strict=True)
+                for part, rendered_text in zip(packed.parts, rendered_parts, strict=True)
+            ]
         if _count_tokens(budget_text_for(packed.parts, rendered_parts), cfg, strict=True) <= cap:
             out.append(packed)
             continue
@@ -1110,19 +1197,37 @@ def _split_v2_packed_chunks(
                         current_rendered_parts = []
                     part_prefix_token_overhead = 0
                     if include_context_prefix_in_budget:
-                        empty_wrapped = _build_embedding_text(
-                            heading_path=packed.heading_path,
-                            segment_type=part.segment_type,
-                            body_text="",
-                            cfg=cfg,
-                            include_context_prefix=True,
-                        )
-                        part_prefix_token_overhead = _count_tokens(
-                            empty_wrapped, cfg, strict=True
-                        )
+                        if v4_embed_text_split:
+                            part_pref = _build_v4_embedding_prefix(
+                                packed.heading_path,
+                                part.segment_type,
+                                cfg,
+                                merged_section_titles=(),
+                            )
+                            part_prefix_token_overhead = _count_tokens(
+                                combined_v4_embed_input(part_pref, ""),
+                                cfg,
+                                strict=True,
+                            )
+                        else:
+                            empty_wrapped = _build_embedding_text(
+                                heading_path=packed.heading_path,
+                                segment_type=part.segment_type,
+                                body_text="",
+                                cfg=cfg,
+                                include_context_prefix=True,
+                            )
+                            part_prefix_token_overhead = _count_tokens(
+                                empty_wrapped, cfg, strict=True
+                            )
                     split_cap = max(1, cap - part_prefix_token_overhead)
+                    part_body = (
+                        _render_v2_part(part, include_subheading=False)
+                        if v4_embed_text_split
+                        else rendered_text
+                    )
                     for text in _split_v2_text_by_token_cap(
-                        rendered_text,
+                        part_body,
                         cfg,
                         kind_hint=part.segment_type,
                         hard_cap_tokens=split_cap,
@@ -1174,22 +1279,40 @@ def _split_v2_packed_chunks(
         single_part_rendered = _render_v2_part(
             single_part, include_subheading=include_subheadings
         )
+        single_body = (
+            _render_v2_part(single_part, include_subheading=False)
+            if v4_embed_text_split
+            else single_part_rendered
+        )
         single_prefix_token_overhead = 0
         if include_context_prefix_in_budget:
-            single_prefix_token_overhead = _count_tokens(
-                _build_embedding_text(
-                    heading_path=packed.heading_path,
-                    segment_type=single_part.segment_type,
-                    body_text="",
-                    cfg=cfg,
-                    include_context_prefix=True,
-                ),
-                cfg,
-                strict=True,
-            )
+            if v4_embed_text_split:
+                single_pref = _build_v4_embedding_prefix(
+                    packed.heading_path,
+                    single_part.segment_type,
+                    cfg,
+                    merged_section_titles=(),
+                )
+                single_prefix_token_overhead = _count_tokens(
+                    combined_v4_embed_input(single_pref, ""),
+                    cfg,
+                    strict=True,
+                )
+            else:
+                single_prefix_token_overhead = _count_tokens(
+                    _build_embedding_text(
+                        heading_path=packed.heading_path,
+                        segment_type=single_part.segment_type,
+                        body_text="",
+                        cfg=cfg,
+                        include_context_prefix=True,
+                    ),
+                    cfg,
+                    strict=True,
+                )
         split_cap = max(1, cap - single_prefix_token_overhead)
         chunks = _split_v2_text_by_token_cap(
-            single_part_rendered,
+            single_body,
             cfg,
             kind_hint=single_part.segment_type,
             hard_cap_tokens=split_cap,
@@ -1325,7 +1448,7 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
     if not parsed:
         return []
 
-    units = _build_v2_section_units(parsed, cfg)
+    units = _build_v2_section_units(parsed, cfg, v4_combined_budget=True)
     chunks = _pack_v3_by_parent_greedy(units, cfg)
     for _ in range(max(1, cfg.v3_refine_rounds)):
         chunks = _split_v2_packed_chunks(
@@ -1334,6 +1457,7 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
             hard_cap_tokens=cfg.v3_hard_cap_tokens,
             include_subheadings=True,
             include_context_prefix_in_budget=True,
+            v4_embed_text_split=True,
         )
         chunks = _repair_v3_underfilled_chunks(chunks, cfg)
     final_chunks = _split_v2_packed_chunks(
@@ -1342,6 +1466,7 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
         hard_cap_tokens=cfg.v3_hard_cap_tokens,
         include_subheadings=True,
         include_context_prefix_in_budget=True,
+        v4_embed_text_split=True,
     )
 
     segments: list[Segment] = []
@@ -1350,16 +1475,14 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
         segment_text = "\n\n".join(
             _render_v2_part(part, include_subheading=False) for part in packed_chunk.parts
         ).strip()
-        embedding_body = "\n\n".join(
-            _render_v2_part(part, include_subheading=True) for part in packed_chunk.parts
-        ).strip()
-        embedding_text = _build_embedding_text(
-            heading_path=packed_chunk.heading_path,
-            segment_type=segment_type,
-            body_text=embedding_body,
-            cfg=cfg,
-            include_context_prefix=True,
+        merged_titles = _v4_merge_titles_for_parts(packed_chunk.parts)
+        embedding_text = _build_v4_embedding_prefix(
+            packed_chunk.heading_path,
+            segment_type,
+            cfg,
+            merged_section_titles=merged_titles,
         )
+        combined = combined_v4_embed_input(embedding_text, segment_text)
         segments.append(
             Segment(
                 page_id=page_id,
@@ -1370,8 +1493,8 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                 segment_type=segment_type,
                 segment_text=segment_text,
                 embedding_text=embedding_text,
-                token_estimate=_count_tokens(embedding_text, cfg, strict=True),
-                char_count=len(embedding_text),
+                token_estimate=_count_tokens(combined, cfg, strict=True),
+                char_count=len(combined),
             )
         )
     return segments
@@ -1754,6 +1877,7 @@ Use cosine LR schedule and mixed precision.
         v3_min_chunk_tokens=35,
         v3_repair_max_passes=2,
         v3_refine_rounds=1,
+        v2_local_files_only=True,
     )
     units = [
         V2SectionUnit(
@@ -1821,7 +1945,7 @@ Use cosine LR schedule and mixed precision.
     assert repaired[0].parts[0].text == "chunk-a"
     assert repaired[0].parts[1].text == "[Paper] [Code]"
 
-    # v4 regression: keep display text clean while embedding text carries context.
+    # v4 regression: additive embedding_text; model input = prefix + segment_text; hard cap on combined.
     v4_segments = _segment_page_v4(
         page_id=42,
         cleaned_content=sample,
@@ -1831,10 +1955,32 @@ Use cosine LR schedule and mixed precision.
     assert v4_segments, "Expected non-empty v4 segments"
     assert all("Context:" not in s.segment_text for s in v4_segments), "V4 segment_text must stay clean."
     assert any("Context:" in s.embedding_text for s in v4_segments), "V4 embedding_text missing context prefix."
-    assert all(
-        _count_tokens(s.embedding_text, v3_cfg, strict=True) <= v3_cfg.v3_hard_cap_tokens
-        for s in v4_segments
-    ), "V4 embedding_text overflowed hard cap."
+    for s in v4_segments:
+        combined = combined_v4_embed_input(s.embedding_text, s.segment_text)
+        assert _count_tokens(combined, v3_cfg, strict=True) <= v3_cfg.v3_hard_cap_tokens, (
+            "V4 combined embed input overflowed hard cap."
+        )
+    authors_page = """
+[H1] README
+
+[H2] Implementations
+
+[H3] Cluster GAN
+
+[H3] Authors
+
+Sudipto Mukherjee, Himanshu Asnani, Eugene Lin, Sreeram Kannan
+""".strip()
+    v4_authors = _segment_page_v4(
+        page_id=43,
+        cleaned_content=authors_page,
+        strategy=V4_STRATEGY,
+        cfg=v3_cfg,
+    )
+    authors_seg = next(s for s in v4_authors if "Sudipto" in s.segment_text)
+    authors_combined = combined_v4_embed_input(authors_seg.embedding_text, authors_seg.segment_text)
+    assert "### Authors" not in authors_combined, "V4 must not inject redundant ### leaf heading into combined input."
+    assert "Sudipto Mukherjee" not in authors_seg.embedding_text
 
     print("segment_cleaned_content self-test: OK")
 
