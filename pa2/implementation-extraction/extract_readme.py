@@ -26,6 +26,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -74,6 +75,28 @@ _WEAK_LINK_LABELS: frozenset[str] = frozenset(
 )
 _TOC_HEADING_NAMES: frozenset[str] = frozenset({"table of contents", "contents", "toc"})
 
+# Recognized raster/vector image path suffixes (path segment only; query strings ignored).
+_IMAGE_PATH_SUFFIXES: frozenset[str] = frozenset(
+    (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".ico",
+        ".bmp",
+        ".avif",
+        ".heic",
+        ".tif",
+        ".tiff",
+    )
+)
+# Hosts that typically serve inline README images even when the path omits a file extension.
+_GITHUB_IMAGE_HOSTS: frozenset[str] = frozenset(
+    {"user-images.githubusercontent.com", "camo.githubusercontent.com"}
+)
+
 
 @dataclass(frozen=True)
 class ExtractedBlock:
@@ -118,6 +141,30 @@ def _is_absolute_url(href: str) -> bool:
     return href.startswith("http://") or href.startswith("https://")
 
 
+def _is_image_resource_url(href: str) -> bool:
+    """
+    True when *href* points at an image asset (no semantic text target).
+
+    Uses path suffix heuristics plus GitHub image CDN hosts where extensions are
+    often absent from the visible path.
+    """
+    if not href or not href.strip():
+        return False
+    try:
+        parsed = urlparse(href.strip())
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    path = (parsed.path or "").lower()
+    if any(path.endswith(suf) for suf in _IMAGE_PATH_SUFFIXES):
+        return True
+    host = (parsed.netloc or "").lower()
+    if host in _GITHUB_IMAGE_HOSTS:
+        return True
+    return False
+
+
 def _is_weak_anchor_label(label: str) -> bool:
     normalized = label.strip().lower()
     if not normalized:
@@ -139,6 +186,8 @@ def _render_anchor_text(label: str, href: str | None) -> str:
     if not href or href.startswith("#"):
         return clean_label
     if not _is_absolute_url(href):
+        return clean_label
+    if _is_image_resource_url(href):
         return clean_label
     if not clean_label:
         return href
@@ -552,6 +601,25 @@ def _self_test() -> None:
     links_out = extract_readme_plain_text(links)
     assert links_out and "paper (https://example.com/paper)" in links_out, links_out
     assert links_out and "segmentation benchmark details" in links_out, links_out
+
+    img_wrap = """
+    <article class="markdown-body" itemprop="text">
+      <p><a href="https://example.com/x.png"></a></p>
+      <p>Body text stays.</p>
+    </article>
+    """
+    img_wrap_out = extract_readme_plain_text(img_wrap)
+    assert img_wrap_out and "Body text stays." in img_wrap_out, img_wrap_out
+    assert "example.com/x.png" not in img_wrap_out, img_wrap_out
+
+    weak_img = """
+    <article class="markdown-body" itemprop="text">
+      <p>See <a href="https://example.com/badge.svg">here</a> for details.</p>
+    </article>
+    """
+    weak_img_out = extract_readme_plain_text(weak_img)
+    assert weak_img_out and "here" in weak_img_out and "details" in weak_img_out, weak_img_out
+    assert "badge.svg" not in weak_img_out, weak_img_out
 
     assert extract_readme_plain_text(None) is None
     assert extract_readme_plain_text("<html><body></body></html>") is None
