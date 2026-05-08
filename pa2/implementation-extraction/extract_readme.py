@@ -357,10 +357,38 @@ def _drop_table_of_contents_blocks(blocks: list[ExtractedBlock]) -> list[Extract
     return kept
 
 
+def _max_consecutive_backticks(text: str) -> int:
+    """Longest run of '`' in *text* (for choosing a markdown fence that cannot close early)."""
+    best = 0
+    current = 0
+    for ch in text:
+        if ch == "`":
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
+
+
+def _fence_pre_block(text: str) -> str:
+    """
+    Wrap ``<pre>`` payload as a fenced markdown code block.
+
+    Phase 2 ``_classify_block_kind`` treats ``` as ``code_block``; GitHub DOM
+    already proved code layout, but plain text alone loses that signal.
+    """
+    inner = text.strip()
+    n = max(3, _max_consecutive_backticks(inner) + 1)
+    fence = "`" * n
+    return f"{fence}\n{inner}\n{fence}"
+
+
 def _format_block_for_output(block: ExtractedBlock) -> str:
     """Render extracted block with stable heading markers for chunking."""
     if block.heading_level is not None:
         return f"[H{block.heading_level}] {block.text}"
+    if block.kind == "pre" and block.text.strip():
+        return _fence_pre_block(block.text)
     return block.text
 
 
@@ -565,6 +593,7 @@ def _self_test() -> None:
     """
     out = extract_readme_plain_text(sample)
     assert out and "[H1] Title" in out and "First para" in out and "code line" in out, out
+    assert "```" in out and out.count("code line") == 1, out
 
     gh_yaml = """
     <article class="markdown-body" itemprop="text"><div
@@ -574,6 +603,7 @@ def _self_test() -> None:
     """
     gh_out = extract_readme_plain_text(gh_yaml)
     assert gh_out and "enc_type: 'resnet18'" in gh_out and "junk" not in gh_out, gh_out
+    assert "```" in gh_out, gh_out
 
     toc = """
     <article class="markdown-body" itemprop="text">
@@ -620,6 +650,11 @@ def _self_test() -> None:
     weak_img_out = extract_readme_plain_text(weak_img)
     assert weak_img_out and "here" in weak_img_out and "details" in weak_img_out, weak_img_out
     assert "badge.svg" not in weak_img_out, weak_img_out
+
+    fence_nested = _fence_pre_block("before\n```\ninner fence\n```\nafter")
+    assert fence_nested.startswith("````"), fence_nested
+    assert fence_nested.endswith("````"), fence_nested
+    assert "inner fence" in fence_nested, fence_nested
 
     assert extract_readme_plain_text(None) is None
     assert extract_readme_plain_text("<html><body></body></html>") is None

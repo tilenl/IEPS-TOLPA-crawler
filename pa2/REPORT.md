@@ -390,20 +390,20 @@ Based on v2/v3 observations, we added `heading_structure_v4` to separate display
 
 #### Full-corpus v4 statistics — comparison (merge-group only vs surfacing + iterative consolidation)
 
-Two full `heading_structure_v4` runs over the same README-backed corpus (`segment_cleaned_content.py`, logger quality summary). The **earlier** run had **post-final merge-group consolidation only** (no surfacing loop). The **later** run includes **surfacing + iterative merge-group consolidation** (`v4_surface_merge_max_iterations` as configured for production; quality summary threshold `>cap(250)` matches the run’s configured hard-cap label in the logger).
+Two full `heading_structure_v4` runs over the same README-backed corpus (`segment_cleaned_content.py`, logger quality summary). The **earlier** run had **post-final merge-group consolidation only** (no surfacing loop). The **later** column is the **latest** full rebuild with **surfacing + iterative merge-group consolidation** (`v4_surface_merge_max_iterations` as configured for production; quality summary uses `>cap(256)` when the configured hard cap is `256` tokens).
 
-| Metric | v4 (merge-group consolidation only, prior run) | v4 (surfacing + iterative consolidation, current run) |
-|--------|--------------------------------------------------|------------------------------------------------------|
+| Metric | v4 (merge-group consolidation only, prior run) | v4 (surfacing + iterative consolidation, latest run) |
+|--------|--------------------------------------------------|-----------------------------------------------------|
 | **Coverage** | `pages_read=4031`, `pages_with_segments=4009` (`99.5%`) | same (`4031` / `4009`, `99.5%`) |
-| **Total segments** | `39998` | `38223` (−`1775`, ~`−4.4%`) |
-| **Chunks per page** | min `0`, median `6`, p95 `29` | min `0`, median `6`, p95 `29` |
-| **Tokens per segment** (strict v4 combined) | min `9`, median `188`, p95 `246` | min `11`, median `195`, p95 `246` |
+| **Total segments** | `39998` | `37914` (−`2084`, ~`−5.2%` vs merge-only) |
+| **Chunks per page** | min `0`, median `6`, p95 `29` | min `0`, median `6`, p95 `28` |
+| **Tokens per segment** (strict v4 combined) | min `9`, median `188`, p95 `246` | min `8`, median `200`, p95 `252` |
 | **`heading_path` non-null** | `100%` | `100%` |
 | **`token_estimate < 20`** | `107` (`0.3%`) | `59` (`0.2%`) |
-| **`token_estimate < 40`** | `1076` (`2.7%`) | `594` (`1.6%`) |
-| **Over hard cap** (`>cap` in logger) | `0` (`0.0%`) | `63` (`0.2%`) |
+| **`token_estimate < 40`** | `1076` (`2.7%`) | `593` (`1.6%`) |
+| **Over hard cap** (`>cap` in logger) | `0` (`0.0%`) | `61` (`0.2%`) |
 
-**Interpretation.** Surfacing plus repeated consolidation **reduces total segment count** and **raises the median chunk size** (`188` → `195` tokens), with **fewer micro-chunks** at `<20` and `<40`—stronger packing than merge-group consolidation alone. The trade-off is a **small set of segments** (`63`, `0.2%`) reported above the quality-summary hard-cap line in the current run (logger warning: configured hard cap `250` for that metric). Follow-up work can reconcile strict split/consolidate caps with prefix growth from **`Nested_scope:`** lines, or tighten the iterative merge guard so combined inputs stay strictly under the embedder budget everywhere.
+**Interpretation.** Surfacing plus repeated consolidation **reduces total segment count** and **raises the median chunk size** (`188` → `200` tokens), with **fewer micro-chunks** at `<20` and `<40`—stronger packing than merge-group consolidation alone. The trade-off is a **small set of segments** (`61`, `0.2%`) reported above the quality-summary hard-cap line in the latest run (logger warning: configured hard cap `256` for that metric). Follow-up work can reconcile strict split/consolidate caps with prefix growth from **`Nested_scope:`** lines, or tighten the iterative merge guard so combined inputs stay strictly under the embedder budget everywhere.
 
 Compared to the persisted **v3** aggregate in the table above (`43303` segments on `4011` pages, median token length `165`, `<20` at `0.85%`, `<40` at `4.73%`), **both** v4 variants remain clearly **less fragmented** than v3 (fewer segments, higher median tokens). The **first** v4 iteration improved over v3 primarily via merge-group consolidation; the **surfacing** iteration pushes fragmentation and tail counts further down at the cost of tracking a handful of over-cap warnings in the quality summary for this corpus snapshot.
 
@@ -435,10 +435,10 @@ Additional statistics:
 - pages read: `4031` (of all the 5000 HTML pages, some did not contain README files at all, and this is why only 4031 pages 
 were 
 read in the end)
-- pages with segments: `4011` (coverage `99.5%`) (additionally 20 pages with README files had them empty, and as such had 
+- pages with segments: `4009` (coverage `99.5%`) (additionally 22 pages with README files had them empty, and as such had 
 no 
 segments)
-- latest full `heading_structure_v4` rebuild with surfacing + iterative consolidation: **`38223`** persisted segments (see comparison table above; earlier v4-with-merge-only run had **`39998`** segments on the same corpus snapshot basis).
+- latest full `heading_structure_v4` rebuild with surfacing + iterative consolidation: **`37914`** persisted segments (see comparison table above; earlier v4-with-merge-only run had **`39998`** segments on the same corpus snapshot basis).
 
 ---
 
