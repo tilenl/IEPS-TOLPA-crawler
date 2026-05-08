@@ -115,7 +115,7 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v4 --rebuild
    ```
 
-   For `heading_structure_v4`, after the final hard-cap split the pipeline runs an extra **merge-group consolidation** pass: adjacent chunks that share the same internal `merge_group_parent` (sibling bucket under one parent heading) are merged left-to-right while the real v4 combined model input (prefix + `segment_text`) stays under the hard token cap. This is always on for v4; there is no env toggle.
+   For `heading_structure_v4`, after the final hard-cap split the pipeline runs **merge-group consolidation** (adjacent chunks that share the same internal `merge_group_parent` merge left-to-right while the real v4 combined model input stays under the hard token cap), optionally preceded by repeated **surfacing** rounds: a lonely deep merge group whose parent matches a neighbour’s merge group is promoted one level and the previous merge-group path is recorded for an additive **`Nested_scope:`** line in `embedding_text`. Surfacing and consolidation repeat until stable or until **`v4_surface_merge_max_iterations`** (default **5**), configurable via **`PA2_V4_SURFACE_MERGE_MAX_ITERATIONS`** or **`--v4-surface-merge-max-iterations`**. Use **`0`** to disable only the surfacing loop (one consolidation pass still runs). Consolidation itself remains always on for v4.
 
    Recommended first smoke test:
 

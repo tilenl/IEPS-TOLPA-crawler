@@ -365,10 +365,10 @@ Global interpretation:
 
 Based on v2/v3 observations, we added `heading_structure_v4` to separate display and embedding payloads:
 - `segment_text` is kept clean for output/reranking display,
-- `embedding_text` carries contextual prefix metadata (`Context: ...`, `Type: ...`) so semantic search can match hierarchical intent words that are not present in raw snippet text (especially for short lists and code blocks),
+- `embedding_text` carries contextual prefix metadata (`Context: ...`, `Type: ...`, and when surfacing applies `Nested_scope: ...` plus optional `Merged_sections: ...`) so semantic search can match hierarchical intent words that are not present in raw snippet text (especially for short lists and code blocks),
 - hard-cap checks use the **true v4 combined model input** (prefix + `segment_text` at encode time), so the payload the embedder sees stays within the hard token cap.
 
-`heading_structure_v4` reuses the v3 **greedy pack → split/repair rounds → final split** backbone, then adds **step 6 — merge-group consolidation** (always on for v4, no env toggle): after the final hard-cap split, adjacent chunks that share the same `merge_group_parent` (internal sibling bucket under one parent heading) are merged left-to-right while the merged chunk’s real combined v4 token count still respects the hard cap. Tiny-tail repair inside the refine loop also uses this same true v4 budget for cap checks, so repair and split stay aligned with what we persist as `token_estimate`.
+`heading_structure_v4` reuses the v3 **greedy pack → split/repair rounds → final split** backbone, then adds **merge-group post-processing** (always on for v4): **surfacing** can promote a lonely deep `merge_group_parent` one level when it aligns with a neighbour’s merge group, recording the former path on additive **`Nested_scope:`** lines in `embedding_text`; **merge-group consolidation** then greedily merges adjacent chunks that share the same `merge_group_parent` while the true combined v4 token count stays under the hard cap. Surfacing and consolidation repeat for up to **`v4_surface_merge_max_iterations`** (default `5`) until stable or capped (`0` disables only the surfacing loop and runs consolidation once). Tiny-tail repair inside the refine loop also uses this same true v4 budget for cap checks, so repair and split stay aligned with what we persist as `token_estimate`.
 
 #### Pipeline overview (seven steps)
 
@@ -382,21 +382,30 @@ Based on v2/v3 observations, we added `heading_structure_v4` to separate display
 
 5. **Final hard split** — One more cap pass after the last repair (no repair immediately after). *Needed so* the list leaving the loop cannot violate the hard cap after the last merge operations.
 
-6. **Merge-group consolidation** (v4 only) — Greedy chain-merge of **adjacent** chunks sharing `merge_group_parent` while merged true v4 tokens stay under the hard cap. *Needed so* siblings that stayed separate after soft packing and splitting (e.g. two medium chunks under one parent) can still become one segment when the real embedder input allows it—something soft packing alone does not guarantee.
+6. **Surfacing + merge-group consolidation** (v4 only) — **Surfacing** adjusts `merge_group_parent` for chunks that are the sole adjacent occupant of a deeper merge group when the parent matches a neighbour’s group, appending provenance to **`v4_nested_scope_paths`** (emitted as **`Nested_scope:`** in `embedding_text`). **Consolidation** then greedily chain-merges **adjacent** chunks sharing `merge_group_parent` while merged true v4 tokens stay under the hard cap. These two steps iterate (bounded by **`v4_surface_merge_max_iterations`**) until no change or the cap. *Needed so* lonely deep buckets can align with siblings and merge, and same-parent neighbours that stayed split after the v3-style passes can still become one segment when the real embedder input allows it.
 
 7. **Emit `page_segment` rows** — Map each final packed chunk to `segment_text`, `embedding_text`, `heading_path`, `merge_group_parent`, and strict `token_estimate`. *Needed so* the database stores exactly what downstream embedding and retrieval consume.
 
-#### Full-corpus v4 statistics (after merge-group consolidation)
+**Adjacency rule (consolidation):** consolidation only considers **neighboring** chunks in the **current** chunk list after the final split. It does **not** skip over a segment whose `merge_group_parent` differs in order to merge two same-group chunks that are not adjacent. That design is intentional: merges should reflect **contiguity in reading order and local meaning**—material that appears between two same-parent fragments is treated as a contextual boundary, so we do not collapse segments that are not directly connected in the linearized README flow.
 
-A full `heading_structure_v4` segmentation run over the README-backed pages produced the following quality summary (logger output from `segment_cleaned_content.py`):
+#### Full-corpus v4 statistics — comparison (merge-group only vs surfacing + iterative consolidation)
 
-- **Coverage:** `pages_read=4031`, `pages_with_segments=4009`, `total_segments=39998` (`dry_run=False`).
-- **Chunks per page:** min `0`, median `6`, p95 `29` (distribution of segment counts per page).
-- **Tokens per segment (strict, v4 combined input):** min `9`, median `188`, p95 `246`.
-- **Heading paths:** non-null ratio `100%`.
-- **Tail / cap safety:** segments with `token_estimate < 20`: `107` (`0.3%`); `< 40`: `1076` (`2.7%`); over configured hard cap (`>cap(250)` in this run): `0` (`0.0%`).
+Two full `heading_structure_v4` runs over the same README-backed corpus (`segment_cleaned_content.py`, logger quality summary). The **earlier** run had **post-final merge-group consolidation only** (no surfacing loop). The **later** run includes **surfacing + iterative merge-group consolidation** (`v4_surface_merge_max_iterations` as configured for production; quality summary threshold `>cap(250)` matches the run’s configured hard-cap label in the logger).
 
-Compared to the persisted **v3** aggregate in the table above (`43303` segments on `4011` pages, median token length `165`, `<20` at `0.85%`, `<40` at `4.73%`), v4 achieves **fewer total segments** (`39998`, i.e. lower fragmentation) with a **higher median token length** (`188` vs `165`), while keeping **no over-cap rows** in this run. The extra consolidation step directly improves the chunk-size distribution by merging same-parent neighbors that remained split after the v3-style passes.
+| Metric | v4 (merge-group consolidation only, prior run) | v4 (surfacing + iterative consolidation, current run) |
+|--------|--------------------------------------------------|------------------------------------------------------|
+| **Coverage** | `pages_read=4031`, `pages_with_segments=4009` (`99.5%`) | same (`4031` / `4009`, `99.5%`) |
+| **Total segments** | `39998` | `38223` (−`1775`, ~`−4.4%`) |
+| **Chunks per page** | min `0`, median `6`, p95 `29` | min `0`, median `6`, p95 `29` |
+| **Tokens per segment** (strict v4 combined) | min `9`, median `188`, p95 `246` | min `11`, median `195`, p95 `246` |
+| **`heading_path` non-null** | `100%` | `100%` |
+| **`token_estimate < 20`** | `107` (`0.3%`) | `59` (`0.2%`) |
+| **`token_estimate < 40`** | `1076` (`2.7%`) | `594` (`1.6%`) |
+| **Over hard cap** (`>cap` in logger) | `0` (`0.0%`) | `63` (`0.2%`) |
+
+**Interpretation.** Surfacing plus repeated consolidation **reduces total segment count** and **raises the median chunk size** (`188` → `195` tokens), with **fewer micro-chunks** at `<20` and `<40`—stronger packing than merge-group consolidation alone. The trade-off is a **small set of segments** (`63`, `0.2%`) reported above the quality-summary hard-cap line in the current run (logger warning: configured hard cap `250` for that metric). Follow-up work can reconcile strict split/consolidate caps with prefix growth from **`Nested_scope:`** lines, or tighten the iterative merge guard so combined inputs stay strictly under the embedder budget everywhere.
+
+Compared to the persisted **v3** aggregate in the table above (`43303` segments on `4011` pages, median token length `165`, `<20` at `0.85%`, `<40` at `4.73%`), **both** v4 variants remain clearly **less fragmented** than v3 (fewer segments, higher median tokens). The **first** v4 iteration improved over v3 primarily via merge-group consolidation; the **surfacing** iteration pushes fragmentation and tail counts further down at the cost of tracking a handful of over-cap warnings in the quality summary for this corpus snapshot.
 
 ### Why we rely on headers (tree structure) instead of flat README text
 
@@ -429,6 +438,7 @@ read in the end)
 - pages with segments: `4011` (coverage `99.5%`) (additionally 20 pages with README files had them empty, and as such had 
 no 
 segments)
+- latest full `heading_structure_v4` rebuild with surfacing + iterative consolidation: **`38223`** persisted segments (see comparison table above; earlier v4-with-merge-only run had **`39998`** segments on the same corpus snapshot basis).
 
 ---
 

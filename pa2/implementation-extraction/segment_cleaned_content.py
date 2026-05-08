@@ -21,7 +21,7 @@ Major revisions:
 - 2026-05-06: Initial Strategy C implementation (chunking + DB ingestion + quality gates).
 - 2026-05-06: Added `heading_structure_v3` (multi-pass greedy packing + tiny-tail repair).
 - 2026-05-07: Added `heading_structure_v4` with clean `segment_text` + additive `embedding_text` combined at encode time.
-- 2026-05-07: v4 post-final merge-group consolidation; v4 repair/split use true combined v4 token counts.
+- 2026-05-08: v4 merge-group surfacing (iterative with merge-group consolidation) and Nested_scope embedding prefix lines; `v4_surface_merge_max_iterations` / `PA2_V4_SURFACE_MERGE_MAX_ITERATIONS`.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import os
 import re
 import statistics
 from functools import lru_cache
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterator
 
 from embedding_common import combined_v4_embed_input
@@ -71,6 +71,8 @@ class SegmentationConfig:
     v3_min_chunk_tokens: int = 35
     v3_repair_max_passes: int = 2
     v3_refine_rounds: int = 1
+    # v4: iterative merge-group surfacing + consolidation (0 = surfacing disabled; still one consolidate pass).
+    v4_surface_merge_max_iterations: int = 5
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,8 @@ class V2PackedChunk:
     heading_path: str | None
     parts: list[V2ChunkPart]
     merge_group_path: str | None = None
+    # Raw merge-group / heading paths promoted away during surfacing; emitted under Nested_scope (normalized).
+    v4_nested_scope_paths: tuple[str, ...] = ()
 
 
 @lru_cache(maxsize=1)
@@ -542,21 +546,69 @@ def _build_v4_embedding_prefix(
     return base
 
 
+def _union_v4_nested_scope_paths(
+    left: tuple[str, ...], right: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Deterministic union of raw scope path strings (dedupe, sorted)."""
+    return tuple(sorted(set((*left, *right))))
+
+
+def _v4_embedding_prefix_for_packed(
+    packed: V2PackedChunk,
+    cfg: SegmentationConfig,
+    *,
+    parts_for_titles: list[V2ChunkPart] | None = None,
+) -> str:
+    """
+    V4 prefix for a packed chunk: Context, Type, optional Nested_scope (Option B), optional Merged_sections.
+    `parts_for_titles` overrides which parts drive Merged_sections / segment type when splitting sub-ranges.
+    """
+    title_parts = parts_for_titles if parts_for_titles is not None else packed.parts
+    segment_type = _segment_type_from_parts(title_parts)
+    merged_titles = _v4_merge_titles_for_parts(title_parts)
+
+    scope_bits: list[str] = []
+    for raw in sorted(set(packed.v4_nested_scope_paths)):
+        n = _normalize_heading_path_for_context(raw, cfg)
+        if n:
+            scope_bits.append(n)
+
+    if packed.v4_nested_scope_paths:
+        ctx_norm = _normalize_heading_path_for_context(
+            packed.merge_group_path or packed.heading_path, cfg
+        )
+        if not ctx_norm and scope_bits:
+            ctx_norm = scope_bits[0]
+    else:
+        ctx_norm = _normalize_heading_path_for_context(packed.heading_path, cfg)
+
+    context_lines: list[str] = []
+    if ctx_norm:
+        context_lines.append(f"Context: {ctx_norm}")
+    context_lines.append(f"Type: {segment_type}")
+    base = "\n".join(context_lines).strip()
+
+    extra: list[str] = []
+    nested_display = [s for s in scope_bits if s != ctx_norm]
+    if nested_display:
+        extra.append("Nested_scope: " + "; ".join(nested_display))
+    if len(merged_titles) > 1:
+        extra.append("Merged_sections: " + "; ".join(merged_titles))
+    if not base:
+        return "\n".join(extra).strip() if extra else ""
+    if not extra:
+        return base
+    return f"{base}\n" + "\n".join(extra)
+
+
 def _v4_packed_combined_token_count(packed: V2PackedChunk, cfg: SegmentationConfig) -> int:
     """
     Strict token count for v4 model input (embedding prefix + segment body), matching emit/split budget.
     """
-    segment_type = _segment_type_from_parts(packed.parts)
     segment_text = "\n\n".join(
         _render_v2_part(part, include_subheading=False) for part in packed.parts
     ).strip()
-    merged_titles = _v4_merge_titles_for_parts(packed.parts)
-    embedding_text = _build_v4_embedding_prefix(
-        packed.heading_path,
-        segment_type,
-        cfg,
-        merged_section_titles=merged_titles,
-    )
+    embedding_text = _v4_embedding_prefix_for_packed(packed, cfg)
     combined = combined_v4_embed_input(embedding_text, segment_text)
     return _count_tokens(combined, cfg, strict=True)
 
@@ -896,10 +948,14 @@ def _merge_v3_packed_chunks(left: V2PackedChunk, right: V2PackedChunk) -> V2Pack
     else:
         heading_path = left.merge_group_path or right.merge_group_path or left.heading_path
     merge_group = left.merge_group_path or right.merge_group_path or _parent_heading_path(heading_path)
+    nested_scopes = _union_v4_nested_scope_paths(
+        left.v4_nested_scope_paths, right.v4_nested_scope_paths
+    )
     return V2PackedChunk(
         heading_path=heading_path,
         parts=merged_parts,
         merge_group_path=merge_group,
+        v4_nested_scope_paths=nested_scopes,
     )
 
 
@@ -992,6 +1048,50 @@ def _consolidate_v4_merge_group_neighbors(
                 break
         out.append(acc)
         i = j + 1
+    return out
+
+
+def _surface_v4_merge_groups_lonely_children(
+    packed_chunks: list[V2PackedChunk],
+    _cfg: SegmentationConfig,
+) -> list[V2PackedChunk]:
+    """
+    Promote merge_group_path one level toward parent when this chunk is the only adjacent
+    occupant of its merge group and that parent matches a neighbour's merge_group_path.
+    Records the previous merge group string on v4_nested_scope_paths for Nested_scope prefix lines.
+    """
+    out: list[V2PackedChunk] = []
+    n = len(packed_chunks)
+    for i, chunk in enumerate(packed_chunks):
+        mg = chunk.merge_group_path
+        if mg is None:
+            out.append(chunk)
+            continue
+        parent = _parent_heading_path(mg)
+        if parent is None or parent == mg:
+            out.append(chunk)
+            continue
+        prev_mg = packed_chunks[i - 1].merge_group_path if i > 0 else None
+        next_mg = packed_chunks[i + 1].merge_group_path if i + 1 < n else None
+        lonely_prev = i == 0 or prev_mg != mg
+        lonely_next = i == n - 1 or next_mg != mg
+        if not (lonely_prev and lonely_next):
+            out.append(chunk)
+            continue
+        aligned = (prev_mg is not None and parent == prev_mg) or (
+            next_mg is not None and parent == next_mg
+        )
+        if not aligned:
+            out.append(chunk)
+            continue
+        new_scopes = _union_v4_nested_scope_paths(chunk.v4_nested_scope_paths, (mg,))
+        out.append(
+            replace(
+                chunk,
+                merge_group_path=parent,
+                v4_nested_scope_paths=new_scopes,
+            )
+        )
     return out
 
 
@@ -1188,13 +1288,10 @@ def _split_v2_packed_chunks(
             for part in packed.parts
         ]
 
-        def _v4_prefix_for_parts(candidate_parts: list[V2ChunkPart], segment_type: str) -> str:
-            merged = _v4_merge_titles_for_parts(candidate_parts)
-            return _build_v4_embedding_prefix(
-                packed.heading_path,
-                segment_type,
+        def _v4_prefix_for_parts(candidate_parts: list[V2ChunkPart], _: str) -> str:
+            return _v4_embedding_prefix_for_packed(
+                replace(packed, parts=list(candidate_parts)),
                 cfg,
-                merged_section_titles=merged,
             )
 
         def budget_text_for(
@@ -1220,12 +1317,7 @@ def _split_v2_packed_chunks(
             rendered_tokens = [
                 _count_tokens(
                     combined_v4_embed_input(
-                        _build_v4_embedding_prefix(
-                            packed.heading_path,
-                            part.segment_type,
-                            cfg,
-                            merged_section_titles=(),
-                        ),
+                        _v4_embedding_prefix_for_packed(replace(packed, parts=[part]), cfg),
                         _render_v2_part(part, include_subheading=False),
                     ),
                     cfg,
@@ -1255,17 +1347,15 @@ def _split_v2_packed_chunks(
             for part, rendered_text, part_tokens in zip(packed.parts, rendered_parts, rendered_tokens):
                 if part_tokens > cap:
                     if current_parts:
-                        out.append(V2PackedChunk(heading_path=packed.heading_path, parts=list(current_parts)))
+                        out.append(replace(packed, parts=list(current_parts)))
                         current_parts = []
                         current_rendered_parts = []
                     part_prefix_token_overhead = 0
                     if include_context_prefix_in_budget:
                         if v4_embed_text_split:
-                            part_pref = _build_v4_embedding_prefix(
-                                packed.heading_path,
-                                part.segment_type,
+                            part_pref = _v4_embedding_prefix_for_packed(
+                                replace(packed, parts=[part]),
                                 cfg,
-                                merged_section_titles=(),
                             )
                             part_prefix_token_overhead = _count_tokens(
                                 combined_v4_embed_input(part_pref, ""),
@@ -1296,8 +1386,8 @@ def _split_v2_packed_chunks(
                         hard_cap_tokens=split_cap,
                     ):
                         out.append(
-                            V2PackedChunk(
-                                heading_path=packed.heading_path,
+                            replace(
+                                packed,
                                 parts=[
                                     V2ChunkPart(
                                         heading_title="",
@@ -1307,30 +1397,19 @@ def _split_v2_packed_chunks(
                                         source_heading_path=part.source_heading_path,
                                     )
                                 ],
-                                merge_group_path=packed.merge_group_path,
                             )
                         )
                     continue
                 candidate_parts = current_parts + [part]
                 candidate_rendered = current_rendered_parts + [rendered_text]
                 if v4_embed_text_split and include_context_prefix_in_budget:
-                    candidate_packed = V2PackedChunk(
-                        heading_path=packed.heading_path,
-                        parts=list(candidate_parts),
-                        merge_group_path=packed.merge_group_path,
-                    )
+                    candidate_packed = replace(packed, parts=list(candidate_parts))
                     over_cap = _v4_packed_combined_token_count(candidate_packed, cfg) > cap
                 else:
                     candidate_budget_text = budget_text_for(candidate_parts, candidate_rendered)
                     over_cap = _count_tokens(candidate_budget_text, cfg, strict=True) > cap
                 if current_parts and over_cap:
-                    out.append(
-                        V2PackedChunk(
-                            heading_path=packed.heading_path,
-                            parts=list(current_parts),
-                            merge_group_path=packed.merge_group_path,
-                        )
-                    )
+                    out.append(replace(packed, parts=list(current_parts)))
                     current_parts = [part]
                     current_rendered_parts = [rendered_text]
                 else:
@@ -1338,10 +1417,9 @@ def _split_v2_packed_chunks(
                     current_rendered_parts.append(rendered_text)
             if current_parts:
                 out.append(
-                    V2PackedChunk(
-                        heading_path=packed.heading_path,
+                    replace(
+                        packed,
                         parts=list(current_parts),
-                        merge_group_path=packed.merge_group_path,
                     )
                 )
             continue
@@ -1359,11 +1437,9 @@ def _split_v2_packed_chunks(
         single_prefix_token_overhead = 0
         if include_context_prefix_in_budget:
             if v4_embed_text_split:
-                single_pref = _build_v4_embedding_prefix(
-                    packed.heading_path,
-                    single_part.segment_type,
+                single_pref = _v4_embedding_prefix_for_packed(
+                    replace(packed, parts=[single_part]),
                     cfg,
-                    merged_section_titles=(),
                 )
                 single_prefix_token_overhead = _count_tokens(
                     combined_v4_embed_input(single_pref, ""),
@@ -1391,8 +1467,8 @@ def _split_v2_packed_chunks(
         )
         for text in chunks:
             out.append(
-                V2PackedChunk(
-                    heading_path=packed.heading_path,
+                replace(
+                    packed,
                     parts=[
                         V2ChunkPart(
                             heading_title="",
@@ -1402,7 +1478,6 @@ def _split_v2_packed_chunks(
                             source_heading_path=single_part.source_heading_path,
                         )
                     ],
-                    merge_group_path=packed.merge_group_path,
                 )
             )
     return out
@@ -1540,9 +1615,20 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
         include_context_prefix_in_budget=True,
         v4_embed_text_split=True,
     )
-    final_chunks = _consolidate_v4_merge_group_neighbors(
-        final_chunks, cfg, hard_cap_tokens=cfg.v3_hard_cap_tokens
-    )
+    if cfg.v4_surface_merge_max_iterations <= 0:
+        final_chunks = _consolidate_v4_merge_group_neighbors(
+            final_chunks, cfg, hard_cap_tokens=cfg.v3_hard_cap_tokens
+        )
+    else:
+        for _ in range(cfg.v4_surface_merge_max_iterations):
+            before = final_chunks
+            surfaced = _surface_v4_merge_groups_lonely_children(before, cfg)
+            merged = _consolidate_v4_merge_group_neighbors(
+                surfaced, cfg, hard_cap_tokens=cfg.v3_hard_cap_tokens
+            )
+            final_chunks = merged
+            if surfaced == before and merged == surfaced:
+                break
 
     segments: list[Segment] = []
     for chunk_index, packed_chunk in enumerate(final_chunks):
@@ -1550,13 +1636,7 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
         segment_text = "\n\n".join(
             _render_v2_part(part, include_subheading=False) for part in packed_chunk.parts
         ).strip()
-        merged_titles = _v4_merge_titles_for_parts(packed_chunk.parts)
-        embedding_text = _build_v4_embedding_prefix(
-            packed_chunk.heading_path,
-            segment_type,
-            cfg,
-            merged_section_titles=merged_titles,
-        )
+        embedding_text = _v4_embedding_prefix_for_packed(packed_chunk, cfg)
         combined = combined_v4_embed_input(embedding_text, segment_text)
         segments.append(
             Segment(
@@ -1795,6 +1875,7 @@ def run_segmentation(
     rebuild: bool = False,
     dry_run: bool = False,
     v3_refine_rounds: int | None = None,
+    v4_surface_merge_max_iterations: int | None = None,
 ) -> RunStats:
     """
     Execute full DB segmentation flow.
@@ -1827,6 +1908,11 @@ def run_segmentation(
             int(os.environ.get("PA2_V3_REFINE_ROUNDS", "1"))
             if v3_refine_rounds is None
             else v3_refine_rounds
+        ),
+        v4_surface_merge_max_iterations=(
+            int(os.environ.get("PA2_V4_SURFACE_MERGE_MAX_ITERATIONS", "5"))
+            if v4_surface_merge_max_iterations is None
+            else v4_surface_merge_max_iterations
         ),
     )
     stats = RunStats(strategy=strategy)
@@ -2054,6 +2140,59 @@ Use cosine LR schedule and mixed precision.
     assert len(consolidated) == 1, "Expected merge-group consolidation of two siblings."
     assert _v4_packed_combined_token_count(consolidated[0], v3_cfg) <= v3_cfg.v3_hard_cap_tokens
 
+    # v4 surfacing: lonely deep merge group aligns with neighbour parent; Nested_scope captures promoted path.
+    pd_path = "README > ParentDoc"
+    leaf_path = "README > ParentDoc > LonelyLeaf"
+    surf_triplet = [
+        V2PackedChunk(
+            heading_path=f"{pd_path} > A",
+            merge_group_path=pd_path,
+            parts=[
+                V2ChunkPart(
+                    heading_title="A",
+                    text="alpha",
+                    segment_type="prose",
+                    tokens=5,
+                    source_heading_path=f"{pd_path} > A",
+                )
+            ],
+        ),
+        V2PackedChunk(
+            heading_path=f"{leaf_path} > Body",
+            merge_group_path=leaf_path,
+            parts=[
+                V2ChunkPart(
+                    heading_title="Body",
+                    text="beta",
+                    segment_type="prose",
+                    tokens=5,
+                    source_heading_path=f"{leaf_path} > Body",
+                )
+            ],
+        ),
+        V2PackedChunk(
+            heading_path="README > Other > X",
+            merge_group_path="README > Other",
+            parts=[
+                V2ChunkPart(
+                    heading_title="X",
+                    text="gamma",
+                    segment_type="prose",
+                    tokens=5,
+                    source_heading_path="README > Other > X",
+                )
+            ],
+        ),
+    ]
+    surfaced_once = _surface_v4_merge_groups_lonely_children(surf_triplet, v3_cfg)
+    assert surfaced_once[1].merge_group_path == pd_path
+    assert leaf_path in surfaced_once[1].v4_nested_scope_paths
+    surf_merged = _consolidate_v4_merge_group_neighbors(surfaced_once, v3_cfg)
+    assert len(surf_merged) == 2, "Expected surfacing to enable one consolidation."
+    surf_prefix = _v4_embedding_prefix_for_packed(surf_merged[0], v3_cfg)
+    assert "Nested_scope:" in surf_prefix
+    assert "ParentDoc > LonelyLeaf" in surf_prefix
+
     # v4 regression: additive embedding_text; model input = prefix + segment_text; hard cap on combined.
     v4_segments = _segment_page_v4(
         page_id=42,
@@ -2145,6 +2284,13 @@ def _main(argv: list[str] | None = None) -> int:
         help="Number of v3 split/repair refinement rounds before final split.",
     )
     parser.add_argument(
+        "--v4-surface-merge-max-iterations",
+        type=int,
+        default=None,
+        help="v4 only: max iterations of surfacing + merge-group consolidation (0 = disable surfacing). "
+        "Overrides PA2_V4_SURFACE_MERGE_MAX_ITERATIONS when set.",
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Run embedded checks and exit.",
@@ -2168,6 +2314,7 @@ def _main(argv: list[str] | None = None) -> int:
         rebuild=args.rebuild,
         dry_run=args.dry_run,
         v3_refine_rounds=args.v3_refine_rounds,
+        v4_surface_merge_max_iterations=args.v4_surface_merge_max_iterations,
     )
     logging.info(
         "done: pages_read=%s pages_with_segments=%s total_segments=%s strategy=%s dry_run=%s",
