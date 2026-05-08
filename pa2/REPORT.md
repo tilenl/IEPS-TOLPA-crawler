@@ -366,9 +366,37 @@ Global interpretation:
 Based on v2/v3 observations, we added `heading_structure_v4` to separate display and embedding payloads:
 - `segment_text` is kept clean for output/reranking display,
 - `embedding_text` carries contextual prefix metadata (`Context: ...`, `Type: ...`) so semantic search can match hierarchical intent words that are not present in raw snippet text (especially for short lists and code blocks),
-- hard-cap checks are computed against `embedding_text` token length so the model-facing payload remains budget-safe.
+- hard-cap checks use the **true v4 combined model input** (prefix + `segment_text` at encode time), so the payload the embedder sees stays within the hard token cap.
 
-`heading_structure_v4` reuses the v3 combine/split/repair backbone, but changes the final text representation contract for retrieval quality.
+`heading_structure_v4` reuses the v3 **greedy pack → split/repair rounds → final split** backbone, then adds **step 6 — merge-group consolidation** (always on for v4, no env toggle): after the final hard-cap split, adjacent chunks that share the same `merge_group_parent` (internal sibling bucket under one parent heading) are merged left-to-right while the merged chunk’s real combined v4 token count still respects the hard cap. Tiny-tail repair inside the refine loop also uses this same true v4 budget for cap checks, so repair and split stay aligned with what we persist as `token_estimate`.
+
+#### Pipeline overview (seven steps)
+
+1. **Parse blocks** — Split `cleaned_content` into logical blocks with preserved `[H1]`…`[H6]` structure. *Needed so* all later stages respect section boundaries and never merge unrelated topics across heading transitions.
+
+2. **Build section units** — One unit per heading section with body text and a strict token estimate (for v4, per-section combined prefix+body). *Needed so* downstream packing has atomic, fairly sized siblings to combine.
+
+3. **Parent-aware greedy pack** (`_pack_v3_by_parent_greedy`) — Consecutive units under the **same parent** are concatenated into one `V2PackedChunk` while the running total stays under the **soft** target. *Needed so* subsection-heavy pages produce fewer, denser chunks before any splitting, without exceeding a gentle density goal.
+
+4. **Refine loop: hard split then tiny-tail repair** (repeated `PA2_V3_REFINE_ROUNDS` times) — **Split** enforces the **hard** cap on v4 combined input (splitting oversized packed chunks at part boundaries, then text fallbacks). **Repair** re-attaches **underfilled** fragments to an adjacent sibling in the same merge group when the **merged** true v4 budget is cap-safe. *Needed so* oversized groups become model-safe, and split-induced micro-tails are absorbed where possible without crossing merge groups.
+
+5. **Final hard split** — One more cap pass after the last repair (no repair immediately after). *Needed so* the list leaving the loop cannot violate the hard cap after the last merge operations.
+
+6. **Merge-group consolidation** (v4 only) — Greedy chain-merge of **adjacent** chunks sharing `merge_group_parent` while merged true v4 tokens stay under the hard cap. *Needed so* siblings that stayed separate after soft packing and splitting (e.g. two medium chunks under one parent) can still become one segment when the real embedder input allows it—something soft packing alone does not guarantee.
+
+7. **Emit `page_segment` rows** — Map each final packed chunk to `segment_text`, `embedding_text`, `heading_path`, `merge_group_parent`, and strict `token_estimate`. *Needed so* the database stores exactly what downstream embedding and retrieval consume.
+
+#### Full-corpus v4 statistics (after merge-group consolidation)
+
+A full `heading_structure_v4` segmentation run over the README-backed pages produced the following quality summary (logger output from `segment_cleaned_content.py`):
+
+- **Coverage:** `pages_read=4031`, `pages_with_segments=4009`, `total_segments=39998` (`dry_run=False`).
+- **Chunks per page:** min `0`, median `6`, p95 `29` (distribution of segment counts per page).
+- **Tokens per segment (strict, v4 combined input):** min `9`, median `188`, p95 `246`.
+- **Heading paths:** non-null ratio `100%`.
+- **Tail / cap safety:** segments with `token_estimate < 20`: `107` (`0.3%`); `< 40`: `1076` (`2.7%`); over configured hard cap (`>cap(250)` in this run): `0` (`0.0%`).
+
+Compared to the persisted **v3** aggregate in the table above (`43303` segments on `4011` pages, median token length `165`, `<20` at `0.85%`, `<40` at `4.73%`), v4 achieves **fewer total segments** (`39998`, i.e. lower fragmentation) with a **higher median token length** (`188` vs `165`), while keeping **no over-cap rows** in this run. The extra consolidation step directly improves the chunk-size distribution by merging same-parent neighbors that remained split after the v3-style passes.
 
 ### Why we rely on headers (tree structure) instead of flat README text
 

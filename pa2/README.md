@@ -115,6 +115,8 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    .venv/bin/python segment_cleaned_content.py --strategy heading_structure_v4 --rebuild
    ```
 
+   For `heading_structure_v4`, after the final hard-cap split the pipeline runs an extra **merge-group consolidation** pass: adjacent chunks that share the same internal `merge_group_parent` (sibling bucket under one parent heading) are merged left-to-right while the real v4 combined model input (prefix + `segment_text`) stays under the hard token cap. This is always on for v4; there is no env toggle.
+
    Recommended first smoke test:
 
    ```bash

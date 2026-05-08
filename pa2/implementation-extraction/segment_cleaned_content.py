@@ -21,6 +21,7 @@ Major revisions:
 - 2026-05-06: Initial Strategy C implementation (chunking + DB ingestion + quality gates).
 - 2026-05-06: Added `heading_structure_v3` (multi-pass greedy packing + tiny-tail repair).
 - 2026-05-07: Added `heading_structure_v4` with clean `segment_text` + additive `embedding_text` combined at encode time.
+- 2026-05-07: v4 post-final merge-group consolidation; v4 repair/split use true combined v4 token counts.
 """
 
 from __future__ import annotations
@@ -541,6 +542,25 @@ def _build_v4_embedding_prefix(
     return base
 
 
+def _v4_packed_combined_token_count(packed: V2PackedChunk, cfg: SegmentationConfig) -> int:
+    """
+    Strict token count for v4 model input (embedding prefix + segment body), matching emit/split budget.
+    """
+    segment_type = _segment_type_from_parts(packed.parts)
+    segment_text = "\n\n".join(
+        _render_v2_part(part, include_subheading=False) for part in packed.parts
+    ).strip()
+    merged_titles = _v4_merge_titles_for_parts(packed.parts)
+    embedding_text = _build_v4_embedding_prefix(
+        packed.heading_path,
+        segment_type,
+        cfg,
+        merged_section_titles=merged_titles,
+    )
+    combined = combined_v4_embed_input(embedding_text, segment_text)
+    return _count_tokens(combined, cfg, strict=True)
+
+
 def _emit_chunk(
     *,
     page_id: int,
@@ -884,9 +904,19 @@ def _merge_v3_packed_chunks(left: V2PackedChunk, right: V2PackedChunk) -> V2Pack
 
 
 def _repair_v3_underfilled_chunks(
-    packed_chunks: list[V2PackedChunk], cfg: SegmentationConfig
+    packed_chunks: list[V2PackedChunk],
+    cfg: SegmentationConfig,
+    *,
+    v4_combined_repair_budget: bool = False,
 ) -> list[V2PackedChunk]:
     """Stage C(v3): merge tiny chunks with adjacent siblings when safe and deterministic."""
+
+    def _merged_fits_hard_cap(left: V2PackedChunk, right: V2PackedChunk) -> bool:
+        if v4_combined_repair_budget:
+            merged = _merge_v3_packed_chunks(left, right)
+            return _v4_packed_combined_token_count(merged, cfg) <= cfg.v3_hard_cap_tokens
+        return _estimate_packed_tokens(left) + _estimate_packed_tokens(right) <= cfg.v3_hard_cap_tokens
+
     repaired = list(packed_chunks)
     if not repaired:
         return repaired
@@ -906,10 +936,7 @@ def _repair_v3_underfilled_chunks(
             if prev_idx >= 0:
                 prev_chunk = repaired[prev_idx]
                 same_group = prev_chunk.merge_group_path == current.merge_group_path
-                fits_cap = (
-                    _estimate_packed_tokens(prev_chunk) + current_tokens
-                    <= cfg.v3_hard_cap_tokens
-                )
+                fits_cap = _merged_fits_hard_cap(prev_chunk, current)
                 if same_group and fits_cap:
                     repaired[prev_idx] = _merge_v3_packed_chunks(prev_chunk, current)
                     repaired.pop(i)
@@ -923,10 +950,7 @@ def _repair_v3_underfilled_chunks(
             if next_idx < len(repaired):
                 next_chunk = repaired[next_idx]
                 same_group = next_chunk.merge_group_path == current.merge_group_path
-                fits_cap = (
-                    _estimate_packed_tokens(next_chunk) + current_tokens
-                    <= cfg.v3_hard_cap_tokens
-                )
+                fits_cap = _merged_fits_hard_cap(current, next_chunk)
                 if same_group and fits_cap:
                     repaired[i] = _merge_v3_packed_chunks(current, next_chunk)
                     repaired.pop(next_idx)
@@ -936,6 +960,39 @@ def _repair_v3_underfilled_chunks(
         if not changed:
             break
     return repaired
+
+
+def _consolidate_v4_merge_group_neighbors(
+    packed_chunks: list[V2PackedChunk],
+    cfg: SegmentationConfig,
+    *,
+    hard_cap_tokens: int | None = None,
+) -> list[V2PackedChunk]:
+    """
+    v4-only post-split pass: greedily merge adjacent chunks sharing merge_group_path while true
+    combined v4 embed input stays under the hard cap.
+    """
+    cap = hard_cap_tokens if hard_cap_tokens is not None else cfg.v3_hard_cap_tokens
+    out: list[V2PackedChunk] = []
+    i = 0
+    n = len(packed_chunks)
+    while i < n:
+        acc = packed_chunks[i]
+        j = i
+        while j + 1 < n:
+            nxt = packed_chunks[j + 1]
+            mg = acc.merge_group_path
+            if mg is None or mg != nxt.merge_group_path:
+                break
+            merged = _merge_v3_packed_chunks(acc, nxt)
+            if _v4_packed_combined_token_count(merged, cfg) <= cap:
+                acc = merged
+                j += 1
+            else:
+                break
+        out.append(acc)
+        i = j + 1
+    return out
 
 
 def _split_v2_text_by_token_cap(
@@ -1181,7 +1238,13 @@ def _split_v2_packed_chunks(
                 _count_tokens(budget_text_for([part], [rendered_text]), cfg, strict=True)
                 for part, rendered_text in zip(packed.parts, rendered_parts, strict=True)
             ]
-        if _count_tokens(budget_text_for(packed.parts, rendered_parts), cfg, strict=True) <= cap:
+        if v4_embed_text_split and include_context_prefix_in_budget:
+            full_within_cap = _v4_packed_combined_token_count(packed, cfg) <= cap
+        else:
+            full_within_cap = (
+                _count_tokens(budget_text_for(packed.parts, rendered_parts), cfg, strict=True) <= cap
+            )
+        if full_within_cap:
             out.append(packed)
             continue
 
@@ -1250,8 +1313,17 @@ def _split_v2_packed_chunks(
                     continue
                 candidate_parts = current_parts + [part]
                 candidate_rendered = current_rendered_parts + [rendered_text]
-                candidate_budget_text = budget_text_for(candidate_parts, candidate_rendered)
-                if current_parts and _count_tokens(candidate_budget_text, cfg, strict=True) > cap:
+                if v4_embed_text_split and include_context_prefix_in_budget:
+                    candidate_packed = V2PackedChunk(
+                        heading_path=packed.heading_path,
+                        parts=list(candidate_parts),
+                        merge_group_path=packed.merge_group_path,
+                    )
+                    over_cap = _v4_packed_combined_token_count(candidate_packed, cfg) > cap
+                else:
+                    candidate_budget_text = budget_text_for(candidate_parts, candidate_rendered)
+                    over_cap = _count_tokens(candidate_budget_text, cfg, strict=True) > cap
+                if current_parts and over_cap:
                     out.append(
                         V2PackedChunk(
                             heading_path=packed.heading_path,
@@ -1459,7 +1531,7 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
             include_context_prefix_in_budget=True,
             v4_embed_text_split=True,
         )
-        chunks = _repair_v3_underfilled_chunks(chunks, cfg)
+        chunks = _repair_v3_underfilled_chunks(chunks, cfg, v4_combined_repair_budget=True)
     final_chunks = _split_v2_packed_chunks(
         chunks,
         cfg,
@@ -1467,6 +1539,9 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
         include_subheadings=True,
         include_context_prefix_in_budget=True,
         v4_embed_text_split=True,
+    )
+    final_chunks = _consolidate_v4_merge_group_neighbors(
+        final_chunks, cfg, hard_cap_tokens=cfg.v3_hard_cap_tokens
     )
 
     segments: list[Segment] = []
@@ -1493,7 +1568,7 @@ def _segment_page_v4(*, page_id: int, cleaned_content: str, strategy: str, cfg: 
                 segment_type=segment_type,
                 segment_text=segment_text,
                 embedding_text=embedding_text,
-                token_estimate=_count_tokens(combined, cfg, strict=True),
+                token_estimate=_v4_packed_combined_token_count(packed_chunk, cfg),
                 char_count=len(combined),
             )
         )
@@ -1944,6 +2019,40 @@ Use cosine LR schedule and mixed precision.
     assert _estimate_packed_tokens(repaired[0]) == 218, "Unexpected merged token sum."
     assert repaired[0].parts[0].text == "chunk-a"
     assert repaired[0].parts[1].text == "[Paper] [Code]"
+
+    # v4 merge-group consolidation: adjacent chunks with same merge_group_path merge if true v4 budget allows.
+    con_parent = "README > ParentDoc"
+    consolidate_input = [
+        V2PackedChunk(
+            heading_path="README > ParentDoc > SubA",
+            merge_group_path=con_parent,
+            parts=[
+                V2ChunkPart(
+                    heading_title="SubA",
+                    text="one two three",
+                    segment_type="prose",
+                    tokens=3,
+                    source_heading_path="README > ParentDoc > SubA",
+                )
+            ],
+        ),
+        V2PackedChunk(
+            heading_path="README > ParentDoc > SubB",
+            merge_group_path=con_parent,
+            parts=[
+                V2ChunkPart(
+                    heading_title="SubB",
+                    text="four five six",
+                    segment_type="prose",
+                    tokens=3,
+                    source_heading_path="README > ParentDoc > SubB",
+                )
+            ],
+        ),
+    ]
+    consolidated = _consolidate_v4_merge_group_neighbors(consolidate_input, v3_cfg)
+    assert len(consolidated) == 1, "Expected merge-group consolidation of two siblings."
+    assert _v4_packed_combined_token_count(consolidated[0], v3_cfg) <= v3_cfg.v3_hard_cap_tokens
 
     # v4 regression: additive embedding_text; model input = prefix + segment_text; hard cap on combined.
     v4_segments = _segment_page_v4(
