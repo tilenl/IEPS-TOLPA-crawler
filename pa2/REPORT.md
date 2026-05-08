@@ -219,6 +219,8 @@ The `segment_type` label is not cosmetic; it captures the structural role of a c
 - **`table_rows`**: table-like rows where columns are important.
 - **`mixed`**: a merged chunk that contains multiple structural kinds (for example prose + code snippet).
 
+For **`heading_structure_v4`**, the persisted **`segment_type`** column continues to use these internal labels. The additive **`embedding_text`** prefix includes a human-oriented **`Type:`** line that may **differ** for retrieval: code-like chunks use **`code block`** (two words, so lexical overlap with queries containing “code” or “block”), and uniformly titled bibliography-style sections can map to **`authors`** or **`references`** when every subsection title matches normalized heading allowlists in `segment_cleaned_content.py`.
+
 `code_block` is assigned using explicit heuristics during block classification:
 - fenced markers (```) indicate code immediately,
 - line-level indentation patterns (`    ` or tab-prefixed lines) indicate preformatted blocks,
@@ -365,7 +367,7 @@ Global interpretation:
 
 Based on v2/v3 observations, we added `heading_structure_v4` to separate display and embedding payloads:
 - `segment_text` is kept clean for output/reranking display,
-- `embedding_text` carries contextual prefix metadata (`Context: ...`, `Type: ...`, and when surfacing applies `Nested_scope: ...` plus optional `Merged_sections: ...`) so semantic search can match hierarchical intent words that are not present in raw snippet text (especially for short lists and code blocks),
+- `embedding_text` carries contextual prefix metadata (`Context: ...`, `Type: ...`, and when surfacing applies `Nested_scope: ...` plus optional `Merged_sections: ...`). The `Type:` token uses **display** labels for v4 (for example **`code block`**, **`authors`**, **`references`**) which may differ from the **`segment_type`** column; those prefixes help semantic search match hierarchical or generic intent words that are not present in raw snippet text (especially for short lists and fenced code),
 - hard-cap checks use the **true v4 combined model input** (prefix + `segment_text` at encode time), so the payload the embedder sees stays within the hard token cap.
 
 `heading_structure_v4` reuses the v3 **greedy pack → split/repair rounds → final split** backbone, then adds **merge-group post-processing** (always on for v4): **surfacing** can promote a lonely deep `merge_group_parent` one level when it aligns with a neighbour’s merge group, recording the former path on additive **`Nested_scope:`** lines in `embedding_text`; **merge-group consolidation** then greedily merges adjacent chunks that share the same `merge_group_parent` while the true combined v4 token count stays under the hard cap. Surfacing and consolidation repeat for up to **`v4_surface_merge_max_iterations`** (default `5`) until stable or capped (`0` disables only the surfacing loop and runs consolidation once). Tiny-tail repair inside the refine loop also uses this same true v4 budget for cap checks, so repair and split stay aligned with what we persist as `token_estimate`.

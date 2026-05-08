@@ -131,7 +131,8 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - rows are deterministic per `(page_id, strategy, chunk_index)` and can be rebuilt by strategy.
    - for `heading_structure_v4`, each row stores:
      - `segment_text` (clean display text),
-     - `embedding_text` (contextualized embedding payload with heading/type prefix).
+     - `embedding_text` (additive contextual prefix for v4: `Context:` / `Type:` / optional `Nested_scope:` / `Merged_sections:` — combined with `segment_text` only when encoding embeddings).
+     - **Note:** `segment_type` in the database stays an **internal** structural label (`code_block`, `list_bundle`, `prose`, …). The `Type:` line inside `embedding_text` uses **display** wording when useful for retrieval: `code block` (two words so queries matching “code” or “block” overlap the prefix), and heading-based **`authors`** / **`references`** when every subsection title in the chunk normalizes to the documented authors/references heading sets (see `segment_cleaned_content.py`).
 
 4. **Useful CLI flags**:
    - `--page-id <id>`: process a single page for debugging,
@@ -172,8 +173,8 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 7. **`heading_structure_v4` token policy** (for `all-MiniLM-L6-v2`):
    - Uses v3 combine/split/repair flow as the structural backbone.
    - Keeps `segment_text` clean (without subsection marker injection).
-   - Builds `embedding_text` with context metadata (`Context: ...`, `Type: ...`) plus chunk body.
-   - Enforces hard-cap checks against `embedding_text` token length.
+   - Builds additive `embedding_text` with context metadata (`Context: ...`, `Type: ...`) where `Type:` uses display labels as described above (not necessarily identical to the `segment_type` column).
+   - Enforces hard-cap checks on the **true** combined model input (`embedding_text` prefix plus `segment_text` body), matching what `embed_page_segments.py` encodes.
 
 ## Phase 4 — Embeddings (`page_segment.embedding`)
 

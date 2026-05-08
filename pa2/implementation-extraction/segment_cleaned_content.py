@@ -22,6 +22,7 @@ Major revisions:
 - 2026-05-06: Added `heading_structure_v3` (multi-pass greedy packing + tiny-tail repair).
 - 2026-05-07: Added `heading_structure_v4` with clean `segment_text` + additive `embedding_text` combined at encode time.
 - 2026-05-08: v4 merge-group surfacing (iterative with merge-group consolidation) and Nested_scope embedding prefix lines; `v4_surface_merge_max_iterations` / `PA2_V4_SURFACE_MERGE_MAX_ITERATIONS`.
+- 2026-05-08: v4 additive `embedding_text` uses display `Type:` labels (`code block`, heading-based `authors`/`references`); DB `segment_type` keeps internal classifiers (`code_block`, …).
 """
 
 from __future__ import annotations
@@ -487,6 +488,71 @@ def _normalize_heading_path_for_context(
     return " > ".join(parts)
 
 
+# Normalized subsection title tokens for v4 embedding_text `Type:` display labels (DB `segment_type` stays internal).
+_V4_AUTHORS_HEADINGS = frozenset({"authors", "author", "maintainers", "credits"})
+_V4_REFERENCES_HEADINGS = frozenset(
+    {
+        "references",
+        "bibliography",
+        "works cited",
+        "citations",
+        "publications",
+        "further reading",
+    }
+)
+
+
+def _normalize_heading_title_for_v4_type_label(raw: str) -> str:
+    """Lowercase, collapse whitespace, strip punctuation for heading allowlist lookup."""
+    t = raw.strip().lower()
+    t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"[^\w\s]", "", t)
+    return t.strip()
+
+
+def _effective_subsection_title_for_v4(part: V2ChunkPart, cfg: SegmentationConfig) -> str:
+    """Subsection title for type labeling; prefers explicit title, else last segment of source path."""
+    ht = part.heading_title.strip()
+    if ht:
+        return ht
+    if part.source_heading_path:
+        return _last_heading_title(part.source_heading_path, cfg)
+    return ""
+
+
+def _v4_embedding_type_label(
+    internal_type: str,
+    *,
+    parts: list[V2ChunkPart] | None,
+    heading_path: str | None,
+    cfg: SegmentationConfig,
+) -> str:
+    """
+    Human-readable `Type:` value for v4 additive embedding prefix.
+
+    Priority: authors headings > references headings > `code block` for code-like chunks > internal_type.
+    """
+    titles: list[str] = []
+    if parts:
+        for part in parts:
+            t = _effective_subsection_title_for_v4(part, cfg)
+            if t:
+                titles.append(t)
+    if not titles and heading_path:
+        titles = [_last_heading_title(heading_path, cfg)]
+
+    if titles:
+        norms = [_normalize_heading_title_for_v4_type_label(t) for t in titles]
+        if norms and all(n in _V4_AUTHORS_HEADINGS for n in norms):
+            return "authors"
+        if norms and all(n in _V4_REFERENCES_HEADINGS for n in norms):
+            return "references"
+
+    if internal_type == "code_block":
+        return "code block"
+    return internal_type
+
+
 def _build_embedding_text(
     *,
     heading_path: str | None,
@@ -494,6 +560,7 @@ def _build_embedding_text(
     body_text: str,
     cfg: SegmentationConfig,
     include_context_prefix: bool,
+    type_display_label: str | None = None,
 ) -> str:
     """Build embedding-facing text with optional contextual prefix metadata."""
     body = body_text.strip()
@@ -504,7 +571,8 @@ def _build_embedding_text(
     context_path = _normalize_heading_path_for_context(heading_path, cfg)
     if context_path:
         context_lines.append(f"Context: {context_path}")
-    context_lines.append(f"Type: {segment_type}")
+    type_line = type_display_label if type_display_label is not None else segment_type
+    context_lines.append(f"Type: {type_line}")
     prefix = "\n".join(context_lines).strip()
     if not prefix:
         return body
@@ -531,12 +599,19 @@ def _build_v4_embedding_prefix(
     """
     V4 additive prefix only (no segment body). Context + Type, optional Merged_sections.
     """
+    type_label = _v4_embedding_type_label(
+        segment_type,
+        parts=None,
+        heading_path=heading_path,
+        cfg=cfg,
+    )
     base = _build_embedding_text(
         heading_path=heading_path,
         segment_type=segment_type,
         body_text="",
         cfg=cfg,
         include_context_prefix=True,
+        type_display_label=type_label,
     ).strip()
     if len(merged_section_titles) > 1:
         merged_line = "Merged_sections: " + "; ".join(merged_section_titles)
@@ -565,6 +640,12 @@ def _v4_embedding_prefix_for_packed(
     """
     title_parts = parts_for_titles if parts_for_titles is not None else packed.parts
     segment_type = _segment_type_from_parts(title_parts)
+    type_label = _v4_embedding_type_label(
+        segment_type,
+        parts=title_parts,
+        heading_path=packed.heading_path,
+        cfg=cfg,
+    )
     merged_titles = _v4_merge_titles_for_parts(title_parts)
 
     scope_bits: list[str] = []
@@ -585,7 +666,7 @@ def _v4_embedding_prefix_for_packed(
     context_lines: list[str] = []
     if ctx_norm:
         context_lines.append(f"Context: {ctx_norm}")
-    context_lines.append(f"Type: {segment_type}")
+    context_lines.append(f"Type: {type_label}")
     base = "\n".join(context_lines).strip()
 
     extra: list[str] = []
@@ -2229,6 +2310,43 @@ Sudipto Mukherjee, Himanshu Asnani, Eugene Lin, Sreeram Kannan
     authors_combined = combined_v4_embed_input(authors_seg.embedding_text, authors_seg.segment_text)
     assert "### Authors" not in authors_combined, "V4 must not inject redundant ### leaf heading into combined input."
     assert "Sudipto Mukherjee" not in authors_seg.embedding_text
+    assert "Type: authors" in authors_seg.embedding_text
+
+    refs_page = """
+[H1] README
+
+[H3] References
+
+- Doe et al., Conference 2020.
+- Smith and Jones, Conference 2021.
+""".strip()
+    v4_refs = _segment_page_v4(
+        page_id=44,
+        cleaned_content=refs_page,
+        strategy=V4_STRATEGY,
+        cfg=v3_cfg,
+    )
+    refs_seg = next(s for s in v4_refs if "Doe et al." in s.segment_text)
+    assert "Type: references" in refs_seg.embedding_text
+
+    code_page = """
+[H1] README
+
+[H2] Install
+
+```
+pip install torch
+```
+""".strip()
+    v4_code = _segment_page_v4(
+        page_id=45,
+        cleaned_content=code_page,
+        strategy=V4_STRATEGY,
+        cfg=v3_cfg,
+    )
+    code_seg = next(s for s in v4_code if "pip install" in s.segment_text)
+    assert "Type: code block" in code_seg.embedding_text
+    assert "Type: code_block" not in code_seg.embedding_text
 
     print("segment_cleaned_content self-test: OK")
 
