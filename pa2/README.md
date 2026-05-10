@@ -81,7 +81,7 @@ The exported DB already includes:
 
 No extraction, segmentation, or embedding generation step is required for normal usage.
 
-### Step D - run retrieval demo immediately
+### Step D - run retrieval demo immediately (in the pa2/implementation-extraction/ directory)
 
 ```bash
 # Single query example
