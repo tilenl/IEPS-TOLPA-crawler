@@ -14,13 +14,14 @@ pa2/
 │   ├── 003_page_segment.sql
 │   ├── 004_page_segment_embedding.sql
 │   ├── 005_page_segment_merge_group_parent.sql
-│   └── 006_page_segment_embedding_text.sql
+│   ├── 006_page_segment_embedding_text.sql
+│   └── 007_page_segment_embedding_labse.sql
 ├── implementation-extraction/
 │   ├── requirements.txt
 │   ├── extract_readme.py      # Phase 1: HTML → README plain text → cleaned_content
 │   ├── build_canonical_content_map.py  # Canonical dedup map for segmentation
 │   ├── segment_cleaned_content.py  # Phase 2: Strategy C segmentation → page_segment
-│   ├── embed_page_segments.py  # Phase 4: MiniLM embeddings → page_segment.embedding
+│   ├── embed_page_segments.py  # Phase 4: embeddings → page_segment.embedding / embedding_labse
 │   └── demo.py                # Query demo for markers (later phases)
 └── extraction-db/              # PostgreSQL dumps and restore artefacts
 ```
@@ -189,21 +190,30 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
    - adds `embedding vector(384)` to `crawldb.page_segment`,
    - creates cosine HNSW ANN index (`vector_cosine_ops`).
 
-2. **Generate embeddings** with `all-MiniLM-L6-v2`:
+   Optional **LaBSE** column (768 dimensions) and its cosine HNSW index:
+
+   ```bash
+   docker exec -i postgresql-wier psql -U user -d crawldb < pa2/db/migrations/007_page_segment_embedding_labse.sql
+   ```
+
+2. **Generate embeddings** (`--embedding minilm` is the default; use `labse` after applying migration `007`):
 
    ```bash
    cd pa2/implementation-extraction
    .venv/bin/python embed_page_segments.py --strategy heading_structure_v4 --batch-size 64
+   .venv/bin/python embed_page_segments.py --embedding labse --strategy heading_structure_v4 --batch-size 32
    ```
 
 3. **Recommended smoke test** (no writes):
 
    ```bash
    .venv/bin/python embed_page_segments.py --strategy heading_structure_v4 --limit 200 --dry-run --verbose
+   .venv/bin/python embed_page_segments.py --embedding labse --strategy heading_structure_v4 --limit 50 --dry-run --verbose
    ```
 
 4. **Useful CLI flags**:
-   - `--rebuild-embeddings`: re-encode rows even if embedding already exists,
+   - `--embedding {minilm,labse}`: bi-encoder + target column (`embedding` vs `embedding_labse`),
+   - `--rebuild-embeddings`: re-encode rows even if the target embedding column is already populated,
    - `--page-id <id>`: isolate one page during debugging,
    - `--max-retries <n>` and `--retry-delay-seconds <s>`: tune failure recovery,
    - `--near-zero-norm-threshold <f>`: stricter/looser anomaly warning,
@@ -217,12 +227,14 @@ Optional flags: `--dry-run`, `--limit N`, `--verbose`, `--recompute-all`.
 
 **Connection**: defaults `localhost:5432`, database `crawldb`, user `user`, password `SecretPassword`. Override with `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`.
 
+Optional local snapshot directory for LaBSE (mirrors `PA2_LOCAL_SENTENCE_MODEL_PATH` for MiniLM): set **`PA2_LOCAL_LABSE_MODEL_PATH`** to an absolute path when using offline-first runs.
+
 ## Phase 5 — Retrieval demo (`demo.py`)
 
 `demo.py` now implements the full assignment retrieval loop:
 1. read query,
-2. embed query with MiniLM,
-3. run pgvector similarity search,
+2. embed query with the selected bi-encoder (`--embedding minilm` default, or `labse` when that column is populated),
+3. run pgvector similarity search on the matching column,
 4. print top-k segment hits with `page_id`, `segment_id`, `chunk_index`, `strategy`, and source URL.
 
 Run from `pa2/implementation-extraction/` and activate the virtual environment first:
@@ -231,6 +243,7 @@ Run from `pa2/implementation-extraction/` and activate the virtual environment f
 cd pa2/implementation-extraction
 source .venv/bin/activate
 python demo.py --query "How do I use pretrained models?" --top-k 5
+python demo.py --embedding labse --strategy heading_structure_v4 --query "How do I use pretrained models?" --top-k 5
 ```
 
 ### Similarity metric experiments
@@ -289,7 +302,7 @@ python demo.py --run-eval --top-k 5 --rerank --candidate-k 20
 
 ### Index / metric alignment note
 
-Migration `004_page_segment_embedding.sql` currently creates an HNSW index for cosine (`vector_cosine_ops`).
+Migrations `004_page_segment_embedding.sql` and `007_page_segment_embedding_labse.sql` create cosine HNSW indexes (`vector_cosine_ops`) on `embedding` and `embedding_labse` respectively.
 Other metrics (`l2`, `inner_product`, `l1`) are still valid for experimentation, but may run slower because no matching ANN index is currently created for those operators.
 
 ---

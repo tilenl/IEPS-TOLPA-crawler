@@ -4,21 +4,23 @@ Generate and store embeddings for `crawldb.page_segment`.
 
 Purpose:
 - Read segmented rows produced by `segment_cleaned_content.py`.
-- Encode embedding-facing text with `sentence-transformers/all-MiniLM-L6-v2`.
-- Persist vectors into `crawldb.page_segment.embedding` (pgvector).
+- Encode embedding-facing text with a registered SentenceTransformer bi-encoder.
+- Persist vectors into `crawldb.page_segment.embedding` (MiniLM, 384d) or
+  `embedding_labse` (LaBSE, 768d).
 
 System role:
 - Upstream dependency: `segment_cleaned_content.py` writes deterministic segments.
 - Downstream dependency: retrieval/demo pipeline queries vector similarity.
 
 Assumptions and invariants:
-- `crawldb.page_segment.embedding` exists with dimension 384.
+- Target pgvector column exists with the dimension required by the selected backend.
 - Segment text is English README-derived content.
 - Embedding generation is resumable by row id and can be re-run safely.
 
 Created: 2026-05-06
 Major revisions:
 - 2026-05-06: Initial Phase 4 embedding pipeline with retry + diagnostics.
+- 2026-05-10: `--embedding {minilm,labse}` and dual-column writes.
 """
 
 from __future__ import annotations
@@ -31,9 +33,29 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 import numpy as np
-from embedding_common import combined_v4_embed_input, encode_texts, resolve_conn_kwargs
+from embedding_common import (
+    combined_v4_embed_input,
+    encode_texts,
+    parse_embedding_backend,
+    resolve_conn_kwargs,
+)
 
 V4_STRATEGY = "heading_structure_v4"
+
+_ALLOWED_PG_EMBEDDING_COLUMNS = frozenset({"embedding", "embedding_labse"})
+
+_UPDATE_SQL_BY_COLUMN: dict[str, str] = {
+    "embedding": """
+UPDATE crawldb.page_segment
+SET embedding = %s
+WHERE id = %s
+""",
+    "embedding_labse": """
+UPDATE crawldb.page_segment
+SET embedding_labse = %s
+WHERE id = %s
+""",
+}
 
 
 @dataclass(frozen=True)
@@ -76,8 +98,11 @@ def _fetch_batch(
     include_already_embedded: bool,
     limit: int | None,
     batch_size: int,
+    embedding_column: str,
 ) -> list[SegmentRow]:
     """Fetch the next deterministic batch of segment rows by primary key."""
+    if embedding_column not in _ALLOWED_PG_EMBEDDING_COLUMNS:
+        raise ValueError(f"Invalid embedding column: {embedding_column!r}")
     sql = """
 SELECT id, page_id, chunk_index, strategy, segment_text, embedding_text
 FROM crawldb.page_segment
@@ -91,7 +116,7 @@ WHERE id > %s
         sql += " AND page_id = %s"
         params.append(page_id)
     if not include_already_embedded:
-        sql += " AND embedding IS NULL"
+        sql += f" AND {embedding_column} IS NULL"
     sql += " ORDER BY id"
     sql += " LIMIT %s"
     params.append(batch_size if limit is None else min(batch_size, max(limit, 0)))
@@ -159,18 +184,20 @@ def _record_embedding_quality(
     )
 
 
-def _update_embeddings(conn: Any, rows: Sequence[SegmentRow], embeddings: np.ndarray) -> None:
+def _update_embeddings(
+    conn: Any,
+    rows: Sequence[SegmentRow],
+    embeddings: np.ndarray,
+    *,
+    embedding_column: str,
+) -> None:
     """Persist one embedding batch via parameterized UPDATE statements."""
+    if embedding_column not in _ALLOWED_PG_EMBEDDING_COLUMNS:
+        raise ValueError(f"Invalid embedding column: {embedding_column!r}")
+    sql = _UPDATE_SQL_BY_COLUMN[embedding_column]
     payload = [(embeddings[index], row.id) for index, row in enumerate(rows)]
     with conn.cursor() as cur:
-        cur.executemany(
-            """
-UPDATE crawldb.page_segment
-SET embedding = %s
-WHERE id = %s
-""",
-            payload,
-        )
+        cur.executemany(sql, payload)
 
 
 def _run_batch_with_retries(
@@ -184,6 +211,8 @@ def _run_batch_with_retries(
     near_zero_norm_threshold: float,
     sparse_non_zero_ratio_threshold: float,
     stats: EmbeddingRunStats,
+    model_name: str,
+    embedding_column: str,
 ) -> None:
     """Encode and persist one batch with bounded retries and rollback safety."""
     attempts = max(1, max_retries + 1)
@@ -192,6 +221,7 @@ def _run_batch_with_retries(
             embeddings = encode_texts(
                 [_embedding_source_text(row) for row in rows],
                 normalize_embeddings=normalize_embeddings,
+                model_name=model_name,
             )
             _record_embedding_quality(
                 stats,
@@ -200,7 +230,9 @@ def _run_batch_with_retries(
                 sparse_non_zero_ratio_threshold=sparse_non_zero_ratio_threshold,
             )
             if not dry_run:
-                _update_embeddings(conn, rows, embeddings)
+                _update_embeddings(
+                    conn, rows, embeddings, embedding_column=embedding_column
+                )
                 conn.commit()
             stats.rows_embedded += len(rows)
             return
@@ -293,13 +325,14 @@ def run_embedding_pipeline(
     retry_delay_seconds: float = 1.0,
     near_zero_norm_threshold: float = 1e-6,
     sparse_non_zero_ratio_threshold: float = 0.05,
+    embedding: str = "minilm",
 ) -> EmbeddingRunStats:
     """
     Generate embeddings for segment rows and store them in PostgreSQL.
 
     Side effects:
     - Reads from `crawldb.page_segment`.
-    - Updates `crawldb.page_segment.embedding` unless `dry_run=True`.
+    - Updates the target embedding column unless `dry_run=True`.
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
@@ -307,6 +340,10 @@ def run_embedding_pipeline(
         raise ValueError("limit must be >= 0 when provided")
     if max_retries < 0:
         raise ValueError("max_retries must be >= 0")
+
+    backend = parse_embedding_backend(embedding)
+    model_name = backend.model_id
+    embedding_column = backend.pg_column
 
     import psycopg
     from pgvector.psycopg import register_vector
@@ -329,6 +366,7 @@ def run_embedding_pipeline(
                 include_already_embedded=rebuild_embeddings,
                 limit=remaining,
                 batch_size=batch_size,
+                embedding_column=embedding_column,
             )
             if not rows:
                 break
@@ -349,6 +387,8 @@ def run_embedding_pipeline(
                     near_zero_norm_threshold=near_zero_norm_threshold,
                     sparse_non_zero_ratio_threshold=sparse_non_zero_ratio_threshold,
                     stats=stats,
+                    model_name=model_name,
+                    embedding_column=embedding_column,
                 )
 
             if remaining is not None:
@@ -367,7 +407,13 @@ def run_embedding_pipeline(
 def _main(argv: list[str] | None = None) -> int:
     """CLI entrypoint for the Phase 4 embedding pipeline."""
     parser = argparse.ArgumentParser(
-        description="Generate embeddings for crawldb.page_segment using all-MiniLM-L6-v2."
+        description="Generate embeddings for crawldb.page_segment (MiniLM or LaBSE)."
+    )
+    parser.add_argument(
+        "--embedding",
+        choices=("minilm", "labse"),
+        default="minilm",
+        help="Bi-encoder backend and target column: minilm→embedding(384), labse→embedding_labse(768).",
     )
     parser.add_argument(
         "--strategy",
@@ -459,6 +505,7 @@ def _main(argv: list[str] | None = None) -> int:
         retry_delay_seconds=args.retry_delay_seconds,
         near_zero_norm_threshold=args.near_zero_norm_threshold,
         sparse_non_zero_ratio_threshold=args.sparse_non_zero_ratio_threshold,
+        embedding=args.embedding,
     )
     return 0
 

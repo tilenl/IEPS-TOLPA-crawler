@@ -32,7 +32,7 @@ from typing import Any, Sequence
 import psycopg
 from pgvector.psycopg import register_vector
 
-from embedding_common import MODEL_NAME, encode_texts, resolve_conn_kwargs
+from embedding_common import encode_texts, parse_embedding_backend, resolve_conn_kwargs
 
 METRIC_TO_OPERATOR = {
     "cosine": "<=>",
@@ -105,12 +105,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Similarity metric/operator to use (default: cosine).",
     )
     parser.add_argument(
+        "--embedding",
+        choices=("minilm", "labse"),
+        default="minilm",
+        help="First-stage bi-encoder and pgvector column (minilm→embedding, labse→embedding_labse).",
+    )
+    parser.add_argument(
         "--model",
         type=str,
-        default=MODEL_NAME,
+        default=None,
         help=(
-            "SentenceTransformer model used for query embedding. Must be dimension-compatible "
-            "with stored vectors."
+            "SentenceTransformer model id for the query vector. "
+            "Default follows --embedding; if set, must exactly match the registry id for that backend."
         ),
     )
     parser.add_argument(
@@ -181,6 +187,15 @@ def _embed_query(query: str, *, model_name: str, normalize_embeddings: bool) -> 
     return embeddings[0]
 
 
+def _qualified_pg_embedding_column(pg_column: str) -> str:
+    """Return `ps.<column>` for whitelisted page_segment embedding columns."""
+    if pg_column == "embedding":
+        return "ps.embedding"
+    if pg_column == "embedding_labse":
+        return "ps.embedding_labse"
+    raise ValueError(f"Unsupported embedding column: {pg_column!r}")
+
+
 def _retrieve_hits(
     conn: Any,
     *,
@@ -188,9 +203,11 @@ def _retrieve_hits(
     top_k: int,
     strategy: str | None,
     metric: str,
+    embedding_pg_column: str,
 ) -> list[RetrievalHit]:
     """Execute metric-aware vector search and map rows to typed hits."""
     operator = METRIC_TO_OPERATOR[metric]
+    col_sql = _qualified_pg_embedding_column(embedding_pg_column)
     sql = f"""
 SELECT
     ps.id,
@@ -199,10 +216,10 @@ SELECT
     ps.strategy,
     ps.segment_text,
     p.url,
-    (ps.embedding {operator} %s) AS distance
+    ({col_sql} {operator} %s) AS distance
 FROM crawldb.page_segment ps
 JOIN crawldb.page p ON p.id = ps.page_id
-WHERE ps.embedding IS NOT NULL
+WHERE {col_sql} IS NOT NULL
 """
     params: list[Any] = [query_vector]
     if strategy:
@@ -396,6 +413,7 @@ def _run_single_query(args: argparse.Namespace, query: str) -> int:
             top_k=candidate_k,
             strategy=args.strategy,
             metric=args.metric,
+            embedding_pg_column=args.embedding_pg_column,
         )
 
     final_hits = initial_hits[: args.top_k]
@@ -417,7 +435,7 @@ def _run_single_query(args: argparse.Namespace, query: str) -> int:
     print(f"{_style('QUERY', role='header', use_color=use_color)}: {query}")
     print(
         f"{_style('RUN CONFIG', role='header', use_color=use_color)}: "
-        f"metric={args.metric} top_k={args.top_k} strategy={args.strategy or 'ALL'} "
+        f"embedding={args.embedding} metric={args.metric} top_k={args.top_k} strategy={args.strategy or 'ALL'} "
         f"rerank={'on' if reranked else 'off'}"
     )
     print("#" * 100)
@@ -463,6 +481,16 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--candidate-k must be > 0")
     if args.show_chars <= 0:
         raise ValueError("--show-chars must be > 0")
+
+    backend = parse_embedding_backend(args.embedding)
+    if args.model is None:
+        args.model = backend.model_id
+    elif args.model != backend.model_id:
+        raise ValueError(
+            f"--model {args.model!r} does not match --embedding {args.embedding!r} "
+            f"(expected {backend.model_id!r})."
+        )
+    args.embedding_pg_column = backend.pg_column
 
     try:
         if args.run_eval:
