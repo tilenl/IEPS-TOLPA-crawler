@@ -10,7 +10,7 @@ This README is focused on two tasks:
 ```text
 pa2/
 |- README.md
-|- REPORT.md
+|- FINDINGS-TO-REPORT.md
 |- db/migrations/
 |  |- 001_page_cleaned_content.sql
 |  |- 002_cleaned_content_canonicalization.sql
