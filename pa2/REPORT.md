@@ -526,16 +526,16 @@ We **did not** strip reference or citation blocks out of extraction, segmentatio
 `demo.py --run-eval` includes the following built-in query sets:
 
 **Expected-good queries**
-1. `How do I run DeepLabV3+ training with this repository?`
-2. `Which configuration keys control optimizer learning rate?`
-3. `How can I use a pretrained segmentation model from the README?`
+1. `How do I evaluate mIoU or accuracy on the validation set?`
+2. `What are some of the repositories for food image classification?`
+3. `How do I run Segment Anything (SAM) inference or download SAM checkpoints from this repository?`
 
 **Weak/unexpected-result queries**
 1. `What is the best segmentation model for medical biology images in 2026?`
-2. `How does this project compare to Segment Anything 2 benchmarks?`
-3. `Can this codebase guarantee state-of-the-art mIoU on every dataset?`
+2. `Which segmentation model should my hospital buy for regulatory approval in the EU?`
+3. `What exact mIoU did this repo achieve on Cityscapes compared to Mask2Former last month?`
 
-These weak queries are intentionally broader than repository README scope and are useful for showing both baseline retrieval limits and reranking behavior.
+These weak queries are intentionally outside normal README scope (opinion, procurement, time-bounded comparisons to other work) and are useful for showing both baseline retrieval limits and reranking behavior.
 
 ### How to capture report evidence
 

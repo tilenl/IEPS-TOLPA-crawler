@@ -43,14 +43,14 @@ METRIC_TO_OPERATOR = {
 
 EVAL_QUERY_SETS = {
     "good": [
-        "How do I run DeepLabV3+ training with this repository?",
-        "Which configuration keys control optimizer learning rate?",
-        "How can I use a pretrained segmentation model from the README?",
+        "How do I evaluate mIoU or accuracy on the validation set?",
+        "What are some of the repositories for food image classification?",
+        "How do I run Segment Anything (SAM) inference or download SAM checkpoints from this repository?",
     ],
     "weak": [
         "What is the best segmentation model for medical biology images in 2026?",
-        "How does this project compare to Segment Anything 2 benchmarks?",
-        "Can this codebase guarantee state-of-the-art mIoU on every dataset?",
+        "Which segmentation model should my hospital buy for regulatory approval in the EU?",
+        "What exact mIoU did this repo achieve on Cityscapes compared to Mask2Former last month?",
     ],
 }
 
@@ -95,8 +95,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--strategy",
         type=str,
-        default="heading_structure_v2",
-        help="Optional segment strategy filter (default: heading_structure_v2).",
+        default="heading_structure_v4",
+        help="Optional segment strategy filter (default: heading_structure_v4).",
     )
     parser.add_argument(
         "--metric",
