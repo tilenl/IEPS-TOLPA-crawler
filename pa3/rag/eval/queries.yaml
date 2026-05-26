@@ -1,0 +1,48 @@
+# PA3 evaluation queries: 6 good + 3 poor (compare RAG vs LLM-only).
+# Re-run: python eval/run_eval.py --output ../output/eval_run.json
+
+queries:
+  - id: good_1
+    category: good
+    query: "How do I evaluate mIoU or accuracy on the validation set?"
+    expected_behavior: "Retrieval should surface README sections on metrics/evaluation; RAG answer cites validation procedure."
+
+  - id: good_2
+    category: good
+    query: "What are some of the repositories for food image classification?"
+    expected_behavior: "Retrieval lists food-classification repos from corpus; RAG enumerates concrete project names/URLs."
+
+  - id: good_3
+    category: good
+    query: "How do I run Segment Anything (SAM) inference or download SAM checkpoints from this repository?"
+    expected_behavior: "Retrieval finds SAM install/inference/checkpoint instructions; RAG gives actionable steps."
+
+  - id: good_4
+    category: good
+    query: "What Python packages or dependencies are required to install and run this segmentation project?"
+    expected_behavior: "Retrieval hits requirements/installation sections; RAG lists packages from README."
+
+  - id: good_5
+    category: good
+    query: "How do I download pretrained weights or checkpoints for this model?"
+    expected_behavior: "Retrieval finds download/checkpoint sections; RAG explains where and how to obtain weights."
+
+  - id: good_6
+    category: good
+    query: "How do I train the model on my own dataset or fine-tune on custom data?"
+    expected_behavior: "Retrieval surfaces training/fine-tuning instructions; RAG describes dataset layout and commands."
+
+  - id: poor_1
+    category: poor
+    query: "What is the best segmentation model for medical biology images in 2026?"
+    expected_behavior: "Corpus lacks authoritative 2026 medical ranking; retrieval may be tangential; RAG may overclaim or LLM-only hallucinates."
+
+  - id: poor_2
+    category: poor
+    query: "Which segmentation model should my hospital buy for regulatory approval in the EU?"
+    expected_behavior: "No regulatory/commercial guidance in READMEs; irrelevant retrieval or generic advice."
+
+  - id: poor_3
+    category: poor
+    query: "What exact mIoU did this repo achieve on Cityscapes compared to Mask2Former last month?"
+    expected_behavior: "Requires fresh benchmark numbers not in static READMEs; retrieval insufficient; risk of hallucination."

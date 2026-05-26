@@ -1,12 +1,17 @@
 NOTEBOOKS/
 .cursor/
+.DS_Store
 pa1/.gradle/
+pa1/.gradle_home/
 pa1/build/
 
 .gradle-local/
 .docker/
 
 pa1/db/crawldb
+
+# PA2: local PostgreSQL data directory (created by init_db.sh)
+pa2/db/
 
 # PA2: large DB dumps (keep small README/SQL helpers in extraction-db/ if needed)
 pa2/extraction-db/*.dump

@@ -1,0 +1,10 @@
+# PA3 RAG — install in a venv under pa3/rag/ (see pa3/README.md).
+# Includes PA2 retrieval dependencies (shared with pa2/implementation-extraction).
+
+numpy>=1.26.0,<3
+psycopg[binary]>=3.1.18,<4
+pgvector>=0.3.6,<1
+sentence-transformers>=3.4.0,<4
+torch>=2.2.0,<3
+dspy>=2.5.0,<4
+PyYAML>=6.0,<7

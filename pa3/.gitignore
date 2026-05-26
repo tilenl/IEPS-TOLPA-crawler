@@ -1,0 +1,6 @@
+rag/.venv/
+rag/__pycache__/
+rag/**/__pycache__/
+output/*.json
+output/*.md
+!output/.gitkeep

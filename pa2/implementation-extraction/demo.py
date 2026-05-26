@@ -16,6 +16,7 @@ System role:
 Created: 2026-05-06
 Major revisions:
 - 2026-05-06: Implemented retrieval CLI, metric experiments, reranking, and eval mode.
+- 2026-05-26: Delegated retrieval logic to retrieval.py for PA3 reuse.
 """
 
 from __future__ import annotations
@@ -26,20 +27,18 @@ import os
 import shutil
 import sys
 import textwrap
-from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Sequence
 
-import psycopg
-from pgvector.psycopg import register_vector
-
-from embedding_common import encode_texts, parse_embedding_backend, resolve_conn_kwargs
-
-METRIC_TO_OPERATOR = {
-    "cosine": "<=>",
-    "l2": "<->",
-    "inner_product": "<#>",
-    "l1": "<+>",
-}
+from embedding_common import parse_embedding_backend
+from retrieval import (
+    METRIC_TO_OPERATOR,
+    RetrievalConfig,
+    RetrievalHit,
+    connect,
+    embed_query,
+    rerank_hits,
+    retrieve_hits,
+)
 
 EVAL_QUERY_SETS = {
     "good": [
@@ -59,20 +58,6 @@ ANSI_BOLD = "\033[1m"
 ANSI_CYAN = "\033[36m"
 ANSI_MAGENTA = "\033[35m"
 ANSI_YELLOW = "\033[33m"
-
-
-@dataclass(frozen=True)
-class RetrievalHit:
-    """One retrieved segment with optional reranking metadata."""
-
-    segment_id: int
-    page_id: int
-    chunk_index: int
-    strategy: str
-    distance: float
-    segment_text: str
-    source_url: str | None
-    rerank_score: float | None = None
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -166,124 +151,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _connect(database_url: str | None) -> Any:
-    """Create PostgreSQL connection and register pgvector adapter."""
-    if database_url:
-        conn = psycopg.connect(database_url, autocommit=True)
-    else:
-        conn = psycopg.connect(**resolve_conn_kwargs(), autocommit=True)
-    conn.execute("SET search_path TO crawldb, public")
-    register_vector(conn)
-    return conn
-
-
-def _embed_query(query: str, *, model_name: str, normalize_embeddings: bool) -> Any:
-    """Encode one query text and return vector payload acceptable by pgvector."""
-    embeddings = encode_texts(
-        [query],
-        normalize_embeddings=normalize_embeddings,
-        model_name=model_name,
-    )
-    return embeddings[0]
-
-
-def _qualified_pg_embedding_column(pg_column: str) -> str:
-    """Return `ps.<column>` for whitelisted page_segment embedding columns."""
-    if pg_column == "embedding":
-        return "ps.embedding"
-    if pg_column == "embedding_labse":
-        return "ps.embedding_labse"
-    raise ValueError(f"Unsupported embedding column: {pg_column!r}")
-
-
-def _retrieve_hits(
-    conn: Any,
-    *,
-    query_vector: Any,
-    top_k: int,
-    strategy: str | None,
-    metric: str,
-    embedding_pg_column: str,
-) -> list[RetrievalHit]:
-    """Execute metric-aware vector search and map rows to typed hits."""
-    operator = METRIC_TO_OPERATOR[metric]
-    col_sql = _qualified_pg_embedding_column(embedding_pg_column)
-    sql = f"""
-SELECT
-    ps.id,
-    ps.page_id,
-    ps.chunk_index,
-    ps.strategy,
-    ps.segment_text,
-    p.url,
-    ({col_sql} {operator} %s) AS distance
-FROM crawldb.page_segment ps
-JOIN crawldb.page p ON p.id = ps.page_id
-WHERE {col_sql} IS NOT NULL
-"""
-    params: list[Any] = [query_vector]
-    if strategy:
-        sql += " AND ps.strategy = %s"
-        params.append(strategy)
-    sql += " ORDER BY distance ASC LIMIT %s"
-    params.append(top_k)
-
-    rows = conn.execute(sql, params).fetchall()
-    return [
-        RetrievalHit(
-            segment_id=int(row[0]),
-            page_id=int(row[1]),
-            chunk_index=int(row[2]),
-            strategy=str(row[3]),
-            segment_text=str(row[4] or ""),
-            source_url=str(row[5]) if row[5] is not None else None,
-            distance=float(row[6]),
-        )
-        for row in rows
-    ]
-
-
-def _rerank_hits(
-    query: str,
-    hits: Sequence[RetrievalHit],
-    *,
-    rerank_model: str,
-    top_k: int,
-) -> list[RetrievalHit]:
-    """Rerank candidates with a cross-encoder and return top-ranked hits."""
-    from sentence_transformers import CrossEncoder
-
-    if not hits:
-        return []
-    model = CrossEncoder(rerank_model)
-    pairs = [[query, hit.segment_text] for hit in hits]
-    scores = model.predict(pairs)
-
-    scored = [
-        RetrievalHit(
-            segment_id=hit.segment_id,
-            page_id=hit.page_id,
-            chunk_index=hit.chunk_index,
-            strategy=hit.strategy,
-            distance=hit.distance,
-            segment_text=hit.segment_text,
-            source_url=hit.source_url,
-            rerank_score=float(score),
-        )
-        for hit, score in zip(hits, scores, strict=True)
-    ]
-    scored.sort(key=lambda item: item.rerank_score if item.rerank_score is not None else -1e9, reverse=True)
-    return scored[:top_k]
-
-
 def _format_preview(text: str, *, max_chars: int) -> str:
     """Render full segment text with line wrapping (no truncation)."""
     stripped = text.strip()
     if not stripped:
         return ""
 
-    # NOTE: Keep wrapped text inside terminal/card bounds even when --show-chars
-    # is set very high for inspection.
     terminal_columns = shutil.get_terminal_size(fallback=(120, 24)).columns
     max_safe_width = max(40, terminal_columns - 8)
     wrap_width = min(max(40, max_chars), max_safe_width, 100)
@@ -399,15 +272,15 @@ def _run_single_query(args: argparse.Namespace, query: str) -> int:
             args.metric,
         )
 
-    query_vector = _embed_query(
+    query_vector = embed_query(
         query,
         model_name=args.model,
         normalize_embeddings=not args.no_normalize,
     )
     candidate_k = max(args.top_k, args.candidate_k if args.rerank else args.top_k)
 
-    with _connect(args.database_url) as conn:
-        initial_hits = _retrieve_hits(
+    with connect(args.database_url) as conn:
+        initial_hits = retrieve_hits(
             conn,
             query_vector=query_vector,
             top_k=candidate_k,
@@ -420,7 +293,7 @@ def _run_single_query(args: argparse.Namespace, query: str) -> int:
     reranked = False
     if args.rerank:
         try:
-            final_hits = _rerank_hits(
+            final_hits = rerank_hits(
                 query,
                 initial_hits,
                 rerank_model=args.rerank_model,
